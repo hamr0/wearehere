@@ -1,0 +1,24 @@
+{
+  "name": "wearehere",
+  "version": "0.1.0",
+  "description": "One-call privacy scanner for any website. MCP server powered by barebrowse.",
+  "type": "module",
+  "main": "src/scanner.js",
+  "bin": {
+    "wearehere": "./mcp-server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "barebrowse": "file:../barebrowse"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "keywords": [
+    "privacy", "scanner", "mcp", "cookies", "trackers",
+    "fingerprinting", "dark-patterns", "surveillance"
+  ],
+  "license": "MIT"
+}
