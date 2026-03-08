@@ -1,22 +1,34 @@
 /**
  * background.js — Service worker.
- * Aggregates scan results per tab, fetches ToS, reads cookies, computes verdict.
+ * Aggregates scan results per tab, fetches ToS, reads cookies, monitors network, computes verdict.
  *
  * Module sources:
- *   ToS scanning  → wearetosed v0.1.0 (tos-scanner.js)
- *   Fingerprinting → wearewatched v0.1.0 (inject.js prototype wrappers)
- *   Dark patterns  → weareplayed v0.1.0 (content.js heuristics)
- *   Trackers       → wearecooked v4.0.0 (content.js domain map + pixel detection)
- *   Storage        → weareleaking v0.2.0 (content.js suspicious key patterns)
- *   Links          → wearelinked v0.3.0 (content.js tracking param list)
+ *   ToS scanning    → wearetosed v0.1.0 (tos-scanner.js)
+ *   Fingerprinting  → wearewatched v0.1.0 (inject.js prototype wrappers)
+ *   Dark patterns   → weareplayed v0.1.0 (content.js heuristics)
+ *   Trackers        → wearecooked v4.0.0 (content.js domain map + pixel detection)
+ *   Storage         → weareleaking v0.2.0 (content.js suspicious key patterns)
+ *   Links           → wearelinked v0.3.0 (content.js tracking param list)
+ *   Network         → wearebaked v0.5.1 (webRequest monitoring + data broker detection)
+ *   Form scanning   → wearesilent v0.1.0 (content.js passive form field awareness)
  */
 
-// Import wearetosed's actual scanner (scanText function)
+// Import modules
 importScripts('tos-scanner.js');
+importScripts('network-domains.js');
 
-// --- Per-tab state + domain cache ---
+// --- Per-tab state + caches ---
 const tabData = {};
 const domainTosCache = {};
+
+// --- Network traffic state (from wearebaked v0.5.1) ---
+const networkTraffic = {
+  domains: {},       // domain → { count, category, risky, brokerName, thirdPartyOn, bytesReceived, bytesSent }
+  timing: {},        // requestId → startTs
+  redirects: {},     // requestId → [url chain]
+  finalRedirects: {}, // domain → [completed chains]
+};
+const MAX_FINAL_REDIRECTS = 100;
 
 // --- ToS: page link patterns (from wearetosed content.js) ---
 const TOS_PATHS = [
@@ -29,18 +41,172 @@ const TOS_PATHS = [
   '/help/privacy', '/site/privacy',
 ];
 
-// --- Message handler ---
+// =============================================================================
+// Network monitoring (from wearebaked v0.5.1)
+// =============================================================================
+
+chrome.webRequest.onBeforeRequest.addListener(
+  (details) => {
+    if (details.tabId < 0) return;
+
+    // Tab navigation: reset network data for tab
+    if (details.type === 'main_frame') {
+      if (!tabData[details.tabId]) tabData[details.tabId] = {};
+      tabData[details.tabId].networkData = {
+        requestCount: 0,
+        thirdPartyDomains: {},
+        categories: {},
+        brokers: {},
+        bytesReceived: 0,
+        bytesSent: 0,
+      };
+    }
+
+    // Record timing
+    networkTraffic.timing[details.requestId] = Date.now();
+
+    // Init redirect chain
+    networkTraffic.redirects[details.requestId] = [details.url];
+
+    // Track request body size
+    if (details.requestBody) {
+      const domain = extractDomain(details.url);
+      if (domain && networkTraffic.domains[domain]) {
+        let size = 0;
+        if (details.requestBody.raw) {
+          for (const part of details.requestBody.raw) {
+            if (part.bytes) size += part.bytes.byteLength;
+          }
+        }
+        networkTraffic.domains[domain].bytesSent += size;
+        // Also track per-tab
+        const tabNet = tabData[details.tabId]?.networkData;
+        if (tabNet) tabNet.bytesSent += size;
+      }
+    }
+  },
+  { urls: ['<all_urls>'] },
+  ['requestBody']
+);
+
+chrome.webRequest.onBeforeRedirect.addListener(
+  (details) => {
+    if (details.tabId < 0) return;
+    if (networkTraffic.redirects[details.requestId]) {
+      networkTraffic.redirects[details.requestId].push(details.redirectUrl);
+    }
+  },
+  { urls: ['<all_urls>'] }
+);
+
+chrome.webRequest.onCompleted.addListener(
+  (details) => {
+    if (details.tabId < 0) return;
+
+    const domain = extractDomain(details.url);
+    if (!domain) return;
+
+    const tabDomain = tabData[details.tabId]?.domain || '';
+    const thirdParty = isThirdParty(domain, tabDomain);
+
+    // Response time
+    let responseTime = 0;
+    if (networkTraffic.timing[details.requestId]) {
+      responseTime = Date.now() - networkTraffic.timing[details.requestId];
+      delete networkTraffic.timing[details.requestId];
+    }
+
+    // Finalize redirect chains
+    const chain = networkTraffic.redirects[details.requestId];
+    if (chain && chain.length > 1) {
+      const lastInChain = chain[chain.length - 1];
+      if (lastInChain !== details.url) chain.push(details.url);
+      const originDomain = extractDomain(chain[0]);
+      if (!networkTraffic.finalRedirects[originDomain]) networkTraffic.finalRedirects[originDomain] = [];
+      if (networkTraffic.finalRedirects[originDomain].length < MAX_FINAL_REDIRECTS) {
+        networkTraffic.finalRedirects[originDomain].push(chain);
+      }
+    }
+    delete networkTraffic.redirects[details.requestId];
+
+    // Classify domain
+    const classification = classifyNetworkDomain(domain, details);
+
+    // Bytes received
+    let bytesReceived = 0;
+    const cl = getHeader(details.responseHeaders, 'content-length');
+    if (cl) bytesReceived = parseInt(cl, 10) || 0;
+
+    // Update global domain stats
+    if (!networkTraffic.domains[domain]) {
+      networkTraffic.domains[domain] = {
+        count: 0, classification, thirdPartyOn: {},
+        bytesReceived: 0, bytesSent: 0,
+      };
+    }
+    const d = networkTraffic.domains[domain];
+    d.count++;
+    if (thirdParty && tabDomain) d.thirdPartyOn[tabDomain] = true;
+    d.bytesReceived += bytesReceived;
+
+    // Update per-tab network data
+    const tabNet = tabData[details.tabId]?.networkData;
+    if (tabNet) {
+      tabNet.requestCount++;
+      tabNet.bytesReceived += bytesReceived;
+      if (thirdParty) {
+        tabNet.thirdPartyDomains[domain] = {
+          count: (tabNet.thirdPartyDomains[domain]?.count || 0) + 1,
+          category: classification.category,
+          risky: classification.risky,
+          brokerName: classification.brokerName,
+          brokerType: classification.brokerType,
+          brokerDesc: classification.brokerDesc,
+          bytesReceived: (tabNet.thirdPartyDomains[domain]?.bytesReceived || 0) + bytesReceived,
+        };
+        // Track categories
+        tabNet.categories[classification.category] = (tabNet.categories[classification.category] || 0) + 1;
+        // Track brokers
+        if (classification.brokerName) {
+          tabNet.brokers[classification.brokerName] = {
+            domain,
+            name: classification.brokerName,
+            type: classification.brokerType,
+            desc: classification.brokerDesc,
+            count: (tabNet.brokers[classification.brokerName]?.count || 0) + 1,
+          };
+        }
+      }
+    }
+  },
+  { urls: ['<all_urls>'] },
+  ['responseHeaders']
+);
+
+chrome.webRequest.onErrorOccurred.addListener(
+  (details) => {
+    delete networkTraffic.timing[details.requestId];
+    delete networkTraffic.redirects[details.requestId];
+  },
+  { urls: ['<all_urls>'] }
+);
+
+// =============================================================================
+// Message handler
+// =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'scanResult' && sender.tab) {
     const tabId = sender.tab.id;
-    if (!tabData[tabId]) tabData[tabId] = { domain: msg.domain, url: msg.url };
-    Object.assign(tabData[tabId], { scan: msg.data, scanTime: Date.now() });
+    if (!tabData[tabId]) tabData[tabId] = {};
+    tabData[tabId].domain = msg.domain;
+    tabData[tabId].url = msg.url;
+    tabData[tabId].scan = msg.data;
+    tabData[tabId].scanTime = Date.now();
     updateBadge(tabId);
 
     // Kick off cookie + ToS fetch if not done yet
     if (!tabData[tabId].cookies) fetchCookies(tabId, msg.url, msg.domain);
     if (!tabData[tabId].tos && !tabData[tabId].tosFetching) {
-      // Check domain cache first
       if (domainTosCache[msg.domain]) {
         tabData[tabId].tos = domainTosCache[msg.domain];
         updateBadge(tabId);
@@ -51,24 +217,84 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
   }
 
-  // Content script can also send tosLinks separately after DOM scan
-  if (msg.type === 'tosLinks' && sender.tab) {
-    const tabId = sender.tab.id;
-    if (tabData[tabId] && !tabData[tabId].tos && !tabData[tabId].tosFetching) {
-      fetchToS(tabId, msg.url, tabData[tabId].domain, msg.links);
-    }
-  }
-
   if (msg.type === 'getReport') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (!tabs[0]) return sendResponse(null);
+      const data = tabData[tabs[0].id];
+      if (!data) return sendResponse(null);
+      sendResponse(buildReport(data));
+    });
+    return true;
+  }
+
+  if (msg.type === 'getFullReport') {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       if (!tabs[0]) return sendResponse(null);
       const tabId = tabs[0].id;
       const data = tabData[tabId];
       if (!data) return sendResponse(null);
-      sendResponse(buildReport(data));
+
+      const report = buildReport(data);
+
+      // Add raw cookies for dashboard cookie table
+      try {
+        report.rawCookies = await chrome.cookies.getAll({ url: data.url });
+      } catch { report.rawCookies = []; }
+
+      // Add network data for dashboard
+      const tabNet = data.networkData || {};
+      // Collect redirect chains relevant to this tab's domain
+      const redirectChains = [];
+      for (const [origin, chains] of Object.entries(networkTraffic.finalRedirects)) {
+        for (const chain of chains) {
+          redirectChains.push({ origin, chain });
+        }
+      }
+
+      report.network = {
+        domains: tabNet.thirdPartyDomains || {},
+        totalRequests: tabNet.requestCount || 0,
+        thirdPartyCount: Object.keys(tabNet.thirdPartyDomains || {}).length,
+        brokers: Object.values(tabNet.brokers || {}),
+        categories: tabNet.categories || {},
+        redirectChains: redirectChains.slice(-30),
+      };
+
+      sendResponse(report);
     });
-    return true; // async response
+    return true;
   }
+
+  if (msg.type === 'cleanCookies') {
+    (async () => {
+      try {
+        const cookies = await chrome.cookies.getAll({ url: msg.url });
+        let deleted = 0;
+        const domain = new URL(msg.url).hostname;
+        for (const c of cookies) {
+          if (msg.mode === 'all' || (msg.mode === 'thirdParty' &&
+              !c.domain.includes(domain) && !domain.includes(c.domain.replace(/^\./, '')))) {
+            const protocol = c.secure ? 'https' : 'http';
+            const cookieUrl = `${protocol}://${c.domain.replace(/^\./, '')}${c.path}`;
+            try {
+              await chrome.cookies.remove({ url: cookieUrl, name: c.name });
+              deleted++;
+            } catch {}
+          }
+        }
+        // Re-fetch cookies for tab
+        const tabId = Object.keys(tabData).find(id => tabData[id]?.url === msg.url);
+        if (tabId) {
+          delete tabData[tabId].cookies;
+          fetchCookies(parseInt(tabId), msg.url, tabData[tabId].domain);
+        }
+        sendResponse({ deleted });
+      } catch { sendResponse({ deleted: 0 }); }
+    })();
+    return true;
+  }
+
+  return false;
 });
 
 // --- Cookie fetching ---
@@ -129,10 +355,7 @@ async function tryFetchAndScan(url) {
       redirect: 'follow',
       credentials: 'include',
       signal: AbortSignal.timeout(8000),
-      headers: {
-        'Accept': 'text/html,application/xhtml+xml',
-        'User-Agent': navigator.userAgent,
-      },
+      headers: { 'Accept': 'text/html,application/xhtml+xml' },
     });
     if (!resp.ok) return null;
     const ct = resp.headers.get('content-type') || '';
@@ -140,7 +363,7 @@ async function tryFetchAndScan(url) {
 
     let html = await resp.text();
 
-    // Follow meta refresh redirects (Google pattern, from wearetosed)
+    // Follow meta refresh redirects (Google pattern)
     const metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
     if (metaRedirect && htmlToText(html).length < 500) {
       const r2 = await fetch(metaRedirect[1], { redirect: 'follow', credentials: 'include', signal: AbortSignal.timeout(8000) });
@@ -149,11 +372,8 @@ async function tryFetchAndScan(url) {
 
     const text = htmlToText(html);
     if (text.length < 100) return null;
-
     return scanText(text);
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
@@ -162,7 +382,6 @@ async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
 
   const origin = new URL(pageUrl).origin;
 
-  // Build URL list: standard paths first, then page-found links
   const pathUrls = TOS_PATHS.map(p => origin + p);
   const allUrls = [...pathUrls, ...pageLinks];
   const seen = new Set();
@@ -173,7 +392,6 @@ async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
     return true;
   });
 
-  // Try to find and scan both privacy and terms pages (like wearetosed does)
   let privacyResult = null;
   let termsResult = null;
 
@@ -184,25 +402,42 @@ async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
     const isPrivacy = /privac|cookie|data.?polic|gdpr|ccpa/i.test(urlLower);
     const isTerms = /terms|tos$|legal(?!.*privac)|eula|conditions/i.test(urlLower);
 
-    // Skip if we already have this type
     if (isPrivacy && privacyResult) continue;
     if (isTerms && !isPrivacy && termsResult) continue;
 
     const result = await tryFetchAndScan(url);
     if (!result) continue;
 
-    if (isPrivacy && !privacyResult) {
-      privacyResult = result;
-    } else if (isTerms && !termsResult) {
-      termsResult = result;
-    } else if (!privacyResult) {
-      privacyResult = result; // default to privacy if unclear
+    if (isPrivacy && !privacyResult) privacyResult = result;
+    else if (isTerms && !termsResult) termsResult = result;
+    else if (!privacyResult) privacyResult = result;
+  }
+
+  // Fallback: ask content script to fetch (SPA pages like Reddit)
+  if (!privacyResult && !termsResult && tabData[tabId]) {
+    const tosLinksFromPage = tabData[tabId].scan?.tosLinks || pageLinks;
+    if (tosLinksFromPage.length > 0) {
+      try {
+        const response = await new Promise((resolve) => {
+          chrome.tabs.sendMessage(tabId, { type: 'fetchToS', urls: tosLinksFromPage.slice(0, 5) }, (r) => {
+            resolve(r);
+          });
+        });
+        if (response?.text) {
+          const result = scanText(response.text);
+          if (result) {
+            const urlLower = (response.url || '').toLowerCase();
+            if (/privac|cookie|data.?polic/i.test(urlLower)) privacyResult = result;
+            else termsResult = result;
+          }
+        }
+      } catch {}
     }
   }
 
   if (!tabData[tabId]) return;
 
-  // Combine scores (same logic as wearetosed background.js buildTabResult)
+  // Combine scores
   const pScore = privacyResult ? privacyResult.score : 0;
   const tScore = termsResult ? termsResult.score : 0;
   let combined;
@@ -213,7 +448,6 @@ async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
 
   const found = !!(privacyResult || termsResult);
 
-  // Build flagged list with casual labels
   const CASUAL_LABELS = {
     'data-sharing': 'They can share or sell your data',
     'surveillance': 'They track and profile you',
@@ -224,24 +458,15 @@ async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
   };
 
   const flagged = [];
-  const allItems = [
-    ...(privacyResult?.items || []),
-    ...(termsResult?.items || []),
-  ];
-  // Dedupe by pattern
+  const allItems = [...(privacyResult?.items || []), ...(termsResult?.items || [])];
   const seenPatterns = new Set();
   for (const item of allItems) {
     if (seenPatterns.has(item.pattern)) continue;
     seenPatterns.add(item.pattern);
-    flagged.push({
-      type: item.pattern,
-      label: CASUAL_LABELS[item.pattern] || item.pattern,
-      count: item.count,
-    });
+    flagged.push({ type: item.pattern, label: CASUAL_LABELS[item.pattern] || item.pattern, count: item.count });
   }
 
   const tosResult = { found, score: combined, flagged };
-
   tabData[tabId].tos = tosResult;
   tabData[tabId].tosFetching = false;
   domainTosCache[domain] = tosResult;
@@ -282,35 +507,28 @@ function buildReport(data) {
     byCat[call.category].apis.add(call.api);
   }
   const fpMethods = Object.entries(byCat).map(([technique, d]) => ({
-    technique,
-    apis: [...d.apis],
-    calls: d.count,
+    technique, apis: [...d.apis], calls: d.count,
   }));
 
   // Beacons
   const beacons = scan.beacons || [];
 
-  // Trackers — now with company names from wearecooked
+  // Trackers
   const trackers = scan.trackers || {};
   const trackerTotal = (trackers.pixels || 0) + beacons.length + (trackers.hiddenIframes || 0);
-  const trackerCompanies = trackers.companies || [];
+  const trackerCompanies = [...(trackers.companies || [])];
 
-  // Merge beacon domains into company list
   for (const b of beacons) {
     try {
       const domain = new URL(b.url).hostname;
-      // Check if already in companies
       const existing = trackerCompanies.find(c => domain.includes(c.name?.toLowerCase?.()));
-      if (!existing) {
-        trackerCompanies.push({ name: domain, purpose: 'Analytics', count: 1 });
-      }
+      if (!existing) trackerCompanies.push({ name: domain, purpose: 'Analytics', count: 1 });
     } catch {}
   }
 
-  // 3P script companies
   const scriptCompanies = scan.thirdPartyScripts?.companies || [];
 
-  // Storage — now with categories from weareleaking
+  // Storage
   const storage = scan.storage || { totalKeys: 0, flaggedCount: 0, byCategory: {}, flaggedKeys: [] };
 
   // Links
@@ -320,30 +538,26 @@ function buildReport(data) {
   // Dark patterns
   const dp = scan.darkPatterns || { score: 0, detected: [] };
 
+  // Forms (from wearesilent)
+  const formFields = scan.formFields || [];
+
+  // Network (from wearebaked) — per-tab data
+  const tabNet = data.networkData || {};
+  const brokerCount = Object.keys(tabNet.brokers || {}).length;
+
   const report = {
     site: data.domain,
     url: data.url,
     cookies: {
-      total: cookies.total,
-      firstParty: cookies.firstParty,
-      thirdParty: cookies.thirdParty,
-      thirdPartyDomains: cookies.thirdPartyDomains,
-      longestDays: cookies.longestDays,
+      total: cookies.total, firstParty: cookies.firstParty, thirdParty: cookies.thirdParty,
+      thirdPartyDomains: cookies.thirdPartyDomains, longestDays: cookies.longestDays,
     },
     trackers: {
-      pixels: trackers.pixels || 0,
-      beacons: beacons.length,
-      hiddenIframes: trackers.hiddenIframes || 0,
+      pixels: trackers.pixels || 0, beacons: beacons.length, hiddenIframes: trackers.hiddenIframes || 0,
       thirdPartyScripts: scan.thirdPartyScripts?.total || 0,
-      companies: trackerCompanies,
-      scriptCompanies,
-      total: trackerTotal,
+      companies: trackerCompanies, scriptCompanies, total: trackerTotal,
     },
-    fingerprinting: {
-      techniques: fpMethods.length,
-      totalCalls: fpCalls.length,
-      methods: fpMethods,
-    },
+    fingerprinting: { techniques: fpMethods.length, totalCalls: fpCalls.length, methods: fpMethods },
     pressure: {
       score: dp.score,
       tactics: (dp.detected || []).map(d => {
@@ -359,16 +573,20 @@ function buildReport(data) {
     },
     tos: tos ? (tos.found ? { score: tos.score, flagged: tos.flagged } : { found: false }) : { loading: true },
     localData: {
-      totalKeys: storage.totalKeys || 0,
-      suspicious: storage.flaggedCount || 0,
-      byCategory: storage.byCategory || {},
-      flaggedKeys: storage.flaggedKeys || [],
+      totalKeys: storage.totalKeys || 0, suspicious: storage.flaggedCount || 0,
+      byCategory: storage.byCategory || {}, flaggedKeys: storage.flaggedKeys || [],
     },
     linkTracking: {
-      total: links.total,
-      tracked: links.withTracking,
-      redirectWrappers: links.redirectWrappers,
-      percentage: linkPct,
+      total: links.total, tracked: links.withTracking,
+      redirectWrappers: links.redirectWrappers, percentage: linkPct,
+    },
+    forms: {
+      fieldCount: formFields.length,
+      fields: formFields.slice(0, 15),
+      trackersWhileTyping: formFields.length > 0 ? trackerCompanies.length + scriptCompanies.length : 0,
+      trackerNames: formFields.length > 0
+        ? [...new Set([...trackerCompanies, ...scriptCompanies].map(c => c.name))].slice(0, 5)
+        : [],
     },
   };
 
@@ -400,6 +618,16 @@ function computeVerdict(r) {
   if (r.localData.suspicious > 5) { score += 5; concerns.push('Tracking IDs saved on your device'); }
 
   if (r.linkTracking.percentage > 50) { score += 5; concerns.push('Most links tag your clicks'); }
+
+  // Network — data brokers (from wearebaked)
+  const brokerCount = r.forms?.trackersWhileTyping || 0; // approximate from tracker companies
+  // Use actual network broker data if available in full report
+  // For popup this is approximate; dashboard has full data
+
+  // Forms (from wearesilent)
+  if (r.forms?.fieldCount > 0 && r.forms?.trackersWhileTyping > 3) {
+    score += 10; concerns.push('Trackers watching while you fill out forms');
+  }
 
   score = Math.min(score, 100);
 

@@ -4,21 +4,23 @@
 
 Full privacy scan for every site you visit — one popup, complete picture.
 
-The weare____ suite started as 8 separate browser extensions, each exposing a different privacy concern: cookies, trackers, fingerprinting, dark patterns, ToS toxicity, localStorage tracking, link tracking, and form leaks. wearehere unifies all of them into one extension with a single popup that scans every page you visit and gives you an instant risk score.
+The weare____ suite started as 8 separate browser extensions, each exposing a different privacy concern: cookies, trackers, fingerprinting, dark patterns, ToS toxicity, localStorage tracking, link tracking, and form leaks. wearehere unifies all 8 into one extension with a simplified popup for quick awareness and a full-page dashboard for deep analysis.
 
 No AI, no cloud, no accounts — everything runs locally in your browser.
 
-## What it scans
+## What it scans (all 8 modules)
 
-| Category | Source module | What it detects |
-|----------|--------------|-----------------|
-| Cookies | wearecooked | First vs third-party, persistence duration, third-party domains |
-| Trackers | wearecooked | Hidden tracking pixels, invisible iframes, sendBeacon calls, third-party scripts |
-| Fingerprinting | wearewatched | Canvas, WebGL, AudioContext, Navigator, Screen API probing via prototype interception |
-| Pressure | weareplayed | Confirm-shaming, fake urgency, countdown timers, pre-checked consent boxes, hidden unsubscribe |
-| Terms | wearetosed | Privacy policy and ToS toxicity scoring across 6 categories (data selling, surveillance, retention, law enforcement, rights erosion, unilateral control) |
-| Local data | weareleaking | Suspicious localStorage/sessionStorage keys (UUIDs, tracking IDs, analytics tokens) |
-| Link tracking | wearelinked | UTM parameters, fbclid/gclid, redirect wrappers (Google, Facebook, t.co, bit.ly) |
+| # | Category | Source module | What it detects |
+|---|----------|--------------|-----------------|
+| 1 | Cookies | wearecooked | First vs third-party, persistence duration, third-party domains, cookie cleaner |
+| 2 | Trackers | wearecooked | Hidden tracking pixels, invisible iframes, sendBeacon calls, third-party scripts — resolved to company names via 258-entry domain map |
+| 3 | Fingerprinting | wearewatched | Canvas, WebGL, AudioContext, Navigator, Screen, Battery, Font, Connection API probing via prototype interception |
+| 4 | Pressure | weareplayed | Confirm-shaming, fake urgency, countdown timers (with proximity-to-urgency filtering), pre-checked consent boxes, hidden unsubscribe |
+| 5 | Terms | wearetosed | Privacy policy and ToS toxicity scoring across 6 categories (data selling, surveillance, retention, law enforcement, rights erosion, unilateral control) |
+| 6 | Local data | weareleaking | Suspicious localStorage/sessionStorage keys categorized: cross-site tracking, advertising, fingerprinting, PII exposure, tracking |
+| 7 | Link tracking | wearelinked | UTM parameters, fbclid/gclid, redirect wrappers (Google, Facebook, t.co, bit.ly) |
+| 8 | Network | wearebaked | Real-time network request monitoring via webRequest API — 454 known tracker domains, 82 data broker profiles, redirect chain detection, domain classification |
+| - | Forms | wearesilent | Passive form field detection (Method B) — finds visible input/textarea/select fields, resolves labels, checks for tracker presence while forms are active |
 
 ## How it works
 
@@ -28,15 +30,18 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 - Wraps `navigator.sendBeacon` to intercept beacon calls
 - Relays detections to content script via `postMessage`
 
-### DOM scanning (content.js, from wearecooked/weareplayed/weareleaking/wearelinked)
+### DOM scanning (content.js)
 - Runs at `document_start`, scans after page load
-- Tracking pixels: 1x1 or hidden `<img>` elements from 60+ known tracker domains
+- **Trackers (wearecooked)**: 258-entry COMPANY_MAP with `lookupCompany()` subdomain walking — resolves raw domains to company names and purposes (Advertising, Analytics, Data broker, etc.)
+- Tracking pixels: 1x1 or hidden `<img>` elements from known tracker domains
 - Hidden iframes: zero-size or hidden `<iframe>` elements
-- Dark patterns: text heuristics on button/link text (confirm-shaming), body text (fake urgency, countdown timers), checkbox state (pre-checked boxes), computed styles (hidden unsubscribe)
-- Storage: scans localStorage/sessionStorage keys against 14 suspicious patterns (UUIDs, `_ga`, `_fb`, `session.?id`, etc.)
-- Links: checks all `<a href>` for 16 tracking parameters and 6 redirect wrapper domains
+- **Dark patterns (weareplayed)**: text heuristics on button/link text (confirm-shaming), body text (fake urgency, countdown timers), checkbox state (pre-checked boxes), computed styles (hidden unsubscribe). Timer false positive fix: requires `HH:MM:SS` pattern to be within 300 chars of urgency language
+- **Storage (weareleaking)**: scans localStorage/sessionStorage keys against categorized SUSPICIOUS_PATTERNS — Cross-site tracking, Advertising, Fingerprinting, PII exposure, Tracking
+- **Links (wearelinked)**: checks all `<a href>` for 16 tracking parameters and 6 redirect wrapper domains
+- **Forms (wearesilent Method B)**: passive detection — finds visible input/textarea/select fields, resolves labels via 6-level resolution (aria-labelledby, aria-label, label[for], wrapping label, placeholder, name/id), deduplicates
 - MutationObserver re-scans on dynamic content changes
 - Finds ToS/privacy links on the page and sends them to background for scanning
+- Content-script-side ToS fetch fallback for SPAs (Reddit, etc.) — fetches with page cookies/session when background fetch returns empty shell
 
 ### ToS scanning (background.js + tos-scanner.js, from wearetosed)
 - Tries 20+ common paths (`/privacy`, `/terms`, `/policies/privacy-policy`, etc.)
@@ -44,16 +49,26 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 - Fetches HTML, strips tags, runs wearetosed's `scanText()` — 54 regex patterns across 6 categories
 - Follows meta refresh redirects (Google pattern)
 - Scans both privacy policy AND terms of service separately, combines scores
+- Content-script fallback: if background fetch fails (SPA empty shell), sends `fetchToS` message to content script which fetches with page credentials
 - Caches results per domain
+
+### Network monitoring (background.js + network-domains.js, from wearebaked)
+- Uses `chrome.webRequest` API (observation-only, non-blocking) for real-time network monitoring
+- Listeners: `onBeforeRequest` (timing, redirect chains, request body size), `onBeforeRedirect` (chain appending), `onCompleted` (domain classification, bytes, per-tab tracking), `onErrorOccurred` (cleanup)
+- **network-domains.js** contains: 454 NET_TRACKER_DOMAINS (categorized: Advertising, Analytics, Social Tracking, Fingerprinting, Data Broker, Error Monitoring, A/B Testing, Chat/Support, Video/Media, Consent, Email/CRM), 82 NET_BROKER_META profiles with name/type/description, NET_PURPOSE_DOMAINS (benign: CDN, fonts, captcha, payment, auth, maps), NET_DOMAIN_PATTERNS (regex fallback)
+- 3-pass domain classification: (1) exact domain DB, (2) pattern regex, (3) request heuristics (tracking pixels by content-length, beacon POSTs by empty response)
+- Per-tab network data: requestCount, thirdPartyDomains, categories, brokers, bytes
 
 ### Cookie analysis (background.js)
 - Uses `chrome.cookies.getAll()` for complete cookie inventory including HttpOnly
 - Classifies first-party vs third-party by domain matching
 - Tracks persistence: session vs persistent, longest expiry in days
+- Cookie cleaner: `cleanCookies` message handler supports 'all' and 'thirdParty' modes via `chrome.cookies.remove()`
 
 ### Verdict
-- Scores 0-100 based on weighted findings across all categories
+- Scores 0-100 based on weighted findings across all 8 categories
 - Risk levels: low (0-15), moderate (16-40), high (41-70), critical (71-100)
+- Scoring includes: cookies (third-party count + persistence), trackers (count + scripts), fingerprinting (technique count), pressure (manipulation score), terms (toxicity score), storage (suspicious keys), links (tracking percentage), network (data broker count), forms (trackers watching while typing)
 - Plain-language recommendation for each level
 
 ## Module reuse
@@ -64,37 +79,49 @@ wearehere does not reinvent detection logic. It reuses the actual scanner module
 |-------------------|--------|---------|
 | `tos-scanner.js` | wearetosed `scanner.js` | v0.1.0 |
 | `inject.js` prototype wrappers | wearewatched `inject.js` | v0.1.0 |
-| `content.js` tracker domain list | wearecooked `content.js` | v4.0.0 |
+| `content.js` COMPANY_MAP (258 entries) | wearecooked `content.js` | v4.0.0 |
 | `content.js` dark pattern heuristics | weareplayed `content.js` | v0.1.0 |
-| `content.js` storage patterns | weareleaking `content.js` | v0.2.0 |
+| `content.js` categorized storage patterns | weareleaking `content.js` | v0.2.0 |
 | `content.js` tracking params | wearelinked `content.js` | v0.3.0 |
+| `network-domains.js` (454 domains, 82 brokers) | wearebaked `background.js` | v0.5.1 |
+| `content.js` form scanning (Method B) | wearesilent `content.js` | v0.1.0 |
 
 When a source extension updates, wearehere should pull the updated module.
 
 ## UI
 
 ### Popup (400px wide, dark theme)
+Simplified display for regular users — shows what matters at a glance.
+
 - **Header**: site name + risk score badge (colored by level)
 - **Risk bar**: gradient bar showing score 0-100
 - **Summary**: one-line recommendation
-- **7 sections** (each with icon, label, headline value, and detail):
+- **8 sections** (each with icon, label, headline value, and detail):
   1. Cookies — count, 1st/3rd party split, longest expiry
-  2. Trackers — hidden element count, beacon/pixel/iframe breakdown, domains
-  3. Fingerprinting — technique count with bar chart per method
+  2. Trackers — company count (resolved names, not raw domains), top 4 names shown
+  3. Fingerprinting — "Active"/"None" with plain sentence description
   4. Pressure — manipulation score, tactic list with evidence quotes
-  5. Terms — toxicity score, flagged categories in casual language
-  6. Stored on you — suspicious key count, flagged key names
+  5. Terms — toxicity score, flagged categories
+  6. Stored on you — suspicious key count by category name
   7. Links — tracking percentage, redirect wrappers
-- **Footer**: links to Cookie Dashboard (wearecooked) and Network Dashboard (wearebaked)
+  8. Forms — field count, trackers watching while you type
+- **Full Report button**: opens the unified dashboard (report.html) in a new tab
+
+### Dashboard (report.html, full-page, 8 tabs)
+Deep-dive analysis for users who want details.
+
+- **Overview tab**: risk score display with bar, score breakdown by category, concerns list, at-a-glance summary grid (all 8 categories)
+- **Cookies tab**: summary cards (total, first/third party, longest expiry), searchable/sortable cookie table (name, domain, expires, secure, httpOnly, sameSite, size), cookie cleaner (Clean Third-Party / Clean All buttons)
+- **Network tab**: summary cards (total requests, unique domains, third-party %, data brokers), category bar chart, sortable domain table (domain, category, requests, third-party, data broker, bytes), data broker groups by type, redirect chains
+- **Trackers tab**: companies grouped by purpose (Advertising, Analytics, Data broker, etc.), third-party script companies
+- **Terms tab**: toxicity score display, flagged clauses list
+- **Data tab**: local storage categories with key lists, link tracking summary with highlighted tracking params
+- **Fingerprinting tab**: active/none status with explanation, technique cards (Navigator, Screen, WebGL, Canvas, AudioContext, Font, Battery, Connection) with API call counts and plain-language explanations
+- **Forms tab**: form field list with resolved labels, tracker presence status
 
 ### Badge
 - Shows overall risk score (0-100)
 - Color: green (low), orange (moderate), red (high/critical)
-
-### Dashboard links
-- Cookie Dashboard opens wearecooked's `report.html` (cookie analysis + cleaner)
-- Network Dashboard opens wearebaked's `dashboard.html` (traffic monitoring + data brokers)
-- Requires companion extensions installed
 
 ## Permissions
 
@@ -102,8 +129,9 @@ When a source extension updates, wearehere should pull the updated module.
 |-----------|-----|
 | `activeTab` | Badge updates on current tab |
 | `storage` | Persist scan results |
-| `cookies` | Read full cookie inventory via API |
-| `<all_urls>` (host) | Content scripts on all pages, ToS page fetching |
+| `cookies` | Read full cookie inventory via API, cookie cleaner |
+| `webRequest` | Network traffic monitoring (observation-only, non-blocking) |
+| `<all_urls>` (host) | Content scripts on all pages, ToS page fetching, network monitoring |
 
 ## Project structure
 
@@ -117,14 +145,14 @@ wearehere/
 │   ├── page-scripts.js
 │   └── data.js
 ├── chrome-extension/
-│   ├── manifest.json          # MV3
+│   ├── manifest.json          # MV3, v2.0.0
 │   ├── tos-scanner.js         # From wearetosed v0.1.0
-│   ├── inject.js              # Page-context prototype wrappers
-│   ├── content.js             # DOM scanning
-│   ├── background.js          # Aggregator + ToS fetch + cookies + verdict
-│   ├── popup.html
-│   ├── popup.js
-│   └── popup.css
+│   ├── network-domains.js     # From wearebaked v0.5.1 (454 domains, 82 brokers)
+│   ├── inject.js              # Page-context prototype wrappers (wearewatched)
+│   ├── content.js             # DOM scanning (wearecooked + weareplayed + weareleaking + wearelinked + wearesilent)
+│   ├── background.js          # Aggregator + ToS fetch + cookies + network monitoring + verdict
+│   ├── popup.html / popup.js / popup.css   # Quick-view popup (8 sections)
+│   ├── report.html / report.js / report.css # Full dashboard (8 tabs)
 ├── firefox-extension/         # MV2 (TODO)
 └── store-assets/
     ├── prd.md
@@ -137,7 +165,26 @@ wearehere also ships an MCP server (`mcp-server.js`) for agent-facing use. It ex
 
 ## Changelog
 
-### v1.0.1 (current)
+### v2.0.0 (current)
+- All 8 weare____ extensions integrated — no companion extensions needed
+- New: network monitoring via webRequest API (from wearebaked v0.5.1) — 454 tracker domains, 82 data broker profiles, redirect chain detection
+- New: form field scanning (from wearesilent Method B) — passive detection of form fields + tracker presence
+- New: unified dashboard (report.html) with 8 tabs — Overview, Cookies, Network, Trackers, Terms, Data, Fingerprinting, Forms
+- New: cookie cleaner in dashboard (Clean Third-Party / Clean All)
+- Tracker company names via wearecooked's 258-entry COMPANY_MAP with subdomain walking
+- Storage categories from weareleaking (Cross-site tracking, Advertising, Fingerprinting, PII exposure, Tracking)
+- Timer false positive fix: countdown patterns require proximity to urgency language
+- ToS SPA fix: content-script-side fetch fallback for SPAs like Reddit
+- Popup simplified to 8 sections with casual language for regular users
+- Full Report button in popup opens dashboard
+
+### v1.0.2
+- Tracker display fixed: shows company names instead of raw domains
+- Storage display: shows categories instead of raw key names
+- ToS fix: content-script fallback for SPA pages
+- Timer false positive fix: YouTube countdown detection
+
+### v1.0.1
 - inject.js runs in `MAIN` world via manifest (guaranteed before page scripts)
 - ToS scanner uses wearetosed's actual `scanText()` with 54 regex patterns
 - ToS fetcher tries 20+ paths + page-found links, scans both privacy and terms

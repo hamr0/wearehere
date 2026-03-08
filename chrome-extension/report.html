@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>wearehere — Full Report</title>
+  <link rel="stylesheet" href="report.css">
+</head>
+<body>
+  <div id="loading">Loading report...</div>
+
+  <div id="report" style="display:none">
+    <!-- Header -->
+    <header id="header">
+      <div id="header-left">
+        <h1 id="brand">wearehere</h1>
+        <span id="site-domain"></span>
+      </div>
+    </header>
+
+    <!-- Tab navigation -->
+    <nav id="tab-bar">
+      <button class="tab active" data-tab="overview">Overview</button>
+      <button class="tab" data-tab="cookies">Cookies</button>
+      <button class="tab" data-tab="network">Network</button>
+      <button class="tab" data-tab="trackers">Trackers</button>
+      <button class="tab" data-tab="terms">Terms</button>
+      <button class="tab" data-tab="data">Data</button>
+      <button class="tab" data-tab="fingerprinting">Fingerprinting</button>
+      <button class="tab" data-tab="forms">Forms</button>
+    </nav>
+
+    <!-- Tab panels -->
+    <div id="panel-overview" class="panel active"></div>
+    <div id="panel-cookies" class="panel"></div>
+    <div id="panel-network" class="panel"></div>
+    <div id="panel-trackers" class="panel"></div>
+    <div id="panel-terms" class="panel"></div>
+    <div id="panel-data" class="panel"></div>
+    <div id="panel-fingerprinting" class="panel"></div>
+    <div id="panel-forms" class="panel"></div>
+  </div>
+
+  <div id="empty" style="display:none">
+    <div class="empty-title">No data yet</div>
+    <div class="empty-sub">Navigate to a website and open this report page.</div>
+  </div>
+
+  <script src="report.js"></script>
+</body>
+</html>

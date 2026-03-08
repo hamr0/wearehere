@@ -11,12 +11,14 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 | What you see | What it means |
 |---|---|
 | **Cookies** | How many cookies this site set, which ones are from outside companies, how long the longest one lasts |
-| **Trackers** | Hidden tracking pixels, invisible iframes, silent pings (beacons), and third-party scripts loaded without your knowledge |
+| **Trackers** | Hidden tracking pixels, invisible iframes, silent pings (beacons), and third-party scripts — resolved to company names |
 | **Fingerprinting** | When sites read your device specs (GPU, CPU cores, screen depth, audio hardware) to build a unique ID — no cookies needed |
 | **Pressure** | Dark patterns: fake countdown timers, "Only 2 left!", guilt-trip decline buttons, pre-checked newsletter boxes |
 | **Terms** | Toxic clauses in their privacy policy and terms of service — data selling, surveillance, binding arbitration, no right to delete |
-| **Stored on you** | Tracking IDs and analytics tokens saved in your browser's local storage |
+| **Stored on you** | Tracking IDs and analytics tokens saved in your browser's local storage, categorized by type |
 | **Link tracking** | UTM parameters and redirect wrappers attached to links so they know what you click next |
+| **Network** | Real-time request monitoring — which domains your browser talks to, data broker detection, redirect chains |
+| **Forms** | Which form fields are on the page and whether trackers are active while you type |
 
 ## How scoring works
 
@@ -37,17 +39,25 @@ wearehere reuses detection logic from the weare____ suite — same code, not rew
 |-----------|-----------------|---------|
 | ToS scanning | wearetosed `scanner.js` | v0.1.0 |
 | Fingerprint wrappers | wearewatched `inject.js` | v0.1.0 |
-| Tracker domains | wearecooked `content.js` | v4.0.0 |
+| Tracker company map (258 entries) | wearecooked `content.js` | v4.0.0 |
 | Dark pattern heuristics | weareplayed `content.js` | v0.1.0 |
-| Storage patterns | weareleaking `content.js` | v0.2.0 |
+| Categorized storage patterns | weareleaking `content.js` | v0.2.0 |
 | Tracking params | wearelinked `content.js` | v0.3.0 |
+| Network domains (454 trackers, 82 brokers) | wearebaked `background.js` | v0.5.1 |
+| Form field scanning (Method B) | wearesilent `content.js` | v0.1.0 |
 
-## Dashboard links
+## Dashboard
 
-The popup footer links to two companion dashboards (install separately):
+Click **Full Report** in the popup to open the unified dashboard with 8 tabs:
 
-- **Cookie Dashboard** → [wearecooked](https://github.com/hamr0/wearecooked) — full cookie analysis, worst offenders, cookie cleaner
-- **Network Dashboard** → [wearebaked](https://github.com/hamr0/wearebaked) — real-time network traffic, data broker detection, redirect chains
+- **Overview** — risk score breakdown, concerns, at-a-glance summary
+- **Cookies** — searchable/sortable cookie table, cookie cleaner (Clean Third-Party / Clean All)
+- **Network** — request categories, domain table, data broker detection, redirect chains
+- **Trackers** — companies grouped by purpose with element counts
+- **Terms** — toxicity score and flagged clauses
+- **Data** — storage categories with key lists, tracked links with highlighted params
+- **Fingerprinting** — technique cards with API calls and plain-language explanations
+- **Forms** — detected fields and tracker presence status
 
 ## MCP server
 

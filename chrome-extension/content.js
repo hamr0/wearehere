@@ -9,6 +9,7 @@
  *   Dark patterns    → weareplayed v0.1.0 (heuristics)
  *   Storage patterns → weareleaking v0.2.0 (SUSPICIOUS_PATTERNS + classifyItem)
  *   Link tracking    → wearelinked v0.3.0 (TRACKING_PARAMS)
+ *   Form scanning    → wearesilent v0.1.0 (getAriaLabel + field detection, Method B passive)
  */
 
 // inject.js runs in MAIN world via manifest — no manual injection needed.
@@ -22,6 +23,7 @@ const scanData = {
   storage: null,
   links: null,
   thirdPartyScripts: null,
+  formFields: [],
 };
 
 // --- Phase 2: Listen for inject.js postMessage ---
@@ -511,10 +513,17 @@ function scanPage() {
   }
   if (urgencyMatches.length) { detected.push({ type: 'fake_urgency', matches: [...new Set(urgencyMatches)].slice(0, 3) }); dpScore += 20; }
 
+  // Countdown timers — only flag if near urgency language (avoids video player timestamps)
   const timerMatches = [];
   for (const re of TIMERS) {
     const m = bodyText.match(re);
-    if (m) timerMatches.push(m[0]);
+    if (m) {
+      const idx = bodyText.indexOf(m[0]);
+      const context = bodyText.substring(Math.max(0, idx - 300), Math.min(bodyText.length, idx + 300)).toLowerCase();
+      const nearUrgency = URGENCY.some(u => u.test(context)) ||
+        /hurry|limited|expires?|countdown|offer|deal|sale|left|remaining/i.test(context);
+      if (nearUrgency) timerMatches.push(m[0]);
+    }
   }
   if (timerMatches.length) { detected.push({ type: 'countdown_timer', matches: timerMatches.slice(0, 3) }); dpScore += 20; }
 
@@ -638,7 +647,66 @@ function scanPage() {
   });
   scanData.tosLinks = [...new Set(tosLinks)].slice(0, 10);
 
+  // 7. Form fields (from wearesilent v0.1.0 — Method B: passive awareness)
+  scanData.formFields = scanFormFields();
+
   sendUpdate();
+}
+
+// =============================================================================
+// From wearesilent v0.1.0 — Form field scanning (Method B: passive)
+// =============================================================================
+function getAriaLabel(el) {
+  // 1. aria-labelledby
+  const labelledBy = el.getAttribute('aria-labelledby');
+  if (labelledBy) {
+    const texts = [];
+    for (const id of labelledBy.split(/\s+/)) {
+      const ref = document.getElementById(id);
+      if (ref) texts.push(ref.textContent.trim());
+    }
+    const joined = texts.join(' ').trim();
+    if (joined) return joined;
+  }
+  // 2. aria-label
+  const ariaLabel = el.getAttribute('aria-label');
+  if (ariaLabel && ariaLabel.trim()) return ariaLabel.trim();
+  // 3. <label for="id">
+  if (el.id) {
+    const label = document.querySelector('label[for="' + CSS.escape(el.id) + '"]');
+    if (label) { const t = label.textContent.trim(); if (t) return t; }
+  }
+  // 4. Wrapping <label>
+  const parent = el.closest('label');
+  if (parent) {
+    const clone = parent.cloneNode(true);
+    clone.querySelectorAll('input, textarea, select').forEach(i => i.remove());
+    const t = clone.textContent.trim();
+    if (t) return t;
+  }
+  // 5. placeholder
+  const placeholder = el.getAttribute('placeholder');
+  if (placeholder && placeholder.trim()) return placeholder.trim();
+  // 6. name or id fallback
+  const name = el.name || el.id;
+  if (name) return name.replace(/[_\-\[\].]+/g, ' ').trim();
+  return null;
+}
+
+function scanFormFields() {
+  const fields = [];
+  const seen = new Set();
+  document.querySelectorAll('input, textarea, select').forEach(el => {
+    const type = (el.type || '').toLowerCase();
+    if (type === 'hidden' || type === 'submit' || type === 'button' || type === 'reset') return;
+    // Skip invisible (except password)
+    if (type !== 'password' && el.offsetParent === null) return;
+    const label = getAriaLabel(el);
+    if (!label || seen.has(label.toLowerCase())) return;
+    seen.add(label.toLowerCase());
+    fields.push(label.substring(0, 60));
+  });
+  return fields;
 }
 
 // --- Send to background ---
@@ -656,6 +724,33 @@ function sendUpdate() {
       links: scanData.links,
       thirdPartyScripts: scanData.thirdPartyScripts,
       tosLinks: scanData.tosLinks,
+      formFields: scanData.formFields,
     },
   });
 }
+
+// --- ToS fetch fallback: background asks content script to fetch (has page cookies/context) ---
+chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (msg.type === 'fetchToS') {
+    (async () => {
+      for (const url of msg.urls) {
+        try {
+          const resp = await fetch(url, { credentials: 'include' });
+          const html = await resp.text();
+          const text = html
+            .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+            .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+            .replace(/<[^>]+>/g, ' ')
+            .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&')
+            .replace(/\s+/g, ' ').trim();
+          if (text.length > 100) {
+            sendResponse({ text, url });
+            return;
+          }
+        } catch {}
+      }
+      sendResponse(null);
+    })();
+    return true; // async response
+  }
+});

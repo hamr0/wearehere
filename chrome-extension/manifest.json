@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "wearehere",
-  "version": "1.0.2",
-  "description": "Full privacy scan for every site you visit. Cookies, trackers, fingerprinting, dark patterns, terms toxicity — one popup, complete picture.",
-  "permissions": ["activeTab", "storage", "cookies"],
+  "version": "2.0.0",
+  "description": "Full privacy scan for every site you visit. Cookies, trackers, fingerprinting, dark patterns, terms toxicity, network traffic, form leaks — one popup, complete picture.",
+  "permissions": ["activeTab", "storage", "cookies", "webRequest"],
   "host_permissions": ["<all_urls>"],
   "action": {
     "default_popup": "popup.html"
@@ -25,5 +25,9 @@
       "run_at": "document_start",
       "all_frames": false
     }
-  ]
+  ],
+  "web_accessible_resources": [{
+    "resources": ["report.html"],
+    "matches": ["<all_urls>"]
+  }]
 }

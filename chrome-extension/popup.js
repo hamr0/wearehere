@@ -1,5 +1,5 @@
 /**
- * popup.js — Renders the unified privacy scan popup.
+ * popup.js — Simplified privacy scan popup with 8 sections.
  * Queries background.js for the current tab's report and renders casual-language results.
  */
 
@@ -32,7 +32,7 @@ function render(report) {
   // Summary
   document.getElementById('summary').textContent = v.recommendation;
 
-  // Sections
+  // 8 Sections
   const sections = document.getElementById('sections');
   sections.innerHTML = '';
 
@@ -43,6 +43,17 @@ function render(report) {
   sections.appendChild(tosSection(report.tos));
   sections.appendChild(localDataSection(report.localData));
   sections.appendChild(linkTrackingSection(report.linkTracking));
+  sections.appendChild(formsSection(report.forms));
+
+  // Full Report button
+  const btn = document.createElement('div');
+  btn.id = 'full-report-btn';
+  btn.innerHTML = '<a href="#" id="open-report">Full Report &rarr;</a>';
+  sections.after(btn);
+  document.getElementById('open-report').addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: chrome.runtime.getURL('report.html') });
+  });
 }
 
 // --- Section builders ---
@@ -62,99 +73,49 @@ function makeSection(icon, label, value, valueClass, detailHTML) {
 }
 
 function cookiesSection(c) {
-  const val = c.thirdParty > 5 ? `${c.total} on you` : c.total > 0 ? `${c.total}` : '0';
+  const val = c.thirdParty > 5 ? `${c.total}` : c.total > 0 ? `${c.total}` : '0';
   const cls = c.thirdParty > 5 ? 'val-bad' : c.thirdParty > 0 ? 'val-warn' : 'val-clean';
 
   let detail = '';
   if (c.thirdParty > 0) {
     detail = `${c.firstParty} from this site · ${c.thirdParty} from outside`;
-    if (c.thirdPartyDomains.length) {
-      detail += '<br>' + c.thirdPartyDomains.slice(0, 5).map(d => `<span class="domain-tag">${escHtml(d)}</span>`).join(' ');
-    }
   } else {
-    detail = `All ${c.firstParty} from this site only`;
+    detail = `All from this site`;
   }
   if (c.longestDays > 0) {
-    detail += ` · longest lasts ${c.longestDays > 365 ? Math.round(c.longestDays / 365) + ' year(s)' : c.longestDays + ' days'}`;
+    detail += ` · last ${c.longestDays > 365 ? Math.round(c.longestDays / 365) + ' year(s)' : c.longestDays + ' days'}`;
   }
   return makeSection('🍪', 'Cookies', val, cls, detail);
 }
 
 function trackersSection(t) {
-  const total = t.total;
-  const val = total > 0 ? `${total} hidden` : 'None';
-  const cls = total > 10 ? 'val-bad' : total > 0 ? 'val-warn' : 'val-clean';
+  const companies = t.companies || [];
+  const names = [...new Set(companies.map(c => c.name))];
+  const val = names.length > 0 ? `${names.length}` : 'None';
+  const cls = t.total > 10 ? 'val-bad' : t.total > 0 ? 'val-warn' : 'val-clean';
 
   let detail = '';
-  if (total > 0) {
-    const parts = [];
-    if (t.beacons) parts.push(`${t.beacons} silent ping${t.beacons > 1 ? 's' : ''}`);
-    if (t.pixels) parts.push(`${t.pixels} tracking pixel${t.pixels > 1 ? 's' : ''}`);
-    if (t.hiddenIframes) parts.push(`${t.hiddenIframes} invisible frame${t.hiddenIframes > 1 ? 's' : ''}`);
-    detail = parts.join(' · ');
-
-    // Show company names grouped by purpose
-    if (t.companies && t.companies.length > 0) {
-      const byPurpose = {};
-      for (const c of t.companies) {
-        const p = c.purpose || 'Other';
-        if (!byPurpose[p]) byPurpose[p] = [];
-        byPurpose[p].push(c.name);
-      }
-      const purposeOrder = ['Advertising', 'Analytics', 'Data broker', 'Marketing', 'Error tracking'];
-      detail += '<div class="company-list">';
-      for (const purpose of purposeOrder) {
-        if (!byPurpose[purpose]) continue;
-        detail += `<div class="purpose-row"><span class="purpose-label">${purpose}</span> `;
-        detail += byPurpose[purpose].slice(0, 4).map(n => `<span class="company-tag">${escHtml(n)}</span>`).join(' ');
-        if (byPurpose[purpose].length > 4) detail += ` <span class="company-more">+${byPurpose[purpose].length - 4}</span>`;
-        detail += '</div>';
-        delete byPurpose[purpose];
-      }
-      // Any remaining purposes
-      for (const [purpose, names] of Object.entries(byPurpose)) {
-        detail += `<div class="purpose-row"><span class="purpose-label">${purpose}</span> `;
-        detail += names.slice(0, 4).map(n => `<span class="company-tag">${escHtml(n)}</span>`).join(' ');
-        detail += '</div>';
-      }
-      detail += '</div>';
-    }
+  if (names.length > 0) {
+    detail = names.slice(0, 4).map(n => escHtml(n)).join(' · ');
+    if (names.length > 4) detail += ` +${names.length - 4} more`;
   } else {
     detail = 'No hidden trackers found';
   }
-
-  // 3P scripts — show company names
   if (t.thirdPartyScripts > 0) {
-    let scriptInfo = `${t.thirdPartyScripts} outside script${t.thirdPartyScripts > 1 ? 's' : ''} loaded`;
-    if (t.scriptCompanies && t.scriptCompanies.length > 0) {
-      const names = t.scriptCompanies.slice(0, 5).map(c => c.name);
-      scriptInfo += ': ' + names.map(n => `<span class="company-tag">${escHtml(n)}</span>`).join(' ');
-      if (t.scriptCompanies.length > 5) scriptInfo += ` <span class="company-more">+${t.scriptCompanies.length - 5}</span>`;
-    }
-    detail += `<br><span class="highlight">${scriptInfo}</span>`;
+    detail += `<br><span class="highlight">${t.thirdPartyScripts} outside scripts loaded</span>`;
   }
 
   return makeSection('👁', 'Trackers', val, cls, detail);
 }
 
 function fingerprintingSection(fp) {
-  const val = fp.techniques > 0 ? `${fp.techniques} method${fp.techniques > 1 ? 's' : ''}` : 'None';
+  const val = fp.techniques > 0 ? 'Active' : 'None';
   const cls = fp.techniques >= 3 ? 'val-bad' : fp.techniques > 0 ? 'val-warn' : 'val-clean';
 
   let detail = '';
   if (fp.techniques > 0) {
-    detail = 'Reading your device specs to ID you';
-    const maxCalls = Math.max(...fp.methods.map(m => m.calls), 1);
-    detail += '<div style="margin-top:4px">';
-    for (const m of fp.methods) {
-      const pct = Math.max(Math.round((m.calls / maxCalls) * 100), 8);
-      detail += `<div class="fp-row">
-        <span class="fp-name">${escHtml(m.technique)}</span>
-        <div class="fp-bar"><div class="fp-bar-fill" style="width:${pct}%"></div></div>
-        <span class="fp-count">${m.calls} call${m.calls > 1 ? 's' : ''}</span>
-      </div>`;
-    }
-    detail += '</div>';
+    const names = fp.methods.map(m => m.technique);
+    detail = `Reading your ${names.join(', ')} to build a device ID`;
   } else {
     detail = 'Not fingerprinting your device ✓';
   }
@@ -184,11 +145,10 @@ function pressureSection(p) {
 
 function tosSection(tos) {
   if (!tos || tos.loading) {
-    return makeSection('📋', 'Terms', '...', 'val-neutral', '<span class="tos-loading">Looking for their privacy policy...</span>');
+    return makeSection('📋', 'Terms', '...', 'val-neutral', '<span class="tos-loading">Scanning their privacy policy...</span>');
   }
-
   if (!tos.found) {
-    return makeSection('📋', 'Terms', '???', 'val-neutral', "Couldn't find their terms page. Look for a link at the bottom.");
+    return makeSection('📋', 'Terms', '???', 'val-neutral', "Couldn't find their terms page");
   }
 
   const val = `${tos.score}/100`;
@@ -205,56 +165,59 @@ function tosSection(tos) {
 }
 
 function localDataSection(ld) {
-  const val = ld.suspicious > 0 ? `${ld.suspicious} suspicious` : ld.totalKeys > 0 ? `${ld.totalKeys} items` : 'None';
+  const val = ld.suspicious > 0 ? `${ld.suspicious}` : ld.totalKeys > 0 ? `${ld.totalKeys}` : 'None';
   const cls = ld.suspicious > 5 ? 'val-bad' : ld.suspicious > 0 ? 'val-warn' : 'val-clean';
 
   let detail = '';
   if (ld.suspicious > 0) {
-    detail = `${ld.totalKeys} items stored, ${ld.suspicious} flagged`;
-
-    // Show categories from weareleaking
     const cats = ld.byCategory || {};
-    const catOrder = ['Cross-site tracking', 'Advertising', 'Fingerprinting', 'PII exposure', 'Tracking'];
-    const catParts = [];
-    for (const cat of catOrder) {
-      if (cats[cat] && cats[cat].length > 0) {
-        catParts.push(`<span class="storage-cat">${escHtml(cat)} (${cats[cat].length})</span>`);
-      }
-    }
-    if (catParts.length) {
-      detail += '<br>' + catParts.join(' · ');
-    }
-
-    // Show flagged key names
-    if (ld.flaggedKeys && ld.flaggedKeys.length) {
-      detail += '<br>' + ld.flaggedKeys.slice(0, 4).map(f => `<span class="domain-tag">${escHtml(f.key)}</span>`).join(' ');
-      if (ld.flaggedKeys.length > 4) detail += ` <span class="company-more">+${ld.flaggedKeys.length - 4}</span>`;
+    const catNames = Object.keys(cats).filter(c => cats[c]?.length > 0);
+    if (catNames.length) {
+      detail = catNames.map(c => escHtml(c)).join(' · ');
+    } else {
+      detail = `${ld.suspicious} tracking IDs found`;
     }
   } else if (ld.totalKeys > 0) {
-    detail = `${ld.totalKeys} items stored, nothing suspicious ✓`;
+    detail = `${ld.totalKeys} items, nothing suspicious ✓`;
   } else {
-    detail = 'Nothing stored on your device ✓';
+    detail = 'Nothing stored ✓';
   }
 
   return makeSection('💾', 'Stored on you', val, cls, detail);
 }
 
 function linkTrackingSection(lt) {
-  const pct = lt.percentage;
-  const val = pct > 0 ? `${pct}%` : 'None';
-  const cls = pct > 50 ? 'val-bad' : pct > 0 ? 'val-warn' : 'val-clean';
+  const val = lt.percentage > 0 ? `${lt.percentage}%` : 'None';
+  const cls = lt.percentage > 50 ? 'val-bad' : lt.percentage > 0 ? 'val-warn' : 'val-clean';
 
   let detail = '';
   if (lt.tracked > 0) {
-    detail = `${lt.tracked} of ${lt.total} links have tags so they know what you click`;
-    if (lt.redirectWrappers > 0) {
-      detail += ` · ${lt.redirectWrappers} redirect wrapper${lt.redirectWrappers > 1 ? 's' : ''}`;
-    }
+    detail = `${lt.tracked} of ${lt.total} links tag your clicks`;
+    if (lt.redirectWrappers > 0) detail += ` · ${lt.redirectWrappers} redirect wrapper${lt.redirectWrappers > 1 ? 's' : ''}`;
   } else {
-    detail = lt.total > 0 ? 'Links are clean — no tracking tags ✓' : 'No links found on page';
+    detail = lt.total > 0 ? 'Links are clean ✓' : 'No links found';
   }
 
   return makeSection('🔗', 'Links', val, cls, detail);
+}
+
+function formsSection(f) {
+  if (!f || f.fieldCount === 0) {
+    return makeSection('📝', 'Forms', 'None', 'val-clean', 'No form fields on this page');
+  }
+
+  const watching = f.trackersWhileTyping || 0;
+  const val = watching > 0 ? `${watching} watching` : 'Clean';
+  const cls = watching > 3 ? 'val-bad' : watching > 0 ? 'val-warn' : 'val-clean';
+
+  let detail = `${f.fieldCount} field${f.fieldCount > 1 ? 's' : ''} on this page`;
+  if (watching > 0 && f.trackerNames.length > 0) {
+    detail += `. ${f.trackerNames.map(n => escHtml(n)).join(', ')} active while you type`;
+  } else if (watching === 0) {
+    detail += ' · no trackers watching ✓';
+  }
+
+  return makeSection('📝', 'Forms', val, cls, detail);
 }
 
 function escHtml(str) {
