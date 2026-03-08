@@ -170,18 +170,38 @@ body {
 /* ToS loading */
 .tos-loading { color: #555; font-style: italic; }
 
-/* Footer */
-#footer {
-  display: flex;
-  justify-content: center;
-  gap: 16px;
-  padding: 12px 16px;
+/* Company tags (from wearecooked display style) */
+.company-list { margin-top: 6px; }
+.purpose-row {
+  margin-top: 3px;
+  font-size: 11px;
+  line-height: 1.8;
 }
-#footer a {
-  color: #6c5ce7;
-  text-decoration: none;
-  font-size: 12px;
+.purpose-label {
+  color: #8b8fa3;
   font-weight: 600;
-  padding: 4px 0;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  margin-right: 4px;
 }
-#footer a:hover { text-decoration: underline; }
+.company-tag {
+  display: inline-block;
+  background: #1e2130;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin: 1px 2px;
+  font-size: 10.5px;
+  color: #c0c4d8;
+}
+.company-more {
+  color: #6b6f83;
+  font-size: 10px;
+}
+
+/* Storage categories (from weareleaking display style) */
+.storage-cat {
+  color: #e67e22;
+  font-size: 11px;
+  font-weight: 500;
+}

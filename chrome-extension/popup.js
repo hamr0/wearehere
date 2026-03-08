@@ -69,7 +69,7 @@ function cookiesSection(c) {
   if (c.thirdParty > 0) {
     detail = `${c.firstParty} from this site · ${c.thirdParty} from outside`;
     if (c.thirdPartyDomains.length) {
-      detail += '<br>' + c.thirdPartyDomains.slice(0, 5).map(d => `<span class="domain-tag">${d}</span>`).join(' ');
+      detail += '<br>' + c.thirdPartyDomains.slice(0, 5).map(d => `<span class="domain-tag">${escHtml(d)}</span>`).join(' ');
     }
   } else {
     detail = `All ${c.firstParty} from this site only`;
@@ -92,14 +92,46 @@ function trackersSection(t) {
     if (t.pixels) parts.push(`${t.pixels} tracking pixel${t.pixels > 1 ? 's' : ''}`);
     if (t.hiddenIframes) parts.push(`${t.hiddenIframes} invisible frame${t.hiddenIframes > 1 ? 's' : ''}`);
     detail = parts.join(' · ');
-    if (t.domains.length) {
-      detail += '<br>Sending to: ' + t.domains.slice(0, 4).map(d => `<span class="domain-tag">${d}</span>`).join(' ');
+
+    // Show company names grouped by purpose
+    if (t.companies && t.companies.length > 0) {
+      const byPurpose = {};
+      for (const c of t.companies) {
+        const p = c.purpose || 'Other';
+        if (!byPurpose[p]) byPurpose[p] = [];
+        byPurpose[p].push(c.name);
+      }
+      const purposeOrder = ['Advertising', 'Analytics', 'Data broker', 'Marketing', 'Error tracking'];
+      detail += '<div class="company-list">';
+      for (const purpose of purposeOrder) {
+        if (!byPurpose[purpose]) continue;
+        detail += `<div class="purpose-row"><span class="purpose-label">${purpose}</span> `;
+        detail += byPurpose[purpose].slice(0, 4).map(n => `<span class="company-tag">${escHtml(n)}</span>`).join(' ');
+        if (byPurpose[purpose].length > 4) detail += ` <span class="company-more">+${byPurpose[purpose].length - 4}</span>`;
+        detail += '</div>';
+        delete byPurpose[purpose];
+      }
+      // Any remaining purposes
+      for (const [purpose, names] of Object.entries(byPurpose)) {
+        detail += `<div class="purpose-row"><span class="purpose-label">${purpose}</span> `;
+        detail += names.slice(0, 4).map(n => `<span class="company-tag">${escHtml(n)}</span>`).join(' ');
+        detail += '</div>';
+      }
+      detail += '</div>';
     }
   } else {
     detail = 'No hidden trackers found';
   }
+
+  // 3P scripts — show company names
   if (t.thirdPartyScripts > 0) {
-    detail += `<br><span class="highlight">${t.thirdPartyScripts} outside script${t.thirdPartyScripts > 1 ? 's' : ''} loaded</span>`;
+    let scriptInfo = `${t.thirdPartyScripts} outside script${t.thirdPartyScripts > 1 ? 's' : ''} loaded`;
+    if (t.scriptCompanies && t.scriptCompanies.length > 0) {
+      const names = t.scriptCompanies.slice(0, 5).map(c => c.name);
+      scriptInfo += ': ' + names.map(n => `<span class="company-tag">${escHtml(n)}</span>`).join(' ');
+      if (t.scriptCompanies.length > 5) scriptInfo += ` <span class="company-more">+${t.scriptCompanies.length - 5}</span>`;
+    }
+    detail += `<br><span class="highlight">${scriptInfo}</span>`;
   }
 
   return makeSection('👁', 'Trackers', val, cls, detail);
@@ -117,7 +149,7 @@ function fingerprintingSection(fp) {
     for (const m of fp.methods) {
       const pct = Math.max(Math.round((m.calls / maxCalls) * 100), 8);
       detail += `<div class="fp-row">
-        <span class="fp-name">${m.technique}</span>
+        <span class="fp-name">${escHtml(m.technique)}</span>
         <div class="fp-bar"><div class="fp-bar-fill" style="width:${pct}%"></div></div>
         <span class="fp-count">${m.calls} call${m.calls > 1 ? 's' : ''}</span>
       </div>`;
@@ -137,7 +169,7 @@ function pressureSection(p) {
   let detail = '';
   if (p.tactics.length > 0) {
     detail = p.tactics.map(t => {
-      let html = t.tactic;
+      let html = escHtml(t.tactic);
       if (t.evidence.length) {
         html += `<span class="evidence">"${escHtml(t.evidence[0])}"</span>`;
       }
@@ -164,7 +196,7 @@ function tosSection(tos) {
 
   let detail = '';
   if (tos.flagged.length > 0) {
-    detail = tos.flagged.map(f => f.label).join(' · ');
+    detail = tos.flagged.map(f => escHtml(f.label)).join(' · ');
   } else {
     detail = 'Terms look reasonable ✓';
   }
@@ -178,9 +210,25 @@ function localDataSection(ld) {
 
   let detail = '';
   if (ld.suspicious > 0) {
-    detail = `${ld.totalKeys} items stored, ${ld.suspicious} look like tracking IDs`;
-    if (ld.flagged.length) {
-      detail += '<br>' + ld.flagged.slice(0, 3).map(f => `<span class="domain-tag">${f.key}</span>`).join(' ');
+    detail = `${ld.totalKeys} items stored, ${ld.suspicious} flagged`;
+
+    // Show categories from weareleaking
+    const cats = ld.byCategory || {};
+    const catOrder = ['Cross-site tracking', 'Advertising', 'Fingerprinting', 'PII exposure', 'Tracking'];
+    const catParts = [];
+    for (const cat of catOrder) {
+      if (cats[cat] && cats[cat].length > 0) {
+        catParts.push(`<span class="storage-cat">${escHtml(cat)} (${cats[cat].length})</span>`);
+      }
+    }
+    if (catParts.length) {
+      detail += '<br>' + catParts.join(' · ');
+    }
+
+    // Show flagged key names
+    if (ld.flaggedKeys && ld.flaggedKeys.length) {
+      detail += '<br>' + ld.flaggedKeys.slice(0, 4).map(f => `<span class="domain-tag">${escHtml(f.key)}</span>`).join(' ');
+      if (ld.flaggedKeys.length > 4) detail += ` <span class="company-more">+${ld.flaggedKeys.length - 4}</span>`;
     }
   } else if (ld.totalKeys > 0) {
     detail = `${ld.totalKeys} items stored, nothing suspicious ✓`;
@@ -210,5 +258,5 @@ function linkTrackingSection(lt) {
 }
 
 function escHtml(str) {
-  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }

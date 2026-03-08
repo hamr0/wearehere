@@ -51,6 +51,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
   }
 
+  // Content script can also send tosLinks separately after DOM scan
+  if (msg.type === 'tosLinks' && sender.tab) {
+    const tabId = sender.tab.id;
+    if (tabData[tabId] && !tabData[tabId].tos && !tabData[tabId].tosFetching) {
+      fetchToS(tabId, msg.url, tabData[tabId].domain, msg.links);
+    }
+  }
+
   if (msg.type === 'getReport') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return sendResponse(null);
@@ -119,25 +127,29 @@ async function tryFetchAndScan(url) {
   try {
     const resp = await fetch(url, {
       redirect: 'follow',
-      signal: AbortSignal.timeout(5000),
+      credentials: 'include',
+      signal: AbortSignal.timeout(8000),
+      headers: {
+        'Accept': 'text/html,application/xhtml+xml',
+        'User-Agent': navigator.userAgent,
+      },
     });
     if (!resp.ok) return null;
     const ct = resp.headers.get('content-type') || '';
-    if (!ct.includes('text/html')) return null;
+    if (!ct.includes('text/html') && !ct.includes('text/plain')) return null;
 
     let html = await resp.text();
 
     // Follow meta refresh redirects (Google pattern, from wearetosed)
     const metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
     if (metaRedirect && htmlToText(html).length < 500) {
-      const r2 = await fetch(metaRedirect[1], { redirect: 'follow', signal: AbortSignal.timeout(5000) });
+      const r2 = await fetch(metaRedirect[1], { redirect: 'follow', credentials: 'include', signal: AbortSignal.timeout(8000) });
       if (r2.ok) html = await r2.text();
     }
 
     const text = htmlToText(html);
-    if (text.length < 200) return null;
+    if (text.length < 100) return null;
 
-    // Use wearetosed's actual scanText function
     return scanText(text);
   } catch {
     return null;
@@ -277,26 +289,29 @@ function buildReport(data) {
 
   // Beacons
   const beacons = scan.beacons || [];
-  const beaconDomains = [];
+
+  // Trackers — now with company names from wearecooked
+  const trackers = scan.trackers || {};
+  const trackerTotal = (trackers.pixels || 0) + beacons.length + (trackers.hiddenIframes || 0);
+  const trackerCompanies = trackers.companies || [];
+
+  // Merge beacon domains into company list
   for (const b of beacons) {
-    try { beaconDomains.push(new URL(b.url).hostname); } catch {}
+    try {
+      const domain = new URL(b.url).hostname;
+      // Check if already in companies
+      const existing = trackerCompanies.find(c => domain.includes(c.name?.toLowerCase?.()));
+      if (!existing) {
+        trackerCompanies.push({ name: domain, purpose: 'Analytics', count: 1 });
+      }
+    } catch {}
   }
 
-  // Trackers
-  const trackers = scan.trackers || {};
-  const allTrackerDomains = [
-    ...(trackers.pixelDomains || []),
-    ...(trackers.iframeDomains || []),
-    ...beaconDomains,
-    ...(scan.thirdPartyScripts?.domains || []),
-  ];
-  const uniqueTrackerDomains = [...new Set(allTrackerDomains)].slice(0, 20);
-  const trackerTotal = (trackers.pixels || 0) + beacons.length + (trackers.hiddenIframes || 0);
+  // 3P script companies
+  const scriptCompanies = scan.thirdPartyScripts?.companies || [];
 
-  // Storage
-  const ls = scan.storage?.localStorage || { total: 0, flagged: [] };
-  const ss = scan.storage?.sessionStorage || { total: 0, flagged: [] };
-  const allFlagged = [...ls.flagged, ...ss.flagged].slice(0, 10);
+  // Storage — now with categories from weareleaking
+  const storage = scan.storage || { totalKeys: 0, flaggedCount: 0, byCategory: {}, flaggedKeys: [] };
 
   // Links
   const links = scan.links || { total: 0, withTracking: 0, redirectWrappers: 0, details: [] };
@@ -320,7 +335,8 @@ function buildReport(data) {
       beacons: beacons.length,
       hiddenIframes: trackers.hiddenIframes || 0,
       thirdPartyScripts: scan.thirdPartyScripts?.total || 0,
-      domains: uniqueTrackerDomains,
+      companies: trackerCompanies,
+      scriptCompanies,
       total: trackerTotal,
     },
     fingerprinting: {
@@ -343,9 +359,10 @@ function buildReport(data) {
     },
     tos: tos ? (tos.found ? { score: tos.score, flagged: tos.flagged } : { found: false }) : { loading: true },
     localData: {
-      totalKeys: ls.total + ss.total,
-      suspicious: allFlagged.length,
-      flagged: allFlagged,
+      totalKeys: storage.totalKeys || 0,
+      suspicious: storage.flaggedCount || 0,
+      byCategory: storage.byCategory || {},
+      flaggedKeys: storage.flaggedKeys || [],
     },
     linkTracking: {
       total: links.total,
