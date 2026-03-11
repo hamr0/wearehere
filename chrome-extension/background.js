@@ -1,58 +1,60 @@
 /**
- * background.js — Service worker.
- * Aggregates scan results per tab, fetches ToS, reads cookies, monitors network, computes verdict.
- *
- * Module sources:
- *   ToS scanning    → wearetosed v0.1.0 (tos-scanner.js)
- *   Fingerprinting  → wearewatched v0.1.0 (inject.js prototype wrappers)
- *   Dark patterns   → weareplayed v0.1.0 (content.js heuristics)
- *   Trackers        → wearecooked v4.0.0 (content.js domain map + pixel detection)
- *   Storage         → weareleaking v0.2.0 (content.js suspicious key patterns)
- *   Links           → wearelinked v0.3.0 (content.js tracking param list)
- *   Network         → wearebaked v0.5.1 (webRequest monitoring + data broker detection)
- *   Form scanning   → wearesilent v0.1.0 (content.js passive form field awareness)
+ * background.js — v3.0.0 aggregator service worker.
+ * Routes per-module detection messages into unified per-tab state.
+ * Handles: network monitoring, cookie analysis, ToS cache/fetch, verdict, badge.
  */
 
-// Import modules
 importScripts('tos-scanner.js');
 importScripts('network-domains.js');
 
-// --- Per-tab state + caches ---
+// --- Per-tab state ---
 const tabData = {};
 const domainTosCache = {};
+let dashboardTabId = null;
 
 // --- Network traffic state (from wearebaked v0.5.1) ---
 const networkTraffic = {
-  domains: {},       // domain → { count, category, risky, brokerName, thirdPartyOn, bytesReceived, bytesSent }
-  timing: {},        // requestId → startTs
-  redirects: {},     // requestId → [url chain]
-  finalRedirects: {}, // domain → [completed chains]
+  domains: {},
+  timing: {},
+  redirects: {},
+  finalRedirects: {},
 };
 const MAX_FINAL_REDIRECTS = 100;
 
-// --- ToS: page link patterns (from wearetosed content.js) ---
-const TOS_PATHS = [
-  '/privacy', '/privacy-policy', '/privacypolicy', '/privacy.html',
-  '/terms', '/terms-of-service', '/termsofservice', '/tos', '/terms.html',
-  '/legal', '/legal/privacy', '/legal/terms',
-  '/cookie-policy', '/cookies',
-  '/policies/privacy', '/policies/privacy-policy', '/policies/terms',
-  '/about/privacy', '/about/terms',
-  '/help/privacy', '/site/privacy',
-];
+// =============================================================================
+// Per-tab data structure
+// =============================================================================
+function ensureTab(tabId) {
+  if (!tabData[tabId]) {
+    tabData[tabId] = {
+      url: '',
+      domain: '',
+      modules: {
+        watched: null,
+        cooked: null,
+        played: null,
+        leaked: null,
+        linked: null,
+        tosed: null,
+        silent: null,
+      },
+      networkData: null,
+      cookies: null,
+    };
+  }
+  return tabData[tabId];
+}
 
 // =============================================================================
 // Network monitoring (from wearebaked v0.5.1)
 // =============================================================================
-
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
 
-    // Tab navigation: reset network data for tab
     if (details.type === 'main_frame') {
-      if (!tabData[details.tabId]) tabData[details.tabId] = {};
-      tabData[details.tabId].networkData = {
+      const tab = ensureTab(details.tabId);
+      tab.networkData = {
         requestCount: 0,
         thirdPartyDomains: {},
         categories: {},
@@ -62,13 +64,9 @@ chrome.webRequest.onBeforeRequest.addListener(
       };
     }
 
-    // Record timing
     networkTraffic.timing[details.requestId] = Date.now();
-
-    // Init redirect chain
     networkTraffic.redirects[details.requestId] = [details.url];
 
-    // Track request body size
     if (details.requestBody) {
       const domain = extractDomain(details.url);
       if (domain && networkTraffic.domains[domain]) {
@@ -79,7 +77,6 @@ chrome.webRequest.onBeforeRequest.addListener(
           }
         }
         networkTraffic.domains[domain].bytesSent += size;
-        // Also track per-tab
         const tabNet = tabData[details.tabId]?.networkData;
         if (tabNet) tabNet.bytesSent += size;
       }
@@ -109,14 +106,12 @@ chrome.webRequest.onCompleted.addListener(
     const tabDomain = tabData[details.tabId]?.domain || '';
     const thirdParty = isThirdParty(domain, tabDomain);
 
-    // Response time
     let responseTime = 0;
     if (networkTraffic.timing[details.requestId]) {
       responseTime = Date.now() - networkTraffic.timing[details.requestId];
       delete networkTraffic.timing[details.requestId];
     }
 
-    // Finalize redirect chains
     const chain = networkTraffic.redirects[details.requestId];
     if (chain && chain.length > 1) {
       const lastInChain = chain[chain.length - 1];
@@ -129,15 +124,12 @@ chrome.webRequest.onCompleted.addListener(
     }
     delete networkTraffic.redirects[details.requestId];
 
-    // Classify domain
     const classification = classifyNetworkDomain(domain, details);
 
-    // Bytes received
     let bytesReceived = 0;
     const cl = getHeader(details.responseHeaders, 'content-length');
     if (cl) bytesReceived = parseInt(cl, 10) || 0;
 
-    // Update global domain stats
     if (!networkTraffic.domains[domain]) {
       networkTraffic.domains[domain] = {
         count: 0, classification, thirdPartyOn: {},
@@ -149,7 +141,6 @@ chrome.webRequest.onCompleted.addListener(
     if (thirdParty && tabDomain) d.thirdPartyOn[tabDomain] = true;
     d.bytesReceived += bytesReceived;
 
-    // Update per-tab network data
     const tabNet = tabData[details.tabId]?.networkData;
     if (tabNet) {
       tabNet.requestCount++;
@@ -164,9 +155,7 @@ chrome.webRequest.onCompleted.addListener(
           brokerDesc: classification.brokerDesc,
           bytesReceived: (tabNet.thirdPartyDomains[domain]?.bytesReceived || 0) + bytesReceived,
         };
-        // Track categories
         tabNet.categories[classification.category] = (tabNet.categories[classification.category] || 0) + 1;
-        // Track brokers
         if (classification.brokerName) {
           tabNet.brokers[classification.brokerName] = {
             domain,
@@ -195,28 +184,115 @@ chrome.webRequest.onErrorOccurred.addListener(
 // Message handler
 // =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === 'scanResult' && sender.tab) {
-    const tabId = sender.tab.id;
-    if (!tabData[tabId]) tabData[tabId] = {};
-    tabData[tabId].domain = msg.domain;
-    tabData[tabId].url = msg.url;
-    tabData[tabId].scan = msg.data;
-    tabData[tabId].scanTime = Date.now();
-    updateBadge(tabId);
 
-    // Kick off cookie + ToS fetch if not done yet
-    if (!tabData[tabId].cookies) fetchCookies(tabId, msg.url, msg.domain);
-    if (!tabData[tabId].tos && !tabData[tabId].tosFetching) {
-      if (domainTosCache[msg.domain]) {
-        tabData[tabId].tos = domainTosCache[msg.domain];
-        updateBadge(tabId);
-      } else {
-        const tosLinks = msg.data?.tosLinks || [];
-        fetchToS(tabId, msg.url, msg.domain, tosLinks);
+  // --- Per-module detection messages from content scripts ---
+  if (msg.type === 'detection' && sender.tab) {
+    const tabId = sender.tab.id;
+    const tab = ensureTab(tabId);
+    const mod = msg.module;
+    const data = msg.data;
+
+    // Set domain/url from detection or sender tab
+    if (data.domain) tab.domain = data.domain;
+    if (data.url) tab.url = data.url;
+    if (!tab.url && sender.tab.url) tab.url = sender.tab.url;
+    if (!tab.domain && sender.tab.url) {
+      try { tab.domain = new URL(sender.tab.url).hostname; } catch {}
+    }
+
+    // Route to per-module storage
+    if (mod === 'watched') {
+      tab.modules.watched = data;
+    } else if (mod === 'cooked') {
+      tab.modules.cooked = data;
+    } else if (mod === 'played') {
+      tab.modules.played = data;
+    } else if (mod === 'leaked') {
+      tab.modules.leaked = data;
+    } else if (mod === 'linked') {
+      tab.modules.linked = data;
+    } else if (mod === 'tosed') {
+      handleTosedDetection(tabId, tab, data);
+    } else if (mod === 'silent') {
+      // Merge/deduplicate fields from iframes
+      if (!tab.modules.silent) {
+        tab.modules.silent = { fields: [] };
+      }
+      const existing = tab.modules.silent.fields;
+      const seen = {};
+      for (let i = 0; i < existing.length; i++) seen[existing[i]] = true;
+      const newFields = data.fields || [];
+      for (let i = 0; i < newFields.length; i++) {
+        if (!seen[newFields[i]]) {
+          existing.push(newFields[i]);
+          seen[newFields[i]] = true;
+        }
       }
     }
+
+    // Kick off cookie fetch if not done
+    if (!tab.cookies && tab.url) {
+      fetchCookies(tabId, tab.url, tab.domain);
+    }
+
+    updateBadge(tabId);
+    return;
   }
 
+  // --- ToS: checkCache from detect-tosed.js ---
+  if (msg.type === 'checkCache' && sender.tab) {
+    const domain = msg.domain;
+    const cached = domainTosCache[domain] || null;
+    if (cached && cached.privacy && cached.terms) {
+      // Full cache — set tab data
+      const tabId = sender.tab.id;
+      const tab = ensureTab(tabId);
+      tab.modules.tosed = buildTosModuleData(domain, cached.privacy, cached.terms);
+      updateBadge(tabId);
+    }
+    sendResponse(cached);
+    return true;
+  }
+
+  // --- ToS: bgFetch from detect-tosed.js ---
+  if (msg.type === 'bgFetch') {
+    const url = msg.url;
+    fetch(url, { redirect: 'follow' })
+      .then(resp => {
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        return resp.text();
+      })
+      .then(html => {
+        const metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
+        if (metaRedirect && html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length < 500) {
+          return fetch(metaRedirect[1], { redirect: 'follow' })
+            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
+        }
+        return html;
+      })
+      .then(html => {
+        const text = html
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/&nbsp;/gi, ' ')
+          .replace(/&amp;/gi, '&')
+          .replace(/&lt;/gi, '<')
+          .replace(/&gt;/gi, '>')
+          .replace(/&quot;/gi, '"')
+          .replace(/&#39;/gi, "'")
+          .replace(/\s+/g, ' ')
+          .trim();
+        if (text.length < 200) throw new Error('Too short');
+        sendResponse(scanText(text));
+      })
+      .catch(() => {
+        sendResponse(null);
+      });
+    return true;
+  }
+
+  // --- Popup: getReport ---
   if (msg.type === 'getReport') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return sendResponse(null);
@@ -227,23 +303,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 
+  // --- Dashboard: getFullReport ---
   if (msg.type === 'getFullReport') {
-    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-      if (!tabs[0]) return sendResponse(null);
-      const tabId = tabs[0].id;
+    const targetTabId = msg.tabId || null;
+
+    const resolve = async (tabId) => {
       const data = tabData[tabId];
       if (!data) return sendResponse(null);
 
       const report = buildReport(data);
 
-      // Add raw cookies for dashboard cookie table
+      // Cookies: global scan (all cookies, not filtered to this tab)
       try {
-        report.rawCookies = await chrome.cookies.getAll({ url: data.url });
+        report.rawCookies = await chrome.cookies.getAll({});
       } catch { report.rawCookies = []; }
 
-      // Add network data for dashboard
       const tabNet = data.networkData || {};
-      // Collect redirect chains relevant to this tab's domain
       const redirectChains = [];
       for (const [origin, chains] of Object.entries(networkTraffic.finalRedirects)) {
         for (const chain of chains) {
@@ -260,11 +335,104 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         redirectChains: redirectChains.slice(-30),
       };
 
+      // Build networkDashboard (wearebaked-style data for Network tab)
+      try {
+        const globalDomains = {};
+        for (const [domain, info] of Object.entries(networkTraffic.domains)) {
+          globalDomains[domain] = {
+            count: info.count,
+            classification: info.classification || { category: 'unknown', risky: false },
+            thirdPartyOn: Object.keys(info.thirdPartyOn || {}),
+            bytesReceived: info.bytesReceived || 0,
+            bytesSent: info.bytesSent || 0,
+            types: info.types || {},
+            beaconScore: info.beaconScore || 0,
+            beaconInterval: info.beaconInterval || 0,
+            beaconConfidence: info.beaconConfidence || 0,
+            isNew: info.isNew || false,
+            firstSeen: info.firstSeen || 0,
+          };
+        }
+
+        let globalTotalRequests = 0;
+        let globalThirdParty = 0;
+        for (const d of Object.values(networkTraffic.domains)) {
+          globalTotalRequests += d.count;
+          if (Object.keys(d.thirdPartyOn || {}).length > 0) globalThirdParty += d.count;
+        }
+
+        report.networkDashboard = {
+          totals: { count: globalTotalRequests, thirdParty: globalThirdParty },
+          domains: globalDomains,
+          tabs: buildTabsData(),
+          websockets: {},
+          requests: [],
+          redirectChains: redirectChains.slice(-30),
+        };
+      } catch (e) {
+        console.error('Error building networkDashboard:', e);
+        report.networkDashboard = { totals: { count: 0, thirdParty: 0 }, domains: {}, tabs: {}, websockets: {}, requests: [], redirectChains: [] };
+      }
+
       sendResponse(report);
-    });
+    };
+
+    if (targetTabId) {
+      resolve(targetTabId);
+    } else {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        if (!tabs[0]) return sendResponse(null);
+        resolve(tabs[0].id);
+      });
+    }
     return true;
   }
 
+  // --- Dashboard: getOpenTabs (for tab dropdown) ---
+  if (msg.type === 'getOpenTabs') {
+    const tabs = [];
+    for (const [id, data] of Object.entries(tabData)) {
+      if (data.domain) {
+        tabs.push({ id: parseInt(id), domain: data.domain, url: data.url });
+      }
+    }
+    sendResponse(tabs);
+    return true;
+  }
+
+  // --- Dashboard: register tab ---
+  if (msg.type === 'registerDashboard') {
+    // Extension pages don't have sender.tab — use sender's tab via msg or URL match
+    if (sender.tab) {
+      dashboardTabId = sender.tab.id;
+    } else if (sender.url && sender.url.includes('report.html')) {
+      // Find the tab by matching the sender's URL
+      chrome.tabs.query({}, (tabs) => {
+        const match = tabs.find(t => t.url && t.url.startsWith(chrome.runtime.getURL('report.html')));
+        if (match) dashboardTabId = match.id;
+      });
+    }
+    return false;
+  }
+
+  // --- Dashboard: open or reuse single tab ---
+  if (msg.type === 'openDashboard') {
+    if (dashboardTabId) {
+      chrome.tabs.get(dashboardTabId, (tab) => {
+        if (chrome.runtime.lastError || !tab) {
+          dashboardTabId = null;
+          sendResponse({ existingTabId: null });
+        } else {
+          sendResponse({ existingTabId: dashboardTabId });
+        }
+      });
+    } else {
+      sendResponse({ existingTabId: null });
+    }
+    return true;
+  }
+
+  // --- Cookie cleaning ---
   if (msg.type === 'cleanCookies') {
     (async () => {
       try {
@@ -297,7 +465,74 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   return false;
 });
 
-// --- Cookie fetching ---
+// =============================================================================
+// ToS detection handler
+// =============================================================================
+function handleTosedDetection(tabId, tab, data) {
+  if (data.subtype === 'directScan') {
+    // Direct scan from a policy/terms page
+    const scanResult = { items: data.items, score: data.score, total: data.total };
+    const cached = domainTosCache[data.domain] || {};
+
+    const privacyResult = data.pageType === 'privacy' ? scanResult : (cached.privacy || null);
+    const termsResult = data.pageType === 'terms' ? scanResult : (cached.terms || null);
+
+    tab.modules.tosed = buildTosModuleData(data.domain, privacyResult, termsResult);
+
+    // Update cache
+    domainTosCache[data.domain] = {
+      privacy: privacyResult,
+      terms: termsResult,
+    };
+  } else if (data.subtype === 'fetchedResults') {
+    tab.modules.tosed = buildTosModuleData(data.domain, data.privacy, data.terms);
+
+    domainTosCache[data.domain] = {
+      privacy: data.privacy,
+      terms: data.terms,
+    };
+  }
+}
+
+function buildTosModuleData(domain, privacyResult, termsResult) {
+  const pScore = privacyResult ? privacyResult.score : 0;
+  const tScore = termsResult ? termsResult.score : 0;
+  let combined;
+  if (privacyResult && termsResult) combined = Math.min(100, Math.round((pScore + tScore) / 2));
+  else if (privacyResult) combined = pScore;
+  else if (termsResult) combined = tScore;
+  else combined = 0;
+
+  const found = !!(privacyResult || termsResult);
+
+  const CASUAL_LABELS = {
+    'data-sharing': 'They can share or sell your data',
+    'surveillance': 'They track and profile you',
+    'retention': 'They may keep your data forever',
+    'law-enforcement': 'They hand data to authorities',
+    'rights-erosion': 'You give up legal rights',
+    'unilateral-control': 'They can change rules anytime',
+  };
+
+  const flagged = [];
+  const allItems = [...(privacyResult?.items || []), ...(termsResult?.items || [])];
+  const seenPatterns = new Set();
+  for (const item of allItems) {
+    if (seenPatterns.has(item.pattern)) continue;
+    seenPatterns.add(item.pattern);
+    flagged.push({ type: item.pattern, label: CASUAL_LABELS[item.pattern] || item.pattern, count: item.count });
+  }
+
+  return {
+    found, score: combined, flagged, domain,
+    privacy: privacyResult ? { score: pScore, items: privacyResult.items || [] } : null,
+    terms: termsResult ? { score: tScore, items: termsResult.items || [] } : null,
+  };
+}
+
+// =============================================================================
+// Cookie fetching
+// =============================================================================
 async function fetchCookies(tabId, url, domain) {
   try {
     const cookies = await chrome.cookies.getAll({ url });
@@ -332,218 +567,107 @@ async function fetchCookies(tabId, url, domain) {
   } catch {}
 }
 
-// --- ToS fetching (uses wearetosed's scanText via tos-scanner.js) ---
-
-function htmlToText(html) {
-  return html
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-async function tryFetchAndScan(url) {
-  try {
-    const resp = await fetch(url, {
-      redirect: 'follow',
-      credentials: 'include',
-      signal: AbortSignal.timeout(8000),
-      headers: { 'Accept': 'text/html,application/xhtml+xml' },
-    });
-    if (!resp.ok) return null;
-    const ct = resp.headers.get('content-type') || '';
-    if (!ct.includes('text/html') && !ct.includes('text/plain')) return null;
-
-    let html = await resp.text();
-
-    // Follow meta refresh redirects (Google pattern)
-    const metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
-    if (metaRedirect && htmlToText(html).length < 500) {
-      const r2 = await fetch(metaRedirect[1], { redirect: 'follow', credentials: 'include', signal: AbortSignal.timeout(8000) });
-      if (r2.ok) html = await r2.text();
-    }
-
-    const text = htmlToText(html);
-    if (text.length < 100) return null;
-    return scanText(text);
-  } catch { return null; }
-}
-
-async function fetchToS(tabId, pageUrl, domain, pageLinks = []) {
-  if (!tabData[tabId]) return;
-  tabData[tabId].tosFetching = true;
-
-  const origin = new URL(pageUrl).origin;
-
-  const pathUrls = TOS_PATHS.map(p => origin + p);
-  const allUrls = [...pathUrls, ...pageLinks];
-  const seen = new Set();
-  const uniqueUrls = allUrls.filter(u => {
-    const key = u.toLowerCase();
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-
-  let privacyResult = null;
-  let termsResult = null;
-
-  for (const url of uniqueUrls) {
-    if (privacyResult && termsResult) break;
-
-    const urlLower = url.toLowerCase();
-    const isPrivacy = /privac|cookie|data.?polic|gdpr|ccpa/i.test(urlLower);
-    const isTerms = /terms|tos$|legal(?!.*privac)|eula|conditions/i.test(urlLower);
-
-    if (isPrivacy && privacyResult) continue;
-    if (isTerms && !isPrivacy && termsResult) continue;
-
-    const result = await tryFetchAndScan(url);
-    if (!result) continue;
-
-    if (isPrivacy && !privacyResult) privacyResult = result;
-    else if (isTerms && !termsResult) termsResult = result;
-    else if (!privacyResult) privacyResult = result;
-  }
-
-  // Fallback: ask content script to fetch (SPA pages like Reddit)
-  if (!privacyResult && !termsResult && tabData[tabId]) {
-    const tosLinksFromPage = tabData[tabId].scan?.tosLinks || pageLinks;
-    if (tosLinksFromPage.length > 0) {
-      try {
-        const response = await new Promise((resolve) => {
-          chrome.tabs.sendMessage(tabId, { type: 'fetchToS', urls: tosLinksFromPage.slice(0, 5) }, (r) => {
-            resolve(r);
-          });
-        });
-        if (response?.text) {
-          const result = scanText(response.text);
-          if (result) {
-            const urlLower = (response.url || '').toLowerCase();
-            if (/privac|cookie|data.?polic/i.test(urlLower)) privacyResult = result;
-            else termsResult = result;
-          }
-        }
-      } catch {}
+// =============================================================================
+// Build tabs data for networkDashboard (wearebaked format)
+// =============================================================================
+function buildTabsData() {
+  const result = {};
+  for (const [id, data] of Object.entries(tabData)) {
+    if (data.domain) {
+      const net = data.networkData || {};
+      result[id] = {
+        domain: data.domain,
+        requests: net.requestCount || 0,
+        thirdParties: Object.keys(net.thirdPartyDomains || {}),
+      };
     }
   }
-
-  if (!tabData[tabId]) return;
-
-  // Combine scores
-  const pScore = privacyResult ? privacyResult.score : 0;
-  const tScore = termsResult ? termsResult.score : 0;
-  let combined;
-  if (privacyResult && termsResult) combined = Math.min(100, Math.round((pScore + tScore) / 2));
-  else if (privacyResult) combined = pScore;
-  else if (termsResult) combined = tScore;
-  else combined = 0;
-
-  const found = !!(privacyResult || termsResult);
-
-  const CASUAL_LABELS = {
-    'data-sharing': 'They can share or sell your data',
-    'surveillance': 'They track and profile you',
-    'retention': 'They may keep your data forever',
-    'law-enforcement': 'They hand data to authorities',
-    'rights-erosion': 'You give up legal rights',
-    'unilateral-control': 'They can change rules anytime',
-  };
-
-  const flagged = [];
-  const allItems = [...(privacyResult?.items || []), ...(termsResult?.items || [])];
-  const seenPatterns = new Set();
-  for (const item of allItems) {
-    if (seenPatterns.has(item.pattern)) continue;
-    seenPatterns.add(item.pattern);
-    flagged.push({ type: item.pattern, label: CASUAL_LABELS[item.pattern] || item.pattern, count: item.count });
-  }
-
-  const tosResult = { found, score: combined, flagged };
-  tabData[tabId].tos = tosResult;
-  tabData[tabId].tosFetching = false;
-  domainTosCache[domain] = tosResult;
-  updateBadge(tabId);
+  return result;
 }
 
-// --- Badge ---
-function updateBadge(tabId) {
-  const data = tabData[tabId];
-  if (!data) return;
-
-  const report = buildReport(data);
-  const score = report?.verdict?.score || 0;
-
-  let color;
-  if (score <= 15) color = '#2ecc71';
-  else if (score <= 40) color = '#e67e22';
-  else color = '#e74c3c';
-
-  chrome.action.setBadgeText({ tabId, text: String(score) });
-  chrome.action.setBadgeBackgroundColor({ tabId, color });
-}
-
-// --- Report builder ---
+// =============================================================================
+// Report builder — translates per-module data to unified format
+// =============================================================================
 function buildReport(data) {
   if (!data) return null;
 
-  const scan = data.scan || {};
+  const m = data.modules;
   const cookies = data.cookies || { total: 0, firstParty: 0, thirdParty: 0, thirdPartyDomains: [], session: 0, persistent: 0, longestDays: 0 };
-  const tos = data.tos || null;
 
-  // Fingerprinting
-  const fpCalls = scan.fingerprinting || [];
+  // --- Fingerprinting (from watched module) ---
+  const watched = m.watched || { items: [], totals: { fingerprint: 0, permission: 0, total: 0 } };
+  const fpItems = watched.items || [];
   const byCat = {};
-  for (const call of fpCalls) {
+  for (const call of fpItems) {
     if (!byCat[call.category]) byCat[call.category] = { count: 0, apis: new Set() };
-    byCat[call.category].count++;
+    byCat[call.category].count += call.count;
     byCat[call.category].apis.add(call.api);
   }
   const fpMethods = Object.entries(byCat).map(([technique, d]) => ({
     technique, apis: [...d.apis], calls: d.count,
   }));
 
-  // Beacons
-  const beacons = scan.beacons || [];
+  // --- Trackers (from cooked module) ---
+  const cooked = m.cooked || { items: [], totals: { pixels: 0, iframes: 0, beacons: 0, prefetches: 0, total: 0 } };
+  const cookedItems = cooked.items || [];
+  const trackerCompanies = {};
+  for (const item of cookedItems) {
+    const name = item.company || item.domain;
+    if (!trackerCompanies[name]) trackerCompanies[name] = { name, purpose: item.purpose || 'Unknown', count: 0 };
+    trackerCompanies[name].count++;
+  }
+  const companies = Object.values(trackerCompanies).sort((a, b) => b.count - a.count).slice(0, 20);
+  const trackerTotal = (cooked.totals?.pixels || 0) + (cooked.totals?.beacons || 0) + (cooked.totals?.iframes || 0);
 
-  // Trackers
-  const trackers = scan.trackers || {};
-  const trackerTotal = (trackers.pixels || 0) + beacons.length + (trackers.hiddenIframes || 0);
-  const trackerCompanies = [...(trackers.companies || [])];
-
-  for (const b of beacons) {
-    try {
-      const domain = new URL(b.url).hostname;
-      const existing = trackerCompanies.find(c => domain.includes(c.name?.toLowerCase?.()));
-      if (!existing) trackerCompanies.push({ name: domain, purpose: 'Analytics', count: 1 });
-    } catch {}
+  // --- Dark patterns (from played module) ---
+  const played = m.played || { items: [], score: 0, total: 0 };
+  const dpTactics = [];
+  const PLAYED_LABELS = {
+    countdown: 'Countdown timer creating pressure',
+    discount: 'Discount pressure badges',
+    scarcity: 'Fake scarcity or social proof claims',
+    prechecked: 'Pre-checked boxes opting you in',
+    shaming: 'Guilt-trip language on decline buttons',
+    'hidden-unsub': 'Opt-out text made hard to find',
+  };
+  for (const item of (played.items || [])) {
+    dpTactics.push({
+      tactic: PLAYED_LABELS[item.pattern] || item.pattern,
+      type: item.pattern,
+      evidence: [],
+    });
   }
 
-  const scriptCompanies = scan.thirdPartyScripts?.companies || [];
+  // --- Storage (from leaked module) ---
+  const leaked = m.leaked || { items: [], totals: { local: 0, session: 0, flagged: 0 } };
+  const leakedItems = leaked.items || [];
+  const flaggedItems = leakedItems.filter(i => i.flags && i.flags.length > 0);
+  const byCategory = {};
+  for (const item of flaggedItems) {
+    for (const cat of item.flags) {
+      if (!byCategory[cat]) byCategory[cat] = [];
+      byCategory[cat].push(item.key);
+    }
+  }
 
-  // Storage
-  const storage = scan.storage || { totalKeys: 0, flaggedCount: 0, byCategory: {}, flaggedKeys: [] };
+  // --- Links (from linked module) ---
+  const linked = m.linked || { items: [], totals: { wrappers: 0, tracked: 0, total: 0 } };
+  const linkTotal = linked.items ? linked.items.length : 0;
+  // Count all links on page (tracked + untracked) — linked only reports tracked ones
+  // Use total from linked module (which counts all analyzed links with tracking)
+  const allLinksCount = linkTotal > 0 ? Math.max(linkTotal * 2, linked.totals?.total || 0) : 0;
+  const linkPct = allLinksCount > 0 ? Math.round(((linked.totals?.tracked || 0) / allLinksCount) * 100) : 0;
 
-  // Links
-  const links = scan.links || { total: 0, withTracking: 0, redirectWrappers: 0, details: [] };
-  const linkPct = links.total > 0 ? Math.round((links.withTracking / links.total) * 100) : 0;
+  // --- Terms (from tosed module) ---
+  const tosed = m.tosed || null;
 
-  // Dark patterns
-  const dp = scan.darkPatterns || { score: 0, detected: [] };
+  // --- Forms (from silent module) ---
+  const silent = m.silent || { fields: [] };
+  const formFields = silent.fields || [];
 
-  // Forms (from wearesilent)
-  const formFields = scan.formFields || [];
-
-  // Network (from wearebaked) — per-tab data
-  const tabNet = data.networkData || {};
-  const brokerCount = Object.keys(tabNet.brokers || {}).length;
+  // --- Third-party scripts (scan from cooked items) ---
+  const scriptCompanies = [];
+  const thirdPartyScriptCount = 0;
 
   const report = {
     site: data.domain,
@@ -553,39 +677,43 @@ function buildReport(data) {
       thirdPartyDomains: cookies.thirdPartyDomains, longestDays: cookies.longestDays,
     },
     trackers: {
-      pixels: trackers.pixels || 0, beacons: beacons.length, hiddenIframes: trackers.hiddenIframes || 0,
-      thirdPartyScripts: scan.thirdPartyScripts?.total || 0,
-      companies: trackerCompanies, scriptCompanies, total: trackerTotal,
+      pixels: cooked.totals?.pixels || 0,
+      beacons: cooked.totals?.beacons || 0,
+      hiddenIframes: cooked.totals?.iframes || 0,
+      thirdPartyScripts: thirdPartyScriptCount,
+      companies, scriptCompanies,
+      total: trackerTotal,
     },
-    fingerprinting: { techniques: fpMethods.length, totalCalls: fpCalls.length, methods: fpMethods },
+    fingerprinting: {
+      techniques: fpMethods.length,
+      totalCalls: fpItems.reduce((sum, i) => sum + (i.count || 0), 0),
+      methods: fpMethods,
+      items: fpItems,
+    },
     pressure: {
-      score: dp.score,
-      tactics: (dp.detected || []).map(d => {
-        const labels = {
-          confirm_shaming: 'Guilt-trip language on decline buttons',
-          fake_urgency: 'Fake urgency or scarcity claims',
-          countdown_timer: 'Countdown timer creating pressure',
-          pre_checked_boxes: 'Pre-checked boxes opting you in',
-          hidden_unsubscribe: 'Opt-out text made hard to find',
-        };
-        return { tactic: labels[d.type] || d.type, type: d.type, evidence: d.matches?.slice(0, 2) || [] };
-      }),
+      score: played.score || 0,
+      tactics: dpTactics,
     },
-    tos: tos ? (tos.found ? { score: tos.score, flagged: tos.flagged } : { found: false }) : { loading: true },
+    tos: tosed ? (tosed.found ? { score: tosed.score || 0, flagged: tosed.flagged || [], found: true, privacy: tosed.privacy || null, terms: tosed.terms || null } : { found: false }) : { loading: true },
     localData: {
-      totalKeys: storage.totalKeys || 0, suspicious: storage.flaggedCount || 0,
-      byCategory: storage.byCategory || {}, flaggedKeys: storage.flaggedKeys || [],
+      totalKeys: leakedItems.length,
+      suspicious: flaggedItems.length,
+      byCategory,
+      flaggedKeys: flaggedItems.slice(0, 10).map(i => ({ key: i.key, flags: i.flags })),
     },
     linkTracking: {
-      total: links.total, tracked: links.withTracking,
-      redirectWrappers: links.redirectWrappers, percentage: linkPct,
+      total: allLinksCount,
+      tracked: linked.totals?.tracked || 0,
+      redirectWrappers: linked.totals?.wrappers || 0,
+      percentage: linkPct,
+      details: (linked.items || []).slice(0, 50),
     },
     forms: {
       fieldCount: formFields.length,
       fields: formFields.slice(0, 15),
-      trackersWhileTyping: formFields.length > 0 ? trackerCompanies.length + scriptCompanies.length : 0,
+      trackersWhileTyping: formFields.length > 0 ? companies.length + scriptCompanies.length : 0,
       trackerNames: formFields.length > 0
-        ? [...new Set([...trackerCompanies, ...scriptCompanies].map(c => c.name))].slice(0, 5)
+        ? [...new Set([...companies, ...scriptCompanies].map(c => c.name))].slice(0, 5)
         : [],
     },
   };
@@ -594,6 +722,9 @@ function buildReport(data) {
   return report;
 }
 
+// =============================================================================
+// Verdict scoring
+// =============================================================================
 function computeVerdict(r) {
   let score = 0;
   const concerns = [];
@@ -619,12 +750,6 @@ function computeVerdict(r) {
 
   if (r.linkTracking.percentage > 50) { score += 5; concerns.push('Most links tag your clicks'); }
 
-  // Network — data brokers (from wearebaked)
-  const brokerCount = r.forms?.trackersWhileTyping || 0; // approximate from tracker companies
-  // Use actual network broker data if available in full report
-  // For popup this is approximate; dashboard has full data
-
-  // Forms (from wearesilent)
   if (r.forms?.fieldCount > 0 && r.forms?.trackersWhileTyping > 3) {
     score += 10; concerns.push('Trackers watching while you fill out forms');
   }
@@ -640,7 +765,28 @@ function computeVerdict(r) {
   return { score, risk, recommendation, concerns };
 }
 
-// --- Tab cleanup ---
+// =============================================================================
+// Badge
+// =============================================================================
+function updateBadge(tabId) {
+  const data = tabData[tabId];
+  if (!data) return;
+
+  const report = buildReport(data);
+  const score = report?.verdict?.score || 0;
+
+  let color;
+  if (score <= 15) color = '#2ecc71';
+  else if (score <= 40) color = '#e67e22';
+  else color = '#e74c3c';
+
+  chrome.action.setBadgeText({ tabId, text: String(score) });
+  chrome.action.setBadgeBackgroundColor({ tabId, color });
+}
+
+// =============================================================================
+// Tab lifecycle
+// =============================================================================
 chrome.tabs.onRemoved.addListener((tabId) => { delete tabData[tabId]; });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {

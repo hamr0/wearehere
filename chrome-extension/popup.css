@@ -30,7 +30,9 @@ body {
   align-items: center;
   justify-content: space-between;
   padding: 14px 16px 6px;
+  gap: 8px;
 }
+#popup-icon { border-radius: 50%; flex-shrink: 0; }
 #site-name {
   font-size: 17px;
   font-weight: 700;

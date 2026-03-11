@@ -107,17 +107,18 @@ Simplified display for regular users — shows what matters at a glance.
   8. Forms — field count, trackers watching while you type
 - **Full Report button**: opens the unified dashboard (report.html) in a new tab
 
-### Dashboard (report.html, full-page, 8 tabs)
+### Dashboard (report.html, full-page, 5 tabs)
 Deep-dive analysis for users who want details.
 
-- **Overview tab**: risk score display with bar, score breakdown by category, concerns list, at-a-glance summary grid (all 8 categories)
-- **Cookies tab**: summary cards (total, first/third party, longest expiry), searchable/sortable cookie table (name, domain, expires, secure, httpOnly, sameSite, size), cookie cleaner (Clean Third-Party / Clean All buttons)
-- **Network tab**: summary cards (total requests, unique domains, third-party %, data brokers), category bar chart, sortable domain table (domain, category, requests, third-party, data broker, bytes), data broker groups by type, redirect chains
-- **Trackers tab**: companies grouped by purpose (Advertising, Analytics, Data broker, etc.), third-party script companies
-- **Terms tab**: toxicity score display, flagged clauses list
-- **Data tab**: local storage categories with key lists, link tracking summary with highlighted tracking params
-- **Fingerprinting tab**: active/none status with explanation, technique cards (Navigator, Screen, WebGL, Canvas, AudioContext, Font, Battery, Connection) with API call counts and plain-language explanations
-- **Forms tab**: form field list with resolved labels, tracker presence status
+- **Overview tab**: risk score display with bar, score breakdown by category, concerns list, at-a-glance summary grid
+- **Cookies tab**: summary cards (total, first/third party, longest expiry), first/third-party ratio bar, insights row, worst offenders with reason tags, category bars, searchable/sortable cookie table, cookie cleaner (Clean Third-Party / Clean All)
+- **Network tab**: summary cards, privacy summary sentence + bar, category bars, domain grid, 7 collapsible sections (Data Brokers, Beaconing Alerts, New Domains, Redirect Chains, Data Flow, WebSockets, Live Feed) — each shows count before expanding
+- **Terms tab**: split Privacy Policy + Terms of Service sections, each with own score (/100) and categorized breakdowns (Data practices: sharing/selling, tracking/profiling, retention; Your rights: law enforcement, liability waivers, unilateral changes)
+- **Tracking tab**: combines 4 sections, each with icon + header + inline count:
+  - Fingerprinting (`· N techniques`): categorized rows with friendly API names and call counts
+  - Forms (`· N trackers`): tracked field names, company pills
+  - Storage (`· N of M suspicious`): categories with count-first layout (`20 Cross-site tracking`), left orange border, service name chips (Google Analytics, Hotjar, TikTok, etc.) instead of raw key names, unrecognized keys as "N others"
+  - Links (`· N of M tracked`): summary grid, highlighted tracking params
 
 ### Badge
 - Shows overall risk score (0-100)
@@ -145,14 +146,21 @@ wearehere/
 │   ├── page-scripts.js
 │   └── data.js
 ├── chrome-extension/
-│   ├── manifest.json          # MV3, v2.0.0
+│   ├── manifest.json          # MV3, v3.0.0
 │   ├── tos-scanner.js         # From wearetosed v0.1.0
 │   ├── network-domains.js     # From wearebaked v0.5.1 (454 domains, 82 brokers)
 │   ├── inject.js              # Page-context prototype wrappers (wearewatched)
-│   ├── content.js             # DOM scanning (wearecooked + weareplayed + weareleaking + wearelinked + wearesilent)
+│   ├── detect-cooked.js       # Cookie/tracker detection (from wearecooked)
+│   ├── detect-leaked.js       # Storage scanning (from weareleaking)
+│   ├── detect-linked.js       # Link tracking detection (from wearelinked)
+│   ├── detect-played.js       # Dark pattern detection (from weareplayed)
+│   ├── detect-silent.js       # Form scanning (from wearesilent)
+│   ├── detect-tosed.js        # ToS link finder (from wearetosed)
+│   ├── detect-watched.js      # Fingerprint relay (from wearewatched)
 │   ├── background.js          # Aggregator + ToS fetch + cookies + network monitoring + verdict
 │   ├── popup.html / popup.js / popup.css   # Quick-view popup (8 sections)
-│   ├── report.html / report.js / report.css # Full dashboard (8 tabs)
+│   ├── report.html / report.js / report.css # Full dashboard (5 tabs)
+│   ├── icons/                 # App + section icons (16/20/48/128px)
 ├── firefox-extension/         # MV2 (TODO)
 └── store-assets/
     ├── prd.md
@@ -165,7 +173,23 @@ wearehere also ships an MCP server (`mcp-server.js`) for agent-facing use. It ex
 
 ## Changelog
 
-### v2.0.0 (current)
+### v3.0.0 (current)
+- Dashboard consolidated from 8 tabs → 5: Overview, Cookies, Network, Terms, Tracking
+- New Tracking tab combines Fingerprinting, Forms, Storage, Links in one view
+- Each tracking section has icon + header with inline count (e.g. `· 37 of 151 suspicious`)
+- Terms tab split: separate Privacy Policy and Terms of Service sections with individual scores
+- Storage: service name resolution — raw keys like `_ga`, `TT_UID` resolved to company names (Google Analytics, TikTok, etc.) via 30+ pattern map, shown as chips with counts
+- Storage: count-first layout (`20 Cross-site tracking`) with left orange border
+- Forms: company names in pills, "Tracked fields" subheader for clarity
+- Fingerprinting: friendly API descriptions, removed redundant verdict (covered by header count)
+- Network: collapsible sections show counts before expanding (`N brokers · click to expand`)
+- Icons: original extension icons reused in tab bar (16px) and section headers (20px)
+- App icon: eye-recognition.png with white circle background (16/48/128px)
+- Responsive CSS: 768px and 480px breakpoints, no min-width constraints
+- Monolithic content.js split into 7 detect-*.js modules
+- detect-watched.js: try/catch on sendMessage for MV3 service worker race condition
+
+### v2.0.0
 - All 8 weare____ extensions integrated — no companion extensions needed
 - New: network monitoring via webRequest API (from wearebaked v0.5.1) — 454 tracker domains, 82 data broker profiles, redirect chain detection
 - New: form field scanning (from wearesilent Method B) — passive detection of form fields + tracker presence

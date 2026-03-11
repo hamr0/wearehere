@@ -1,12 +1,22 @@
 {
   "manifest_version": 3,
   "name": "wearehere",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Full privacy scan for every site you visit. Cookies, trackers, fingerprinting, dark patterns, terms toxicity, network traffic, form leaks — one popup, complete picture.",
   "permissions": ["activeTab", "storage", "cookies", "webRequest"],
   "host_permissions": ["<all_urls>"],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
   "action": {
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
   },
   "background": {
     "service_worker": "background.js"
@@ -21,13 +31,50 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["content.js"],
+      "js": ["detect-watched.js"],
       "run_at": "document_start",
+      "world": "ISOLATED",
       "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-cooked.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-played.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-leaked.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-linked.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["tos-scanner.js", "detect-tosed.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-silent.js"],
+      "run_at": "document_idle",
+      "all_frames": true
     }
   ],
   "web_accessible_resources": [{
-    "resources": ["report.html"],
+    "resources": ["inject.js", "report.html", "icons/*.png"],
     "matches": ["<all_urls>"]
   }]
 }

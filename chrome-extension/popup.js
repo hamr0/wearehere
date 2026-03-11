@@ -52,7 +52,19 @@ function render(report) {
   sections.after(btn);
   document.getElementById('open-report').addEventListener('click', (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: chrome.runtime.getURL('report.html') });
+    chrome.tabs.query({ active: true, currentWindow: true }, (activeTabs) => {
+      const tabId = activeTabs[0] ? activeTabs[0].id : '';
+      const reportUrl = chrome.runtime.getURL('report.html') + '#' + tabId;
+
+      // Ask background for existing dashboard tab ID
+      chrome.runtime.sendMessage({ type: 'openDashboard', url: reportUrl }, (res) => {
+        if (res && res.existingTabId) {
+          chrome.tabs.update(res.existingTabId, { url: reportUrl, active: true });
+        } else {
+          chrome.tabs.create({ url: reportUrl });
+        }
+      });
+    });
   });
 }
 
