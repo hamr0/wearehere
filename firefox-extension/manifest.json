@@ -68,13 +68,7 @@
   "browser_specific_settings": {
     "gecko": {
       "id": "wearehere@extension",
-      "strict_min_version": "109.0",
-      "data_collection_permissions": {
-        "storage_local": true,
-        "storage_session": true,
-        "history": false,
-        "bookmarks": false
-      }
+      "strict_min_version": "109.0"
     }
   }
 }
