@@ -72,17 +72,23 @@ function render(report) {
 
 // --- Section builders ---
 
+function safeSetHTML(el, html) {
+  var doc = new DOMParser().parseFromString(html, 'text/html');
+  el.textContent = '';
+  while (doc.body.firstChild) el.appendChild(document.adoptNode(doc.body.firstChild));
+}
+
 function makeSection(iconSrc, label, value, valueClass, detailHTML) {
   const div = document.createElement('div');
   div.className = 'section';
-  div.innerHTML = `
+  safeSetHTML(div, `
     <div class="section-header">
       <img class="section-icon" src="${iconSrc}" alt="">
       <span class="section-label">${label}</span>
       <span class="section-value ${valueClass}">${value}</span>
     </div>
     <div class="section-detail">${detailHTML}</div>
-  `;
+  `);
   return div;
 }
 

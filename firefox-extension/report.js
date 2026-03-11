@@ -369,7 +369,7 @@ function netUpdateToggleCount(toggleId, count, label) {
       for (const [k, v] of Object.entries(attrs)) {
         if (k === 'className') node.className = v;
         else if (k === 'textContent') node.textContent = v;
-        else if (k === 'innerHTML') node.innerHTML = v;
+        else if (k === 'innerHTML') { var _d = new DOMParser().parseFromString(v, 'text/html'); while (_d.body.firstChild) node.appendChild(document.adoptNode(_d.body.firstChild)); }
         else if (k.startsWith('on')) node.addEventListener(k.slice(2).toLowerCase(), v);
         else node.setAttribute(k, v);
       }
@@ -821,7 +821,9 @@ function netUpdateToggleCount(toggleId, count, label) {
       '</div>' +
     '</div>';
 
-    panel.innerHTML = html;
+    var _doc = new DOMParser().parseFromString(html, 'text/html');
+    panel.textContent = '';
+    while (_doc.body.firstChild) panel.appendChild(document.adoptNode(_doc.body.firstChild));
 
     // Bind event listeners (no inline handlers for MV3 CSP)
     // Table toggle
