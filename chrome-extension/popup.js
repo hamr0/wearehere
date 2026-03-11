@@ -72,12 +72,12 @@ function render(report) {
 
 // --- Section builders ---
 
-function makeSection(icon, label, value, valueClass, detailHTML) {
+function makeSection(iconSrc, label, value, valueClass, detailHTML) {
   const div = document.createElement('div');
   div.className = 'section';
   div.innerHTML = `
     <div class="section-header">
-      <span class="section-icon">${icon}</span>
+      <img class="section-icon" src="${iconSrc}" alt="">
       <span class="section-label">${label}</span>
       <span class="section-value ${valueClass}">${value}</span>
     </div>
@@ -99,15 +99,15 @@ function cookiesSection(c) {
   if (c.longestDays > 0) {
     detail += ` · last ${c.longestDays > 365 ? Math.round(c.longestDays / 365) + ' year(s)' : c.longestDays + ' days'}`;
   }
-  return makeSection('🍪', 'Cookies', val, cls, detail);
+  return makeSection('icons/cooked.png', 'Cookies', val, cls, detail);
 }
 
 function networkSection(n) {
-  if (!n) return makeSection('📡', 'Network', '0', 'val-clean', 'No network data yet');
+  if (!n) return makeSection('icons/baked.png', 'Network', '0', 'val-clean', 'No network data yet');
   const val = n.trackerDomains > 0 ? `${n.trackerDomains}` : '0';
   const cls = n.trackerDomains > 10 ? 'val-bad' : n.trackerDomains > 0 ? 'val-warn' : 'val-clean';
   let detail = `${n.totalRequests} requests · ${n.thirdPartyDomains} third-party domain${n.thirdPartyDomains !== 1 ? 's' : ''}`;
-  return makeSection('📡', 'Network', val + ' trackers', cls, detail);
+  return makeSection('icons/baked.png', 'Network', val + ' trackers', cls, detail);
 }
 
 function trackersSection(t) {
@@ -127,7 +127,7 @@ function trackersSection(t) {
     detail += `<br><span class="highlight">${t.thirdPartyScripts} outside scripts loaded</span>`;
   }
 
-  return makeSection('👁', 'Trackers', val, cls, detail);
+  return makeSection('icons/cooked.png', 'Trackers', val, cls, detail);
 }
 
 function profilingSection(fp) {
@@ -142,7 +142,7 @@ function profilingSection(fp) {
     detail = 'Not fingerprinting your device ✓';
   }
 
-  return makeSection('🔬', 'Profiling', val, cls, detail);
+  return makeSection('icons/watched.png', 'Profiling', val, cls, detail);
 }
 
 function pressureSection(p) {
@@ -162,23 +162,23 @@ function pressureSection(p) {
     detail = 'No tricks to rush or guilt you ✓';
   }
 
-  return makeSection('⚡', 'Pressure', val, cls, detail);
+  return makeSection('icons/played.png', 'Pressure', val, cls, detail);
 }
 
 function sellingDataSection(n) {
-  if (!n) return makeSection('🏪', 'Selling data', 'None', 'val-clean', 'No data brokers detected');
+  if (!n) return makeSection('icons/baked.png', 'Selling data', 'None', 'val-clean', 'No data brokers detected');
   const val = n.brokerCount > 0 ? `${n.brokerCount}` : 'None';
   const cls = n.brokerCount > 5 ? 'val-bad' : n.brokerCount > 0 ? 'val-warn' : 'val-clean';
   const detail = n.brokerCount > 0 ? `${n.brokerCount} data broker${n.brokerCount !== 1 ? 's' : ''} found in network traffic` : 'No data brokers detected';
-  return makeSection('🏪', 'Selling data', val, cls, detail);
+  return makeSection('icons/baked.png', 'Selling data', val, cls, detail);
 }
 
 function tosSection(tos) {
   if (!tos || tos.loading) {
-    return makeSection('📋', 'Terms', '...', 'val-neutral', '<span class="tos-loading">Scanning their privacy policy...</span>');
+    return makeSection('icons/tosed.png', 'Terms', '...', 'val-neutral', '<span class="tos-loading">Scanning their privacy policy...</span>');
   }
   if (!tos.found) {
-    return makeSection('📋', 'Terms', '???', 'val-neutral', "Couldn't find their terms page");
+    return makeSection('icons/tosed.png', 'Terms', '???', 'val-neutral', "Couldn't find their terms page");
   }
 
   const val = `${tos.score}/100`;
@@ -191,7 +191,7 @@ function tosSection(tos) {
     detail = 'Terms look reasonable ✓';
   }
 
-  return makeSection('📋', 'Terms', val, cls, detail);
+  return makeSection('icons/tosed.png', 'Terms', val, cls, detail);
 }
 
 function localDataSection(ld) {
@@ -213,7 +213,7 @@ function localDataSection(ld) {
     detail = 'Nothing stored ✓';
   }
 
-  return makeSection('💾', 'Stored data', val, cls, detail);
+  return makeSection('icons/leaking.png', 'Stored data', val, cls, detail);
 }
 
 function linkTrackingSection(lt) {
@@ -228,12 +228,12 @@ function linkTrackingSection(lt) {
     detail = lt.total > 0 ? 'Links are clean ✓' : 'No links found';
   }
 
-  return makeSection('🔗', 'Clicks', val, cls, detail);
+  return makeSection('icons/linked.png', 'Clicks', val, cls, detail);
 }
 
 function formsSection(f) {
   if (!f || f.fieldCount === 0) {
-    return makeSection('👀', 'Watching', 'None', 'val-clean', 'No form fields on this page');
+    return makeSection('icons/silent.png', 'Watching', 'None', 'val-clean', 'No form fields on this page');
   }
 
   const watching = f.trackersWhileTyping || 0;
@@ -247,7 +247,7 @@ function formsSection(f) {
     detail += ' · not being watched ✓';
   }
 
-  return makeSection('👀', 'Watching', val, cls, detail);
+  return makeSection('icons/silent.png', 'Watching', val, cls, detail);
 }
 
 function escHtml(str) {

@@ -98,7 +98,7 @@ body {
   justify-content: space-between;
   cursor: default;
 }
-.section-icon { font-size: 14px; margin-right: 6px; }
+.section-icon { width: 16px; height: 16px; margin-right: 6px; vertical-align: middle; }
 .section-label {
   font-size: 12px;
   font-weight: 600;
