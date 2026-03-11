@@ -485,6 +485,20 @@ function netUpdateToggleCount(toggleId, count, label) {
     grid.appendChild(summaryCard('icons/linked.png', 'Clicks', r.linkTracking.percentage + '% tracked', r.linkTracking.tracked + ' of ' + r.linkTracking.total, '#a8e6cf'));
     const tosLabel2 = r.tos.loading ? '...' : (!r.tos.found && r.tos.score === undefined) ? 'N/A' : r.tos.score + '/100';
     grid.appendChild(summaryCard('icons/tosed.png', 'Terms', tosLabel2, r.tos.loading ? 'loading' : r.tos.flagged ? r.tos.flagged.length + ' flagged' : 'not found', '#b39ddb'));
+
+    if (v.concerns.length > 0) {
+      const concernsCard = el('div', { className: 'summary-item summary-concerns' });
+      concernsCard.appendChild(el('div', { className: 'summary-item-label', textContent: 'Concerns' }));
+      const list = el('ul', { className: 'concerns-list' });
+      for (const c of v.concerns) {
+        const li = el('li');
+        li.appendChild(el('span', { className: 'concern-dot' }));
+        li.appendChild(document.createTextNode(c));
+        list.appendChild(li);
+      }
+      concernsCard.appendChild(list);
+      grid.appendChild(concernsCard);
+    }
     panel.appendChild(grid);
 
     panel.appendChild(el('div', { className: 'section-heading', textContent: 'Score Breakdown' }));
@@ -534,17 +548,6 @@ function netUpdateToggleCount(toggleId, count, label) {
     }
     panel.appendChild(breakdownCard);
 
-    if (v.concerns.length > 0) {
-      panel.appendChild(el('div', { className: 'section-heading', textContent: 'Concerns' }));
-      const list = el('ul', { className: 'concerns-list' });
-      for (const c of v.concerns) {
-        const li = el('li');
-        li.appendChild(el('span', { className: 'concern-dot' }));
-        li.appendChild(document.createTextNode(c));
-        list.appendChild(li);
-      }
-      panel.appendChild(list);
-    }
 
   }
 

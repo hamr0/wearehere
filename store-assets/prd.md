@@ -196,7 +196,8 @@ wearehere also ships an MCP server (`mcp-server.js`) for agent-facing use. It ex
 - Category colors consistent across weight bar, breakdown rows, At a Glance cards, and Tracking tab headers
 - Breakdown rows show +pts / max for transparency
 - At a Glance cards have colored left borders matching category colors
-- Overview reordered: Score → At a Glance → Breakdown → Concerns
+- Overview reordered: Score → At a Glance (with Concerns card) → Breakdown
+- Concerns card spans 2 columns inside At a Glance grid with red left border
 
 **Network in Popup**
 - Network summary (tracker domains, request count, third-party domains) now available in popup via buildReport()

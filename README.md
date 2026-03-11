@@ -11,18 +11,19 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 | What you see | What it means |
 |---|---|
 | **Cookies** | How many cookies this site set, which ones are from outside companies, how long the longest one lasts |
+| **Network** | Real-time request monitoring — which domains your browser talks to, tracker domains, third-party traffic |
 | **Trackers** | Hidden tracking pixels, invisible iframes, silent pings (beacons), and third-party scripts — resolved to company names |
-| **Fingerprinting** | When sites read your device specs (GPU, CPU cores, screen depth, audio hardware) to build a unique ID — no cookies needed |
 | **Pressure** | Dark patterns: fake countdown timers, "Only 2 left!", guilt-trip decline buttons, pre-checked newsletter boxes |
+| **Selling data** | Data broker connections detected in network traffic |
+| **Profiling** | When sites read your device specs (GPU, CPU cores, screen depth, audio hardware) to build a unique ID — no cookies needed |
+| **Stored data** | Tracking IDs and analytics tokens saved in your browser's local storage, categorized by type |
+| **Watching** | Which form fields are on the page and whether trackers are active while you type |
+| **Clicks** | UTM parameters and redirect wrappers attached to links so they know what you click next |
 | **Terms** | Toxic clauses in their privacy policy and terms of service — data selling, surveillance, binding arbitration, no right to delete |
-| **Stored on you** | Tracking IDs and analytics tokens saved in your browser's local storage, categorized by type |
-| **Link tracking** | UTM parameters and redirect wrappers attached to links so they know what you click next |
-| **Network** | Real-time request monitoring — which domains your browser talks to, data broker detection, redirect chains |
-| **Forms** | Which form fields are on the page and whether trackers are active while you type |
 
 ## How scoring works
 
-Each category contributes to a combined risk score (0–100).
+Each category contributes to a combined risk score (0–100). Weights: Trackers 20, Profiling 20, Cookies 15, Pressure 15, Terms 15, Network 10, Selling data 10, Watching 10, Stored data 5, Clicks 5.
 
 | Score | Badge | Meaning |
 |---|---|---|
@@ -48,16 +49,13 @@ wearehere reuses detection logic from the weare____ suite — same code, not rew
 
 ## Dashboard
 
-Click **Full Report** in the popup to open the unified dashboard with 8 tabs:
+Click **Full Report** in the popup to open the unified dashboard with 5 tabs:
 
-- **Overview** — risk score breakdown, concerns, at-a-glance summary
+- **Overview** — score, at-a-glance cards (10 categories with colored borders), concerns, stacked weight bar, score breakdown with +pts/max
 - **Cookies** — searchable/sortable cookie table, cookie cleaner (Clean Third-Party / Clean All)
 - **Network** — request categories, domain table, data broker detection, redirect chains
-- **Trackers** — companies grouped by purpose with element counts
-- **Terms** — toxicity score and flagged clauses
-- **Data** — storage categories with key lists, tracked links with highlighted params
-- **Fingerprinting** — technique cards with API calls and plain-language explanations
-- **Forms** — detected fields and tracker presence status
+- **Terms** — toxicity score and flagged clauses for privacy policy and terms of service
+- **Tracking** — 7 sections in 2-column masonry layout: Trackers, Selling data, Pressure, Profiling, Stored data, Watching, Clicks
 
 ## MCP server
 

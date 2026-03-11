@@ -162,6 +162,10 @@ body {
   border-radius: 8px;
   padding: 16px;
 }
+.summary-concerns {
+  grid-column: span 2;
+  border-left: 3px solid #e74c3c;
+}
 .summary-item-icon { width: 14px; height: 14px; margin-right: 5px; vertical-align: middle; }
 .summary-item-label {
   display: flex;
