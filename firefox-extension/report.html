@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>wearehere — Full Report</title>
+  <link rel="icon" type="image/png" href="icons/icon48.png">
+  <link rel="stylesheet" href="report.css">
+</head>
+<body>
+  <div id="loading">Loading report...</div>
+
+  <div id="report" style="display:none">
+    <!-- Header -->
+    <header id="header">
+      <div id="header-left">
+        <img id="brand-icon" src="icons/icon48.png" alt="" width="28" height="28">
+        <h1 id="brand">wearehere</h1>
+        <span id="header-sep">|</span>
+        <select id="tab-select"></select>
+      </div>
+    </header>
+
+    <!-- Tab navigation -->
+    <nav id="tab-bar">
+      <button class="tab active" data-tab="overview"><img src="icons/icon48.png" class="tab-icon"> Overview</button>
+      <button class="tab" data-tab="cookies"><img src="icons/cooked.png" class="tab-icon"> Cookies</button>
+      <button class="tab" data-tab="network"><img src="icons/baked.png" class="tab-icon"> Network</button>
+      <button class="tab" data-tab="terms"><img src="icons/tosed.png" class="tab-icon"> Terms</button>
+      <button class="tab" data-tab="tracking"><img src="icons/watched.png" class="tab-icon"> Tracking</button>
+    </nav>
+
+    <!-- Tab panels -->
+    <div id="panel-overview" class="panel active"></div>
+    <div id="panel-cookies" class="panel"></div>
+    <div id="panel-network" class="panel">
+      <div class="network-dashboard">
+        <p class="tab-tagline">Your browser's network traffic at a glance</p>
+        <!-- Summary cards -->
+        <div class="net-cards" id="net-cards"></div>
+
+        <!-- Privacy Summary -->
+        <div class="net-section" id="net-sec-privacy">
+          <div id="net-privacy-summary"></div>
+        </div>
+
+        <!-- Domains of Concern -->
+        <div class="net-section" id="net-sec-domains">
+          <h2>Domains of Concern</h2>
+          <div id="net-domain-list" class="net-domain-grid"></div>
+        </div>
+
+        <!-- Category breakdown -->
+        <div class="net-section" id="net-sec-categories">
+          <h2>Request Categories</h2>
+          <div id="net-cat-bars"></div>
+        </div>
+
+        <!-- Data Brokers -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-brokers">
+            <h2>Data Brokers</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-broker-wrap" style="display:none">
+            <div id="net-broker-list"></div>
+          </div>
+        </div>
+
+        <!-- Beaconing Alerts -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-beacons">
+            <h2>Beaconing Alerts</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-beacon-wrap" style="display:none">
+            <div id="net-beacon-list"></div>
+          </div>
+        </div>
+
+        <!-- New Domains -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-new">
+            <h2>New Domains This Session</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-new-wrap" style="display:none">
+            <div id="net-new-list" class="net-domain-grid"></div>
+          </div>
+        </div>
+
+        <!-- Redirect Chains -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-redirects">
+            <h2>Redirect Chains</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-redirect-wrap" style="display:none">
+            <div id="net-redirect-list"></div>
+          </div>
+        </div>
+
+        <!-- Data Flow -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-dataflow">
+            <h2>Data Flow</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-dataflow-wrap" style="display:none">
+            <div id="net-dataflow-list"></div>
+          </div>
+        </div>
+
+        <!-- WebSockets -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-ws">
+            <h2>WebSockets</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-ws-wrap" style="display:none">
+            <div id="net-ws-list"></div>
+          </div>
+        </div>
+
+        <!-- Live feed -->
+        <div class="net-section">
+          <div class="net-table-toggle" id="net-toggle-feed">
+            <h2>Live Request Feed</h2>
+            <span class="toggle-hint">Click to expand</span>
+          </div>
+          <div id="net-feed-wrap" class="net-table-wrap" style="display:none">
+            <div class="net-filters">
+              <input type="text" id="net-feed-search" placeholder="Search domain...">
+              <select id="net-feed-cat-filter">
+                <option value="">All Categories</option>
+              </select>
+              <label class="net-feed-toggle"><input type="checkbox" id="net-feed-3p-only"> 3rd party only</label>
+            </div>
+            <table class="net-feed-table">
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Domain</th>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th>Category</th>
+                  <th>3rd Party</th>
+                </tr>
+              </thead>
+              <tbody id="net-feed-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Per-tab breakdown -->
+        <div class="net-section" id="net-sec-tabs">
+          <h2>Active Tabs</h2>
+          <div id="net-tab-list" class="net-domain-grid"></div>
+        </div>
+
+        <!-- Controls -->
+        <div class="net-controls">
+          <label class="net-auto-refresh">
+            <input type="checkbox" id="net-chk-auto" checked> Auto-refresh (3s)
+          </label>
+        </div>
+      </div>
+    </div>
+    <div id="panel-terms" class="panel"></div>
+    <div id="panel-tracking" class="panel"></div>
+  </div>
+
+  <div id="empty" style="display:none">
+    <div class="empty-title">No data yet</div>
+    <div class="empty-sub">Navigate to a website and open this report page.</div>
+  </div>
+
+  <script src="report.js"></script>
+</body>
+</html>

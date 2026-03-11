@@ -243,7 +243,15 @@ wearehere/
 │   ├── network-domains.js         # 454 trackers, 82 brokers
 │   ├── popup.html/js/css          # Quick-view popup
 │   └── report.html/js/css         # Full dashboard
-├── firefox-extension/             # MV2 (TODO)
+├── firefox-extension/             # Browser extension (Firefox MV2)
+│   ├── manifest.json              # MV2, v3.1.1, browser_specific_settings
+│   ├── background.js              # Aggregator (browser.* API, promise-based, ETP handling)
+│   ├── inject.js                  # Fingerprint/beacon wrappers (page context)
+│   ├── detect-*.js                # Detection modules (browser.runtime API)
+│   ├── tos-scanner.js             # scanText() patterns
+│   ├── network-domains.js         # 454 trackers, 82 brokers
+│   ├── popup.html/js/css          # Quick-view popup
+│   └── report.html/js/css         # Full dashboard
 └── store-assets/                  # Store listings, PRD
 ```
 
