@@ -147,16 +147,24 @@ body {
 
 /* Full Report button */
 #full-report-btn {
-  padding: 10px 16px 14px;
-  text-align: center;
-}
-#full-report-btn a {
+  display: block;
+  width: calc(100% - 32px);
+  margin: 10px 16px 14px;
+  padding: 10px 0;
+  background: #1a1d27;
   color: #6c5ce7;
   font-size: 13px;
   font-weight: 600;
-  text-decoration: none;
+  border: 1px solid #2a2d3a;
+  border-radius: 8px;
+  cursor: pointer;
+  text-align: center;
+  font-family: inherit;
 }
-#full-report-btn a:hover { text-decoration: underline; }
+#full-report-btn:hover {
+  background: #22253a;
+  border-color: #6c5ce7;
+}
 
 /* ToS loading */
 .tos-loading { color: #555; font-style: italic; }

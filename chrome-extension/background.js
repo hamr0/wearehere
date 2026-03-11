@@ -54,6 +54,11 @@ chrome.webRequest.onBeforeRequest.addListener(
 
     if (details.type === 'main_frame') {
       const tab = ensureTab(details.tabId);
+      try {
+        const mainUrl = new URL(details.url);
+        tab.domain = mainUrl.hostname;
+        tab.url = details.url;
+      } catch {}
       tab.networkData = {
         requestCount: 0,
         thirdPartyDomains: {},

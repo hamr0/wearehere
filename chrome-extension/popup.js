@@ -48,11 +48,11 @@ function render(report) {
   sections.appendChild(tosSection(report.tos));
 
   // Full Report button
-  const btn = document.createElement('div');
+  const btn = document.createElement('button');
   btn.id = 'full-report-btn';
-  btn.innerHTML = '<a href="#" id="open-report">Full Report &rarr;</a>';
+  btn.textContent = 'Full Report';
   sections.after(btn);
-  document.getElementById('open-report').addEventListener('click', (e) => {
+  btn.addEventListener('click', (e) => {
     e.preventDefault();
     chrome.tabs.query({ active: true, currentWindow: true }, (activeTabs) => {
       const tabId = activeTabs[0] ? activeTabs[0].id : '';
