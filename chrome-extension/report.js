@@ -1917,23 +1917,49 @@ function netUpdateToggleCount(toggleId, count, label) {
     const linkCount = lt.tracked > 0 ? lt.tracked + ' of ' + lt.total + ' tracked' : null;
     secLinks.appendChild(trackingSectionHeader('icons/linked.png', 'How they follow your clicks', linkCount));
 
-    const linkGrid = el('div', { className: 'summary-grid' });
-    linkGrid.appendChild(summaryCard('Links Tracked', lt.tracked + ' of ' + lt.total, lt.percentage + '% have tracking params'));
-    linkGrid.appendChild(summaryCard('Redirect Wrappers', lt.redirectWrappers, 'links routed through trackers'));
-    secLinks.appendChild(linkGrid);
-
     if (lt.details && lt.details.length > 0) {
-      const maxLinks = 30;
-      const shown = lt.details.slice(0, maxLinks);
-      for (const link of shown) {
-        const href = link.href || link.url || String(link);
-        const item = el('div', { className: 'link-item' });
-        item.innerHTML = highlightTrackingParams(escHtml(truncateStr(href, 200)));
-        secLinks.appendChild(item);
+      // Group by provider
+      const LINK_PARAM_PROVIDERS = {
+        utm_source: 'Google Analytics', utm_medium: 'Google Analytics', utm_campaign: 'Google Analytics',
+        utm_term: 'Google Analytics', utm_content: 'Google Analytics', utm_id: 'Google Analytics',
+        gclid: 'Google', dclid: 'Google', _ga: 'Google', _gl: 'Google',
+        fbclid: 'Meta', igshid: 'Instagram',
+        msclkid: 'Microsoft', mc_eid: 'Mailchimp', mc_cid: 'Mailchimp',
+        _hsenc: 'HubSpot', _hsmi: 'HubSpot', _openstat: 'OpenStat',
+        yclid: 'Yandex', twclid: 'X', ttclid: 'TikTok',
+        li_fat_id: 'LinkedIn', ref_src: 'Referral', ref_url: 'Referral',
+      };
+      const providerCounts = {};
+      for (const link of lt.details) {
+        const params = link.trackingParams || [];
+        const seen = new Set();
+        for (const p of params) {
+          const prov = LINK_PARAM_PROVIDERS[p] || 'Other';
+          if (!seen.has(prov)) { seen.add(prov); providerCounts[prov] = (providerCounts[prov] || 0) + 1; }
+        }
+        if (link.isRedirectWrapper && link.wrapperName) {
+          const w = link.wrapperName;
+          if (!seen.has(w)) { seen.add(w); providerCounts[w] = (providerCounts[w] || 0) + 1; }
+        }
       }
-      if (lt.details.length > maxLinks) {
-        secLinks.appendChild(el('div', { className: 'text-dim mt-8', textContent: '+ ' + (lt.details.length - maxLinks) + ' more tracked links' }));
+      const sorted = Object.entries(providerCounts).sort((a, b) => b[1] - a[1]);
+
+      // Summary line
+      secLinks.appendChild(el('div', { className: 'text-dim mb-8', textContent: lt.percentage + '% of links on this page tag your clicks' }));
+
+      // Provider chips
+      const chipList = el('div', { className: 'data-service-list mb-16' });
+      for (const [name, count] of sorted) {
+        const chip = el('span', { className: 'data-service-chip' });
+        chip.appendChild(el('span', { className: 'data-service-name', textContent: name }));
+        if (count > 1) chip.appendChild(el('span', { className: 'data-service-count', textContent: '(' + count + ')' }));
+        chipList.appendChild(chip);
       }
+      secLinks.appendChild(chipList);
+    } else if (lt.total > 0) {
+      secLinks.appendChild(el('div', { className: 'text-dim', textContent: 'No tracking parameters found in links.' }));
+    } else {
+      secLinks.appendChild(el('div', { className: 'text-dim', textContent: 'No links found on this page.' }));
     }
     panel.appendChild(secLinks);
   }
@@ -1980,6 +2006,23 @@ function netUpdateToggleCount(toggleId, count, label) {
     { pattern: /matomo|^_pk_|piwik/i, name: 'Matomo' },
     { pattern: /^gclid|^msclkid|^utm_/i, name: 'Ad click tracking' },
     { pattern: /^IDE$|^DSID$|^NID$|^ANID$|^1P_JAR$/i, name: 'Google' },
+    { pattern: /^yt-remote-|^yt-player/i, name: 'YouTube' },
+    { pattern: /^sb_|^bm_/i, name: 'Bing' },
+    { pattern: /^_pin_|^_pinterest/i, name: 'Pinterest' },
+    { pattern: /^_snap|^sc_/i, name: 'Snapchat' },
+    { pattern: /twitter|^twid|^ct0$/i, name: 'X (Twitter)' },
+    { pattern: /^sp_|spotify/i, name: 'Spotify' },
+    { pattern: /^lms_|linkedin/i, name: 'LinkedIn' },
+    { pattern: /^__stripe/i, name: 'Stripe' },
+    { pattern: /^_shopify|^cart_/i, name: 'Shopify' },
+    { pattern: /^csrf|^session|^auth/i, name: 'Site auth' },
+    { pattern: /^visitor_id|^client_id|^distinct_id|^device_id|^browser_id|^machine_id/i, name: 'Device fingerprint' },
+    { pattern: /^__cf_/i, name: 'Cloudflare' },
+    { pattern: /^_dd_|datadog/i, name: 'Datadog' },
+    { pattern: /sentry/i, name: 'Sentry' },
+    { pattern: /newrelic|^NRBA/i, name: 'New Relic' },
+    { pattern: /^__hssc|^__hstc|^__hsfp|^hubspotutk/i, name: 'HubSpot' },
+    { pattern: /^_uetsid|^_uetvid/i, name: 'Microsoft Ads' },
   ];
 
   function identifyService(keyName) {
