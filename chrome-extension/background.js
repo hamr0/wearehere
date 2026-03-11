@@ -734,33 +734,46 @@ function computeVerdict(r) {
   let score = 0;
   const concerns = [];
 
-  if (r.cookies.thirdParty > 10) { score += 20; concerns.push('Heavy cross-site cookie tracking'); }
+  // Cookies (max 15)
+  if (r.cookies.thirdParty > 10) { score += 15; concerns.push('Heavy cross-site cookie tracking'); }
   else if (r.cookies.thirdParty > 3) { score += 10; concerns.push('Third-party cookies tracking you'); }
-  if (r.cookies.longestDays > 365) { score += 5; concerns.push('Cookies last over a year'); }
+  else if (r.cookies.longestDays > 365) { score += 5; concerns.push('Cookies last over a year'); }
 
+  // Network (max 10)
   if (r.network?.trackerDomains > 10) { score += 10; concerns.push('Many tracker domains in network traffic'); }
   else if (r.network?.trackerDomains > 3) { score += 5; concerns.push('Tracker domains detected'); }
 
-  if (r.trackers.total > 10) { score += 25; concerns.push('Heavy hidden tracking'); }
-  else if (r.trackers.total > 3) { score += 15; concerns.push('Hidden trackers on this page'); }
-  if (r.trackers.thirdPartyScripts > 15) { score += 10; concerns.push('Lots of outside scripts loaded'); }
+  // Trackers (max 20)
+  if (r.trackers.total > 10) { score += 20; concerns.push('Heavy hidden tracking'); }
+  else if (r.trackers.total > 3) { score += 10; concerns.push('Hidden trackers on this page'); }
 
-  if (r.fingerprinting.techniques >= 3) { score += 25; concerns.push('Aggressively fingerprinting your device'); }
-  else if (r.fingerprinting.techniques >= 1) { score += 10; concerns.push('Reading your device info'); }
-
+  // Pressure (max 15)
   if (r.pressure.score >= 60) { score += 15; concerns.push('Using manipulative design tricks'); }
   else if (r.pressure.score >= 20) { score += 5; concerns.push('Some pressure tactics'); }
 
-  if (r.tos?.score >= 60) { score += 10; concerns.push('Toxic terms of service'); }
-  else if (r.tos?.score >= 30) { score += 5; concerns.push('Concerning terms'); }
+  // Selling data (max 10)
+  if (r.network?.brokerCount > 5) { score += 10; concerns.push('Data brokers found in network traffic'); }
+  else if (r.network?.brokerCount > 0) { score += 5; concerns.push('Data broker connections detected'); }
 
+  // Profiling (max 20)
+  if (r.fingerprinting.techniques >= 3) { score += 20; concerns.push('Aggressively fingerprinting your device'); }
+  else if (r.fingerprinting.techniques >= 1) { score += 10; concerns.push('Reading your device info'); }
+
+  // Stored data (max 5)
   if (r.localData.suspicious > 5) { score += 5; concerns.push('Tracking IDs saved on your device'); }
 
-  if (r.linkTracking.percentage > 50) { score += 5; concerns.push('Most links tag your clicks'); }
-
+  // Watching (max 10)
   if (r.forms?.fieldCount > 0 && r.forms?.trackersWhileTyping > 3) {
     score += 10; concerns.push('Trackers watching while you fill out forms');
   }
+
+  // Clicks (max 5)
+  if (r.linkTracking.percentage > 50) { score += 5; concerns.push('Most links tag your clicks'); }
+
+  // Terms (max 15)
+  if (r.tos?.score >= 60) { score += 15; concerns.push('Toxic terms of service'); }
+  else if (r.tos?.score >= 30) { score += 10; concerns.push('Concerning terms'); }
+  else if (r.tos?.score >= 10) { score += 5; concerns.push('Some concerning terms'); }
 
   score = Math.min(score, 100);
 

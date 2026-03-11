@@ -447,9 +447,11 @@ function netUpdateToggleCount(toggleId, count, label) {
   function renderOverview() {
     const panel = document.getElementById('panel-overview');
     panel.innerHTML = '';
-    const v = reportData.verdict;
+    const r = reportData;
+    const v = r.verdict;
     const rc = riskColor(v.score);
 
+    // Score display
     const scoreDiv = el('div', { className: 'score-display' });
     scoreDiv.appendChild(el('div', { className: 'score-number color-' + rc, textContent: v.score }));
     const meta = el('div', { className: 'score-meta' });
@@ -464,18 +466,70 @@ function netUpdateToggleCount(toggleId, count, label) {
     bar.appendChild(fill);
     panel.appendChild(bar);
 
+    // At a Glance
+    const formFields = r.forms ? r.forms.fieldCount : 0;
+    const formTrackers = r.forms ? r.forms.trackersWhileTyping : 0;
+    const trCompanyCount = r.trackers.companies?.length || 0;
+
+    panel.appendChild(el('div', { className: 'section-heading mt-16', textContent: 'At a Glance' }));
+    const grid = el('div', { className: 'summary-grid' });
+
+    grid.appendChild(summaryCard('icons/cooked.png', 'Cookies', r.cookies.total, r.cookies.thirdParty + ' third-party', '#e67e22'));
+    grid.appendChild(summaryCard('icons/baked.png', 'Network', (r.network?.trackerDomains || 0) + ' trackers', r.network?.totalRequests + ' requests', '#5dade2'));
+    grid.appendChild(summaryCard('icons/cooked.png', 'Trackers', trCompanyCount || r.trackers.total, trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (r.trackers.total > 0 ? 'hidden elements' : 'none found'), '#ff6b6b'));
+    grid.appendChild(summaryCard('icons/played.png', 'Pressure', r.pressure.tactics.length + ' tactic' + (r.pressure.tactics.length !== 1 ? 's' : ''), r.pressure.score > 0 ? r.pressure.score + '/100' : 'none', '#9b59b6'));
+    grid.appendChild(summaryCard('icons/baked.png', 'Selling data', (r.network?.brokerCount || 0) + ' broker' + ((r.network?.brokerCount || 0) !== 1 ? 's' : ''), '', '#ff85a2'));
+    grid.appendChild(summaryCard('icons/watched.png', 'Profiling', r.fingerprinting.techniques > 0 ? 'Active' : 'None', r.fingerprinting.techniques + ' technique' + (r.fingerprinting.techniques !== 1 ? 's' : ''), '#e74c3c'));
+    grid.appendChild(summaryCard('icons/leaking.png', 'Stored data', r.localData.suspicious > 0 ? r.localData.suspicious + ' suspicious' : 'Clean', r.localData.totalKeys + ' total', '#f1c40f'));
+    grid.appendChild(summaryCard('icons/silent.png', 'Watching', formTrackers > 0 ? formTrackers + ' trackers' : 'Clean', formFields + ' field' + (formFields !== 1 ? 's' : ''), '#1abc9c'));
+    grid.appendChild(summaryCard('icons/linked.png', 'Clicks', r.linkTracking.percentage + '% tracked', r.linkTracking.tracked + ' of ' + r.linkTracking.total, '#a8e6cf'));
+    const tosLabel2 = r.tos.loading ? '...' : (!r.tos.found && r.tos.score === undefined) ? 'N/A' : r.tos.score + '/100';
+    grid.appendChild(summaryCard('icons/tosed.png', 'Terms', tosLabel2, r.tos.loading ? 'loading' : r.tos.flagged ? r.tos.flagged.length + ' flagged' : 'not found', '#b39ddb'));
+    panel.appendChild(grid);
+
     panel.appendChild(el('div', { className: 'section-heading', textContent: 'Score Breakdown' }));
     const breakdownCard = el('div', { className: 'card' });
     const breakdowns = computeBreakdown();
+    const totalMax = breakdowns.reduce((sum, b) => sum + b.max, 0);
+
+    // Stacked weight bar
+    const SEGMENT_COLORS = {
+      Cookies: '#e67e22', Network: '#5dade2', Trackers: '#ff6b6b', Pressure: '#9b59b6',
+      'Selling data': '#ff85a2', Profiling: '#e74c3c', 'Stored data': '#f1c40f',
+      Watching: '#1abc9c', Clicks: '#a8e6cf', Terms: '#b39ddb',
+    };
+    const stackedBar = el('div', { className: 'weight-bar' });
+    const stackedLabels = el('div', { className: 'weight-labels' });
+    for (const b of breakdowns) {
+      const widthPct = (b.max / totalMax) * 100;
+      const seg = el('div', { className: 'weight-seg' + (b.points > 0 ? ' weight-seg-active' : '') });
+      seg.style.width = widthPct + '%';
+      seg.style.backgroundColor = SEGMENT_COLORS[b.label] || '#6c5ce7';
+      seg.title = b.label + ': +' + b.points + ' / ' + b.max;
+      stackedBar.appendChild(seg);
+
+      const lbl = el('div', { className: 'weight-lbl' });
+      lbl.style.width = widthPct + '%';
+      lbl.appendChild(el('img', { className: 'weight-lbl-icon', src: b.icon, alt: '' }));
+      if (widthPct >= 8) lbl.appendChild(document.createTextNode(b.max));
+      stackedLabels.appendChild(lbl);
+    }
+    breakdownCard.appendChild(stackedBar);
+    breakdownCard.appendChild(stackedLabels);
+
+    // Per-row breakdown
     for (const b of breakdowns) {
       const row = el('div', { className: 'breakdown-row' });
+      if (b.icon) row.appendChild(el('img', { className: 'breakdown-icon', src: b.icon, alt: '' }));
       row.appendChild(el('span', { className: 'breakdown-label', textContent: b.label }));
       const track = el('div', { className: 'breakdown-bar-track' });
-      const bfill = el('div', { className: 'breakdown-bar-fill bg-' + riskColor(b.points * 4) });
-      bfill.style.width = (b.points > 0 ? Math.max((b.points / 25) * 100, 5) : 0) + '%';
+      const pct = b.max > 0 && b.points > 0 ? Math.max((b.points / b.max) * 100, 5) : 0;
+      const bfill = el('div', { className: 'breakdown-bar-fill' });
+      bfill.style.width = pct + '%';
+      bfill.style.backgroundColor = SEGMENT_COLORS[b.label] || '#6c5ce7';
       track.appendChild(bfill);
       row.appendChild(track);
-      row.appendChild(el('span', { className: 'breakdown-value', textContent: '+' + b.points }));
+      row.appendChild(el('span', { className: 'breakdown-value', textContent: '+' + b.points + ' / ' + b.max }));
       breakdownCard.appendChild(row);
     }
     panel.appendChild(breakdownCard);
@@ -492,33 +546,16 @@ function netUpdateToggleCount(toggleId, count, label) {
       panel.appendChild(list);
     }
 
-    panel.appendChild(el('div', { className: 'section-heading mt-16', textContent: 'At a Glance' }));
-    const grid = el('div', { className: 'summary-grid' });
-    const r = reportData;
-
-    const formFields = r.forms ? r.forms.fieldCount : 0;
-    const formTrackers = r.forms ? r.forms.trackersWhileTyping : 0;
-    const trCompanyCount = r.trackers.companies?.length || 0;
-
-    grid.appendChild(summaryCard('Cookies', r.cookies.total, r.cookies.thirdParty + ' third-party'));
-    grid.appendChild(summaryCard('Network', (r.network?.trackerDomains || 0) + ' trackers', r.network?.totalRequests + ' requests'));
-    grid.appendChild(summaryCard('Trackers', trCompanyCount || r.trackers.total, trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (r.trackers.total > 0 ? 'hidden elements' : 'none found')));
-    grid.appendChild(summaryCard('Pressure', r.pressure.tactics.length + ' tactic' + (r.pressure.tactics.length !== 1 ? 's' : ''), r.pressure.score > 0 ? r.pressure.score + '/100' : 'none'));
-    grid.appendChild(summaryCard('Selling data', (r.network?.brokerCount || 0) + ' broker' + ((r.network?.brokerCount || 0) !== 1 ? 's' : ''), ''));
-    grid.appendChild(summaryCard('Profiling', r.fingerprinting.techniques > 0 ? 'Active' : 'None', r.fingerprinting.techniques + ' technique' + (r.fingerprinting.techniques !== 1 ? 's' : '')));
-    grid.appendChild(summaryCard('Stored data', r.localData.suspicious > 0 ? r.localData.suspicious + ' suspicious' : 'Clean', r.localData.totalKeys + ' total'));
-    grid.appendChild(summaryCard('Watching', formTrackers > 0 ? formTrackers + ' trackers' : 'Clean', formFields + ' field' + (formFields !== 1 ? 's' : '')));
-    grid.appendChild(summaryCard('Clicks', r.linkTracking.percentage + '% tracked', r.linkTracking.tracked + ' of ' + r.linkTracking.total));
-
-    const tosLabel2 = r.tos.loading ? '...' : (!r.tos.found && r.tos.score === undefined) ? 'N/A' : r.tos.score + '/100';
-    grid.appendChild(summaryCard('Terms', tosLabel2, r.tos.loading ? 'loading' : r.tos.flagged ? r.tos.flagged.length + ' flagged' : 'not found'));
-
-    panel.appendChild(grid);
   }
 
-  function summaryCard(label, value, sub) {
+  function summaryCard(iconSrc, label, value, sub, color) {
     const item = el('div', { className: 'summary-item' });
-    item.appendChild(el('div', { className: 'summary-item-label', textContent: label }));
+    if (color) item.style.borderLeft = '3px solid ' + color;
+    const labelRow = el('div', { className: 'summary-item-label' });
+    const img = el('img', { className: 'summary-item-icon', src: iconSrc, alt: '' });
+    labelRow.appendChild(img);
+    labelRow.appendChild(document.createTextNode(label));
+    item.appendChild(labelRow);
     item.appendChild(el('div', { className: 'summary-item-value', textContent: String(value) }));
     if (sub) item.appendChild(el('div', { className: 'summary-item-sub', textContent: sub }));
     return item;
@@ -530,48 +567,51 @@ function netUpdateToggleCount(toggleId, count, label) {
     let pts;
 
     pts = 0;
-    if (r.cookies.thirdParty > 10) pts = 20;
+    if (r.cookies.thirdParty > 10) pts = 15;
     else if (r.cookies.thirdParty > 3) pts = 10;
-    if (r.cookies.longestDays > 365) pts += 5;
-    rows.push({ label: 'Cookies', points: pts });
+    else if (r.cookies.longestDays > 365) pts = 5;
+    rows.push({ icon: 'icons/cooked.png', label: 'Cookies', points: pts, max: 15 });
 
     pts = 0;
     if (r.network?.trackerDomains > 10) pts = 10;
     else if (r.network?.trackerDomains > 3) pts = 5;
-    rows.push({ label: 'Network', points: pts });
+    rows.push({ icon: 'icons/baked.png', label: 'Network', points: pts, max: 10 });
 
     pts = 0;
-    if (r.trackers.total > 10) pts = 25;
-    else if (r.trackers.total > 3) pts = 15;
-    if (r.trackers.thirdPartyScripts > 15) pts += 10;
-    rows.push({ label: 'Trackers', points: pts });
+    if (r.trackers.total > 10) pts = 20;
+    else if (r.trackers.total > 3) pts = 10;
+    rows.push({ icon: 'icons/cooked.png', label: 'Trackers', points: pts, max: 20 });
 
     pts = 0;
     if (r.pressure.score >= 60) pts = 15;
     else if (r.pressure.score >= 20) pts = 5;
-    rows.push({ label: 'Pressure', points: pts });
-
-    rows.push({ label: 'Selling data', points: 0 });
+    rows.push({ icon: 'icons/played.png', label: 'Pressure', points: pts, max: 15 });
 
     pts = 0;
-    if (r.fingerprinting.techniques >= 3) pts = 25;
+    if (r.network?.brokerCount > 5) pts = 10;
+    else if (r.network?.brokerCount > 0) pts = 5;
+    rows.push({ icon: 'icons/baked.png', label: 'Selling data', points: pts, max: 10 });
+
+    pts = 0;
+    if (r.fingerprinting.techniques >= 3) pts = 20;
     else if (r.fingerprinting.techniques >= 1) pts = 10;
-    rows.push({ label: 'Profiling', points: pts });
+    rows.push({ icon: 'icons/watched.png', label: 'Profiling', points: pts, max: 20 });
 
     pts = 0;
     if (r.localData.suspicious > 5) pts = 5;
-    rows.push({ label: 'Stored data', points: pts });
+    rows.push({ icon: 'icons/leaking.png', label: 'Stored data', points: pts, max: 5 });
 
-    rows.push({ label: 'Watching', points: r.forms?.trackersWhileTyping > 3 ? 10 : 0 });
+    rows.push({ icon: 'icons/silent.png', label: 'Watching', points: r.forms?.trackersWhileTyping > 3 ? 10 : 0, max: 10 });
 
     pts = 0;
     if (r.linkTracking.percentage > 50) pts = 5;
-    rows.push({ label: 'Clicks', points: pts });
+    rows.push({ icon: 'icons/linked.png', label: 'Clicks', points: pts, max: 5 });
 
     pts = 0;
-    if (r.tos && r.tos.score >= 60) pts = 10;
-    else if (r.tos && r.tos.score >= 30) pts = 5;
-    rows.push({ label: 'Terms', points: pts });
+    if (r.tos && r.tos.score >= 60) pts = 15;
+    else if (r.tos && r.tos.score >= 30) pts = 10;
+    else if (r.tos && r.tos.score >= 10) pts = 5;
+    rows.push({ icon: 'icons/tosed.png', label: 'Terms', points: pts, max: 15 });
 
     return rows;
   }
@@ -1825,7 +1865,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const trTotal = tr.total || 0;
     const trCompanyCount = trCompanies.length;
     const trCount = trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (trTotal > 0 ? trTotal + ' hidden element' + (trTotal !== 1 ? 's' : '') : null);
-    secTrackers.appendChild(trackingSectionHeader('icons/cooked.png', "Who's tracking you", trCount));
+    secTrackers.appendChild(trackingSectionHeader('icons/cooked.png', "Who's tracking you", trCount, '#ff6b6b'));
 
     if (trCompanies.length > 0) {
       // Group companies by purpose
@@ -1857,7 +1897,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const secBrokers = el('div', { className: 'tracking-section' });
     const brokers = reportData.network?.brokers || [];
     const brokerCount = brokers.length > 0 ? brokers.length + ' broker' + (brokers.length !== 1 ? 's' : '') : null;
-    secBrokers.appendChild(trackingSectionHeader('icons/baked.png', "Who's selling your data", brokerCount));
+    secBrokers.appendChild(trackingSectionHeader('icons/baked.png', "Who's selling your data", brokerCount, '#ff85a2'));
 
     if (brokers.length > 0) {
       // Group by type
@@ -1888,7 +1928,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const pr = reportData.pressure || { score: 0, tactics: [] };
     const prTactics = pr.tactics || [];
     const prCount = prTactics.length > 0 ? pr.score + '/100 · ' + prTactics.length + ' tactic' + (prTactics.length !== 1 ? 's' : '') : null;
-    secPressure.appendChild(trackingSectionHeader('icons/played.png', 'Tricking you into buying', prCount));
+    secPressure.appendChild(trackingSectionHeader('icons/played.png', 'Tricking you into buying', prCount, '#9b59b6'));
 
     if (prTactics.length > 0) {
       for (const t of prTactics) {
@@ -1914,7 +1954,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const fp = reportData.fingerprinting;
     const fpItems = fp.items || [];
     const fpCount = fpItems.length > 0 ? fpItems.length + ' technique' + (fpItems.length !== 1 ? 's' : '') : null;
-    secFp.appendChild(trackingSectionHeader('icons/watched.png', 'Reading your device to identify you', fpCount));
+    secFp.appendChild(trackingSectionHeader('icons/watched.png', 'Reading your device to identify you', fpCount, '#e74c3c'));
 
     const FRIENDLY_NAMES = {
       'Canvas.toDataURL': 'Drew a hidden image to ID your device',
@@ -1964,7 +2004,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const secStorage = el('div', { className: 'tracking-section' });
     const ld = reportData.localData;
     const storageCount = ld.suspicious > 0 ? ld.suspicious + ' suspicious out of ' + ld.totalKeys : null;
-    secStorage.appendChild(trackingSectionHeader('icons/leaking.png', 'What they store in your browser', storageCount));
+    secStorage.appendChild(trackingSectionHeader('icons/leaking.png', 'What they store in your browser', storageCount, '#f1c40f'));
 
     if (ld.suspicious > 0 && ld.byCategory && Object.keys(ld.byCategory).length > 0) {
       const catOrder = ['Cross-site tracking', 'Advertising', 'Fingerprinting', 'PII exposure', 'PII', 'Tracking'];
@@ -1990,7 +2030,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const secForms = el('div', { className: 'tracking-section' });
     const f = reportData.forms;
     const formCount = f && f.trackersWhileTyping > 0 ? f.trackersWhileTyping + ' tracker' + (f.trackersWhileTyping !== 1 ? 's' : '') : null;
-    secForms.appendChild(trackingSectionHeader('icons/silent.png', 'Watching what you type', formCount));
+    secForms.appendChild(trackingSectionHeader('icons/silent.png', 'Watching what you type', formCount, '#1abc9c'));
 
     if (f && f.fields && f.fields.length > 0) {
       secForms.appendChild(el('div', { className: 'card-title', textContent: 'Tracked fields' }));
@@ -2020,7 +2060,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     const secLinks = el('div', { className: 'tracking-section' });
     const lt = reportData.linkTracking;
     const linkCount = lt.tracked > 0 ? lt.tracked + ' tracked out of ' + lt.total : null;
-    secLinks.appendChild(trackingSectionHeader('icons/linked.png', 'How they follow your clicks', linkCount));
+    secLinks.appendChild(trackingSectionHeader('icons/linked.png', 'How they follow your clicks', linkCount, '#a8e6cf'));
 
     if (lt.details && lt.details.length > 0) {
       // Group by provider
@@ -2071,8 +2111,9 @@ function netUpdateToggleCount(toggleId, count, label) {
     panel.appendChild(grid);
   }
 
-  function trackingSectionHeader(iconSrc, text, countText) {
+  function trackingSectionHeader(iconSrc, text, countText, color) {
     const header = el('div', { className: 'tracking-section-header' });
+    if (color) header.style.borderBottom = '2px solid ' + color;
     header.appendChild(el('img', { src: iconSrc, className: 'tracking-section-icon', width: 20, height: 20 }));
     header.appendChild(document.createTextNode(text));
     if (countText) {

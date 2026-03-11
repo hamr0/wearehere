@@ -173,7 +173,36 @@ wearehere also ships an MCP server (`mcp-server.js`) for agent-facing use. It ex
 
 ## Changelog
 
-### v3.0.0 (current)
+### v3.1.0 — Dashboard Polish, Unified Labels, Score Rebalance
+
+**Unified 10-Section Labels**
+- Consistent naming across popup, overview, and tracking tab: Cookies, Network, Trackers, Pressure, Selling data, Profiling, Stored data, Watching, Clicks, Terms
+- Extension icons replace emojis in popup sections
+- Extension icons added to overview summary cards and score breakdown rows
+
+**Dark Patterns Section**
+- New "Tricking you into buying" card in Tracking tab (7th section)
+- Shows manipulation score, detected tactics (countdown timers, discount pressure, scarcity, pre-checked boxes, confirm-shaming, hidden unsubscribe)
+- Data from weareplayed module now fully integrated
+
+**Score Rebalance**
+- Rebalanced category weights: Trackers 20, Profiling 20, Cookies 15, Pressure 15, Terms 15, Network 10, Selling data 10, Watching 10, Stored data 5, Clicks 5
+- Terms scoring improved: 3 tiers (+5/+10/+15) instead of 2 (+5/+10)
+- Selling data now contributes to score based on broker count
+- Network tracker domains now contribute to verdict score
+
+**Visual Consistency**
+- Stacked weight bar shows all 10 category weights on a single 100% scale
+- Category colors consistent across weight bar, breakdown rows, At a Glance cards, and Tracking tab headers
+- Breakdown rows show +pts / max for transparency
+- At a Glance cards have colored left borders matching category colors
+- Overview reordered: Score → At a Glance → Breakdown → Concerns
+
+**Network in Popup**
+- Network summary (tracker domains, request count, third-party domains) now available in popup via buildReport()
+- Selling data section in popup shows broker count from network data
+
+### v3.0.0
 - Dashboard consolidated from 8 tabs → 5: Overview, Cookies, Network, Terms, Tracking
 - New Tracking tab combines Fingerprinting, Forms, Storage, Links in one view
 - Each tracking section has icon + header with inline count (e.g. `· 37 of 151 suspicious`)
