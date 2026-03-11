@@ -1,5 +1,7 @@
 "use strict";
 
+(function () {
+
 var SUSPICIOUS_PATTERNS = [
   { pattern: /^_ga|^_gid|^_gat|^_gcl/i, category: "Cross-site tracking" },
   { pattern: /amplitude|mixpanel|mp_/i, category: "Cross-site tracking" },
@@ -103,3 +105,5 @@ function run() {
 }
 
 run();
+
+})();

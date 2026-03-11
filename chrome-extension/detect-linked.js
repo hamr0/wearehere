@@ -1,5 +1,7 @@
 "use strict";
 
+(function () {
+
 // ── Tracking parameters mapped to providers ──
 
 var TRACKING_PROVIDERS = {
@@ -216,3 +218,5 @@ var observer = new MutationObserver(function (mutations) {
 });
 
 observer.observe(document.documentElement, { childList: true, subtree: true });
+
+})();

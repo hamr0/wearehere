@@ -1,5 +1,7 @@
 "use strict";
 
+(function () {
+
 function getAriaLabel(el) {
   // 1. aria-labelledby
   var labelledBy = el.getAttribute("aria-labelledby");
@@ -77,3 +79,5 @@ function scanFields() {
 
 scanFields();
 setTimeout(scanFields, 2000);
+
+})();

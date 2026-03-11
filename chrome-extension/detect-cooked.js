@@ -1,5 +1,7 @@
 "use strict";
 
+(function () {
+
 // Domain → company name + purpose
 var COMPANY_MAP = {
   // Google
@@ -456,3 +458,5 @@ scanPixels();
 scanIframes();
 scanPrefetches();
 sendResults();
+
+})();

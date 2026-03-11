@@ -173,6 +173,12 @@ wearehere also ships an MCP server (`mcp-server.js`) for agent-facing use. It ex
 
 ## Changelog
 
+### v3.1.1 — Content Script Scope Isolation
+
+- Wrapped detect-cooked, detect-linked, detect-leaked, and detect-silent in IIFEs to prevent global variable collisions
+- Root cause: Chrome content scripts from the same extension share the same isolated world scope — `var items`, `sendResults`, `getDomain`, `scanElement`, and `observer` in detect-cooked.js and detect-linked.js were overwriting each other
+- Fixes: `Cannot read properties of undefined (reading 'length')` crashes on pages with links and trackers
+
 ### v3.1.0 — Dashboard Polish, Unified Labels, Score Rebalance
 
 **Unified 10-Section Labels**
