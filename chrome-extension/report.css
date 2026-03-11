@@ -604,6 +604,64 @@ body {
   font-weight: 600;
   color: #e2e4ea;
 }
+.data-category-broker {
+  border-left-color: #e056a0;
+}
+.broker-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 5px 0;
+  border-bottom: 1px solid #1a1d27;
+}
+.broker-row:last-child { border-bottom: none; }
+.broker-row-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e2e4ea;
+  white-space: nowrap;
+}
+.broker-row-desc {
+  font-size: 12px;
+  color: #6b6f83;
+}
+
+/* --- Pressure / Dark Patterns --- */
+.pressure-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  border-bottom: 1px solid #1a1d27;
+}
+.pressure-row:last-child { border-bottom: none; }
+.pressure-row-icon { font-size: 15px; flex-shrink: 0; }
+.pressure-row-label {
+  font-size: 14px;
+  color: #c0c4d8;
+  flex: 1;
+}
+.pressure-row-count {
+  font-size: 14px;
+  font-weight: 700;
+  color: #e67e22;
+  margin-left: auto;
+}
+.pressure-verdict {
+  font-size: 12px;
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+}
+.pressure-verdict-high {
+  background: rgba(231, 76, 60, 0.12);
+  color: #e74c3c;
+}
+.pressure-verdict-mid {
+  background: rgba(230, 126, 34, 0.12);
+  color: #e67e22;
+}
+
 .data-service-list {
   display: flex;
   flex-wrap: wrap;
@@ -850,12 +908,19 @@ body {
   margin-top: 24px;
 }
 .section-heading:first-child { margin-top: 0; }
+.tracking-grid {
+  columns: 2;
+  column-gap: 20px;
+}
+.tracking-grid > .tracking-section {
+  break-inside: avoid;
+  margin-bottom: 20px;
+}
 .tracking-section {
   background: #14161f;
   border: 1px solid #2e3346;
   border-radius: 10px;
   padding: 20px;
-  margin-bottom: 20px;
 }
 .tracking-section-header {
   display: flex;
@@ -1543,6 +1608,7 @@ body {
 
 /* === Responsive === */
 @media (max-width: 768px) {
+  .tracking-grid { columns: 1; }
   #header { padding: 14px 16px 12px; }
   #header-left { gap: 10px; }
   #brand { font-size: 18px; }

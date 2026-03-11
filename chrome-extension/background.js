@@ -634,6 +634,7 @@ function buildReport(data) {
     dpTactics.push({
       tactic: PLAYED_LABELS[item.pattern] || item.pattern,
       type: item.pattern,
+      count: item.count || 0,
       evidence: [],
     });
   }

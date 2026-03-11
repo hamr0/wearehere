@@ -1804,6 +1804,105 @@ function netUpdateToggleCount(toggleId, count, label) {
 
     panel.appendChild(el('div', { className: 'tab-tagline', textContent: 'How this site watches and tracks you' }));
 
+    const grid = el('div', { className: 'tracking-grid' });
+
+    // --- Who's Tracking You (from cooked — pixels, iframes, beacons) ---
+    const secTrackers = el('div', { className: 'tracking-section' });
+    const tr = reportData.trackers;
+    const trCompanies = tr.companies || [];
+    const trTotal = tr.total || 0;
+    const trCompanyCount = trCompanies.length;
+    const trCount = trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (trTotal > 0 ? trTotal + ' hidden element' + (trTotal !== 1 ? 's' : '') : null);
+    secTrackers.appendChild(trackingSectionHeader('icons/cooked.png', "Who's tracking you", trCount));
+
+    if (trCompanies.length > 0) {
+      // Group companies by purpose
+      const purposeGroups = {};
+      for (const c of trCompanies) {
+        const purpose = c.purpose || 'Other';
+        if (!purposeGroups[purpose]) purposeGroups[purpose] = [];
+        purposeGroups[purpose].push(c);
+      }
+      const purposeOrder = ['Advertising', 'Analytics', 'Social Tracking', 'Fingerprinting', 'Data broker', 'Other'];
+      const rendered = new Set();
+      for (const purpose of purposeOrder) {
+        if (purposeGroups[purpose]) {
+          renderTrackerPurpose(secTrackers, purpose, purposeGroups[purpose]);
+          rendered.add(purpose);
+        }
+      }
+      for (const [purpose, companies] of Object.entries(purposeGroups)) {
+        if (!rendered.has(purpose)) renderTrackerPurpose(secTrackers, purpose, companies);
+      }
+    } else if (trTotal > 0) {
+      secTrackers.appendChild(el('div', { className: 'text-dim', textContent: trTotal + ' hidden tracking elements found (no company names resolved).' }));
+    } else {
+      secTrackers.appendChild(el('div', { className: 'text-dim', textContent: 'No hidden trackers found.' }));
+    }
+    grid.appendChild(secTrackers);
+
+    // --- Who's Selling Your Data (from baked — data brokers) ---
+    const secBrokers = el('div', { className: 'tracking-section' });
+    const brokers = reportData.network?.brokers || [];
+    const brokerCount = brokers.length > 0 ? brokers.length + ' broker' + (brokers.length !== 1 ? 's' : '') : null;
+    secBrokers.appendChild(trackingSectionHeader('icons/baked.png', "Who's selling your data", brokerCount));
+
+    if (brokers.length > 0) {
+      // Group by type
+      const typeGroups = {};
+      for (const b of brokers) {
+        const type = b.type || 'Other';
+        if (!typeGroups[type]) typeGroups[type] = [];
+        typeGroups[type].push(b);
+      }
+      const typeOrder = ['Data Marketplace', 'Identity Resolution', 'Audience Data', 'Consumer Data Broker', 'Other'];
+      const renderedTypes = new Set();
+      for (const type of typeOrder) {
+        if (typeGroups[type]) {
+          renderBrokerType(secBrokers, type, typeGroups[type]);
+          renderedTypes.add(type);
+        }
+      }
+      for (const [type, items] of Object.entries(typeGroups)) {
+        if (!renderedTypes.has(type)) renderBrokerType(secBrokers, type, items);
+      }
+    } else {
+      secBrokers.appendChild(el('div', { className: 'text-dim', textContent: 'No data brokers detected.' }));
+    }
+    grid.appendChild(secBrokers);
+
+    // --- Dark Patterns (from played module) ---
+    const secPressure = el('div', { className: 'tracking-section' });
+    const pr = reportData.pressure || { score: 0, tactics: [] };
+    const prTactics = pr.tactics || [];
+    const prCount = prTactics.length > 0 ? pr.score + '/100 · ' + prTactics.length + ' tactic' + (prTactics.length !== 1 ? 's' : '') : null;
+    secPressure.appendChild(trackingSectionHeader('icons/played.png', 'Tricking you into buying', prCount));
+
+    if (prTactics.length > 0) {
+      const TACTIC_ICONS = {
+        countdown: '\u23f1', discount: '\ud83c\udff7\ufe0f', scarcity: '\ud83d\udce2',
+        prechecked: '\u2611\ufe0f', shaming: '\ud83d\ude14', 'hidden-unsub': '\ud83d\udd75\ufe0f',
+      };
+      for (const t of prTactics) {
+        const row = el('div', { className: 'pressure-row' });
+        const icon = TACTIC_ICONS[t.type] || '\u26a0\ufe0f';
+        row.appendChild(el('span', { className: 'pressure-row-icon', textContent: icon }));
+        row.appendChild(el('span', { className: 'pressure-row-label', textContent: t.tactic }));
+        if (t.count) {
+          row.appendChild(el('span', { className: 'pressure-row-count', textContent: t.count + 'x' }));
+        }
+        secPressure.appendChild(row);
+      }
+      if (pr.score >= 60) {
+        secPressure.appendChild(el('div', { className: 'pressure-verdict pressure-verdict-high', textContent: 'Heavy manipulation — be careful here.' }));
+      } else if (pr.score >= 20) {
+        secPressure.appendChild(el('div', { className: 'pressure-verdict pressure-verdict-mid', textContent: 'Mild pressure tactics detected.' }));
+      }
+    } else {
+      secPressure.appendChild(el('div', { className: 'text-dim', textContent: 'No dark patterns detected.' }));
+    }
+    grid.appendChild(secPressure);
+
     // --- Fingerprinting ---
     const secFp = el('div', { className: 'tracking-section' });
     const fp = reportData.fingerprinting;
@@ -1853,7 +1952,33 @@ function netUpdateToggleCount(toggleId, count, label) {
     } else {
       secFp.appendChild(el('div', { className: 'fp-status fp-status-none', textContent: 'No fingerprinting detected' }));
     }
-    panel.appendChild(secFp);
+    grid.appendChild(secFp);
+
+    // --- Storage ---
+    const secStorage = el('div', { className: 'tracking-section' });
+    const ld = reportData.localData;
+    const storageCount = ld.suspicious > 0 ? ld.suspicious + ' suspicious out of ' + ld.totalKeys : null;
+    secStorage.appendChild(trackingSectionHeader('icons/leaking.png', 'What they store in your browser', storageCount));
+
+    if (ld.suspicious > 0 && ld.byCategory && Object.keys(ld.byCategory).length > 0) {
+      const catOrder = ['Cross-site tracking', 'Advertising', 'Fingerprinting', 'PII exposure', 'PII', 'Tracking'];
+      const rendered = new Set();
+      for (const cat of catOrder) {
+        const keys = ld.byCategory[cat];
+        if (!keys || keys.length === 0) continue;
+        rendered.add(cat);
+        secStorage.appendChild(buildDataCategory(cat, keys));
+      }
+      for (const [cat, keys] of Object.entries(ld.byCategory)) {
+        if (rendered.has(cat) || !keys || keys.length === 0) continue;
+        secStorage.appendChild(buildDataCategory(cat, keys));
+      }
+    } else if (ld.totalKeys > 0) {
+      secStorage.appendChild(el('div', { className: 'text-dim', textContent: ld.totalKeys + ' items stored, nothing suspicious.' }));
+    } else {
+      secStorage.appendChild(el('div', { className: 'text-dim', textContent: 'No local storage data found.' }));
+    }
+    grid.appendChild(secStorage);
 
     // --- Forms ---
     const secForms = el('div', { className: 'tracking-section' });
@@ -1883,38 +2008,12 @@ function netUpdateToggleCount(toggleId, count, label) {
     } else {
       secForms.appendChild(el('div', { className: 'text-dim', textContent: 'No form fields on this page.' }));
     }
-    panel.appendChild(secForms);
-
-    // --- Storage ---
-    const secStorage = el('div', { className: 'tracking-section' });
-    const ld = reportData.localData;
-    const storageCount = ld.suspicious > 0 ? ld.suspicious + ' of ' + ld.totalKeys + ' suspicious' : null;
-    secStorage.appendChild(trackingSectionHeader('icons/leaking.png', 'What they store in your browser', storageCount));
-
-    if (ld.suspicious > 0 && ld.byCategory && Object.keys(ld.byCategory).length > 0) {
-      const catOrder = ['Cross-site tracking', 'Advertising', 'Fingerprinting', 'PII exposure', 'PII', 'Tracking'];
-      const rendered = new Set();
-      for (const cat of catOrder) {
-        const keys = ld.byCategory[cat];
-        if (!keys || keys.length === 0) continue;
-        rendered.add(cat);
-        secStorage.appendChild(buildDataCategory(cat, keys));
-      }
-      for (const [cat, keys] of Object.entries(ld.byCategory)) {
-        if (rendered.has(cat) || !keys || keys.length === 0) continue;
-        secStorage.appendChild(buildDataCategory(cat, keys));
-      }
-    } else if (ld.totalKeys > 0) {
-      secStorage.appendChild(el('div', { className: 'text-dim', textContent: ld.totalKeys + ' items stored, nothing suspicious.' }));
-    } else {
-      secStorage.appendChild(el('div', { className: 'text-dim', textContent: 'No local storage data found.' }));
-    }
-    panel.appendChild(secStorage);
+    grid.appendChild(secForms);
 
     // --- Links ---
     const secLinks = el('div', { className: 'tracking-section' });
     const lt = reportData.linkTracking;
-    const linkCount = lt.tracked > 0 ? lt.tracked + ' of ' + lt.total + ' tracked' : null;
+    const linkCount = lt.tracked > 0 ? lt.tracked + ' tracked out of ' + lt.total : null;
     secLinks.appendChild(trackingSectionHeader('icons/linked.png', 'How they follow your clicks', linkCount));
 
     if (lt.details && lt.details.length > 0) {
@@ -1961,7 +2060,9 @@ function netUpdateToggleCount(toggleId, count, label) {
     } else {
       secLinks.appendChild(el('div', { className: 'text-dim', textContent: 'No links found on this page.' }));
     }
-    panel.appendChild(secLinks);
+    grid.appendChild(secLinks);
+
+    panel.appendChild(grid);
   }
 
   function trackingSectionHeader(iconSrc, text, countText) {
@@ -1972,6 +2073,43 @@ function netUpdateToggleCount(toggleId, count, label) {
       header.appendChild(el('span', { className: 'tracking-section-count', textContent: '\u00b7 ' + countText }));
     }
     return header;
+  }
+
+  function renderTrackerPurpose(container, purpose, companies) {
+    const cat = el('div', { className: 'data-category' });
+    const header = el('div', { className: 'data-category-header' });
+    const totalCount = companies.reduce((sum, c) => sum + (c.count || 1), 0);
+    header.appendChild(el('span', { className: 'data-category-count', textContent: totalCount }));
+    header.appendChild(el('span', { className: 'data-category-name', textContent: purpose }));
+    cat.appendChild(header);
+
+    const sorted = [...companies].sort((a, b) => (b.count || 1) - (a.count || 1));
+    const chipList = el('div', { className: 'data-service-list' });
+    for (const c of sorted) {
+      const chip = el('span', { className: 'data-service-chip' });
+      chip.appendChild(el('span', { className: 'data-service-name', textContent: c.name }));
+      if ((c.count || 1) > 1) chip.appendChild(el('span', { className: 'data-service-count', textContent: '(' + c.count + ')' }));
+      chipList.appendChild(chip);
+    }
+    cat.appendChild(chipList);
+    container.appendChild(cat);
+  }
+
+  function renderBrokerType(container, type, brokers) {
+    const cat = el('div', { className: 'data-category data-category-broker' });
+    const header = el('div', { className: 'data-category-header' });
+    header.appendChild(el('span', { className: 'data-category-count', textContent: brokers.length }));
+    header.appendChild(el('span', { className: 'data-category-name', textContent: type }));
+    cat.appendChild(header);
+
+    const sorted = [...brokers].sort((a, b) => (b.count || 0) - (a.count || 0));
+    for (const b of sorted) {
+      const row = el('div', { className: 'broker-row' });
+      row.appendChild(el('span', { className: 'broker-row-name', textContent: b.name }));
+      if (b.desc) row.appendChild(el('span', { className: 'broker-row-desc', textContent: b.desc }));
+      cat.appendChild(row);
+    }
+    container.appendChild(cat);
   }
 
   const STORAGE_KEY_SERVICES = [
