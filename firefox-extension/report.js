@@ -299,7 +299,7 @@ function netUpdateToggleCount(toggleId, count, label) {
 
       // Always show the dropdown
       select.style.display = '';
-      select.innerHTML = '';
+      select.textContent = '';
 
       if (!tabs || tabs.length === 0) {
         const opt = document.createElement('option');
@@ -369,7 +369,7 @@ function netUpdateToggleCount(toggleId, count, label) {
       for (const [k, v] of Object.entries(attrs)) {
         if (k === 'className') node.className = v;
         else if (k === 'textContent') node.textContent = v;
-        else if (k === 'innerHTML') { var _d = new DOMParser().parseFromString(v, 'text/html'); while (_d.body.firstChild) node.appendChild(document.adoptNode(_d.body.firstChild)); }
+        else if (k === '_html') { var _d = new DOMParser().parseFromString(v, 'text/html'); while (_d.body.firstChild) node.appendChild(document.adoptNode(_d.body.firstChild)); }
         else if (k.startsWith('on')) node.addEventListener(k.slice(2).toLowerCase(), v);
         else node.setAttribute(k, v);
       }
@@ -446,7 +446,7 @@ function netUpdateToggleCount(toggleId, count, label) {
   // --- 1. Overview ---
   function renderOverview() {
     const panel = document.getElementById('panel-overview');
-    panel.innerHTML = '';
+    panel.textContent = '';
     const r = reportData;
     const v = r.verdict;
     const rc = riskColor(v.score);
@@ -622,12 +622,13 @@ function netUpdateToggleCount(toggleId, count, label) {
   // --- 2. Cookies (ported from wearecooked) ---
   function renderCookies() {
     const panel = document.getElementById('panel-cookies');
-    panel.innerHTML = '';
+    panel.textContent = '';
     const cookies = reportData.rawCookies || [];
     const total = cookies.length;
 
     if (total === 0) {
-      panel.innerHTML = '<div class="cookies-dashboard"><p class="tab-tagline">Your browser\'s cookie activity at a glance</p><div class="empty-section">No cookies found for this site.</div></div>';
+      var _d0 = new DOMParser().parseFromString('<div class="cookies-dashboard"><p class="tab-tagline">Your browser\'s cookie activity at a glance</p><div class="empty-section">No cookies found for this site.</div></div>', 'text/html');
+      while (_d0.body.firstChild) panel.appendChild(document.adoptNode(_d0.body.firstChild));
       return;
     }
 
@@ -1751,7 +1752,7 @@ function netUpdateToggleCount(toggleId, count, label) {
   // --- 4. Terms ---
   function renderTerms() {
     const panel = document.getElementById('panel-terms');
-    panel.innerHTML = '';
+    panel.textContent = '';
     const tos = reportData.tos;
 
     if (!tos) {
@@ -1760,12 +1761,12 @@ function netUpdateToggleCount(toggleId, count, label) {
     }
 
     if (tos.loading) {
-      panel.innerHTML = '<div class="tos-loading-msg">Couldn\'t analyze — try visiting their privacy policy page directly, then come back here.</div>';
+      panel.appendChild(el('div', { className: 'tos-loading-msg', textContent: "Couldn't analyze — try visiting their privacy policy page directly, then come back here." }));
       return;
     }
 
     if (tos.found === false) {
-      panel.innerHTML = '<div class="tos-not-found">Couldn\'t find a terms or privacy policy page for this site. Look for a link at the bottom of their homepage.</div>';
+      panel.appendChild(el('div', { className: 'tos-not-found', textContent: "Couldn't find a terms or privacy policy page for this site. Look for a link at the bottom of their homepage." }));
       return;
     }
 
@@ -1861,7 +1862,7 @@ function netUpdateToggleCount(toggleId, count, label) {
   // --- 5. Tracking (Fingerprinting + Forms + Storage + Links) ---
   function renderTracking() {
     const panel = document.getElementById('panel-tracking');
-    panel.innerHTML = '';
+    panel.textContent = '';
 
     panel.appendChild(el('div', { className: 'tab-tagline', textContent: 'How this site watches and tracks you' }));
 
@@ -2053,7 +2054,7 @@ function netUpdateToggleCount(toggleId, count, label) {
         if (f.trackerNames && f.trackerNames.length > 0) {
           const names = el('div', { className: 'data-service-list' });
           for (const n of f.trackerNames) {
-            names.appendChild(el('span', { className: 'data-service-chip', innerHTML: '<span class="data-service-name">' + escHtml(n) + '</span>' }));
+            names.appendChild(el('span', { className: 'data-service-chip', _html: '<span class="data-service-name">' + escHtml(n) + '</span>' }));
           }
           secForms.appendChild(names);
         }

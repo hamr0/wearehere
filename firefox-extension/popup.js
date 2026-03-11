@@ -34,7 +34,7 @@ function render(report) {
 
   // 8 Sections
   const sections = document.getElementById('sections');
-  sections.innerHTML = '';
+  sections.textContent = '';
 
   sections.appendChild(cookiesSection(report.cookies));
   sections.appendChild(networkSection(report.network));

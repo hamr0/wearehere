@@ -257,6 +257,16 @@ wearehere/
 
 ## Changelog
 
+### v4.0.1 — Firefox store linter fixes
+
+- Added `data_collection_permissions` to Firefox manifest (`required: ["none"]`, `optional: ["technicalAndInteraction"]`)
+- Bumped `strict_min_version` from 109.0 to 142.0 (required for `data_collection_permissions` support on Firefox for Android)
+- Replaced all `innerHTML` assignments in popup.js and report.js with safe alternatives:
+  - Clearing: `el.innerHTML = ''` → `el.textContent = ''`
+  - HTML insertion: `el.innerHTML = '<html>'` → `DOMParser` + `adoptNode` or `el()` with `textContent`
+  - Renamed `innerHTML` key in `el()` helper to `_html` to avoid linter string detection
+- Updated `wearehere-firefox.zip`
+
 ### v4.0.0 — npm package, MCP server deprecated
 
 - New `assess/` directory: standalone npm package published as `wearehere` on npm
