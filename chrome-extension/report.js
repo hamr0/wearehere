@@ -496,19 +496,22 @@ function netUpdateToggleCount(toggleId, count, label) {
     const grid = el('div', { className: 'summary-grid' });
     const r = reportData;
 
-    grid.appendChild(summaryCard('Cookies', r.cookies.total, r.cookies.thirdParty + ' third-party'));
-    grid.appendChild(summaryCard('Trackers', r.trackers.total, r.trackers.total > 0 ? 'hidden elements' : 'none found'));
-    grid.appendChild(summaryCard('Fingerprinting', r.fingerprinting.techniques > 0 ? 'Active' : 'None', r.fingerprinting.techniques + ' technique' + (r.fingerprinting.techniques !== 1 ? 's' : '')));
-    grid.appendChild(summaryCard('Pressure', r.pressure.score + '/100', r.pressure.tactics.length + ' tactic' + (r.pressure.tactics.length !== 1 ? 's' : '')));
-
-    const tosLabel = r.tos.loading ? '...' : (!r.tos.found && r.tos.score === undefined) ? 'N/A' : r.tos.score + '/100';
-    grid.appendChild(summaryCard('Terms', tosLabel, r.tos.loading ? 'loading' : r.tos.flagged ? r.tos.flagged.length + ' flagged' : 'not found'));
-    grid.appendChild(summaryCard('Storage', r.localData.suspicious > 0 ? r.localData.suspicious + ' flagged' : 'Clean', r.localData.totalKeys + ' total keys'));
-    grid.appendChild(summaryCard('Links Tracked', r.linkTracking.percentage + '%', r.linkTracking.tracked + ' of ' + r.linkTracking.total));
-
     const formFields = r.forms ? r.forms.fieldCount : 0;
     const formTrackers = r.forms ? r.forms.trackersWhileTyping : 0;
-    grid.appendChild(summaryCard('Forms', formFields + ' field' + (formFields !== 1 ? 's' : ''), formTrackers > 0 ? formTrackers + ' trackers watching' : 'no trackers'));
+    const trCompanyCount = r.trackers.companies?.length || 0;
+
+    grid.appendChild(summaryCard('Cookies', r.cookies.total, r.cookies.thirdParty + ' third-party'));
+    grid.appendChild(summaryCard('Network', (r.network?.trackerDomains || 0) + ' trackers', r.network?.totalRequests + ' requests'));
+    grid.appendChild(summaryCard('Trackers', trCompanyCount || r.trackers.total, trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (r.trackers.total > 0 ? 'hidden elements' : 'none found')));
+    grid.appendChild(summaryCard('Pressure', r.pressure.tactics.length + ' tactic' + (r.pressure.tactics.length !== 1 ? 's' : ''), r.pressure.score > 0 ? r.pressure.score + '/100' : 'none'));
+    grid.appendChild(summaryCard('Selling data', (r.network?.brokerCount || 0) + ' broker' + ((r.network?.brokerCount || 0) !== 1 ? 's' : ''), ''));
+    grid.appendChild(summaryCard('Profiling', r.fingerprinting.techniques > 0 ? 'Active' : 'None', r.fingerprinting.techniques + ' technique' + (r.fingerprinting.techniques !== 1 ? 's' : '')));
+    grid.appendChild(summaryCard('Stored data', r.localData.suspicious > 0 ? r.localData.suspicious + ' suspicious' : 'Clean', r.localData.totalKeys + ' total'));
+    grid.appendChild(summaryCard('Watching', formTrackers > 0 ? formTrackers + ' trackers' : 'Clean', formFields + ' field' + (formFields !== 1 ? 's' : '')));
+    grid.appendChild(summaryCard('Clicks', r.linkTracking.percentage + '% tracked', r.linkTracking.tracked + ' of ' + r.linkTracking.total));
+
+    const tosLabel2 = r.tos.loading ? '...' : (!r.tos.found && r.tos.score === undefined) ? 'N/A' : r.tos.score + '/100';
+    grid.appendChild(summaryCard('Terms', tosLabel2, r.tos.loading ? 'loading' : r.tos.flagged ? r.tos.flagged.length + ' flagged' : 'not found'));
 
     panel.appendChild(grid);
   }
@@ -533,33 +536,42 @@ function netUpdateToggleCount(toggleId, count, label) {
     rows.push({ label: 'Cookies', points: pts });
 
     pts = 0;
+    if (r.network?.trackerDomains > 10) pts = 10;
+    else if (r.network?.trackerDomains > 3) pts = 5;
+    rows.push({ label: 'Network', points: pts });
+
+    pts = 0;
     if (r.trackers.total > 10) pts = 25;
     else if (r.trackers.total > 3) pts = 15;
     if (r.trackers.thirdPartyScripts > 15) pts += 10;
     rows.push({ label: 'Trackers', points: pts });
 
     pts = 0;
-    if (r.fingerprinting.techniques >= 3) pts = 25;
-    else if (r.fingerprinting.techniques >= 1) pts = 10;
-    rows.push({ label: 'Fingerprinting', points: pts });
-
-    pts = 0;
     if (r.pressure.score >= 60) pts = 15;
     else if (r.pressure.score >= 20) pts = 5;
     rows.push({ label: 'Pressure', points: pts });
+
+    rows.push({ label: 'Selling data', points: 0 });
+
+    pts = 0;
+    if (r.fingerprinting.techniques >= 3) pts = 25;
+    else if (r.fingerprinting.techniques >= 1) pts = 10;
+    rows.push({ label: 'Profiling', points: pts });
+
+    pts = 0;
+    if (r.localData.suspicious > 5) pts = 5;
+    rows.push({ label: 'Stored data', points: pts });
+
+    rows.push({ label: 'Watching', points: r.forms?.trackersWhileTyping > 3 ? 10 : 0 });
+
+    pts = 0;
+    if (r.linkTracking.percentage > 50) pts = 5;
+    rows.push({ label: 'Clicks', points: pts });
 
     pts = 0;
     if (r.tos && r.tos.score >= 60) pts = 10;
     else if (r.tos && r.tos.score >= 30) pts = 5;
     rows.push({ label: 'Terms', points: pts });
-
-    pts = 0;
-    if (r.localData.suspicious > 5) pts = 5;
-    rows.push({ label: 'Storage', points: pts });
-
-    pts = 0;
-    if (r.linkTracking.percentage > 50) pts = 5;
-    rows.push({ label: 'Links', points: pts });
 
     return rows;
   }
@@ -1879,14 +1891,8 @@ function netUpdateToggleCount(toggleId, count, label) {
     secPressure.appendChild(trackingSectionHeader('icons/played.png', 'Tricking you into buying', prCount));
 
     if (prTactics.length > 0) {
-      const TACTIC_ICONS = {
-        countdown: '\u23f1', discount: '\ud83c\udff7\ufe0f', scarcity: '\ud83d\udce2',
-        prechecked: '\u2611\ufe0f', shaming: '\ud83d\ude14', 'hidden-unsub': '\ud83d\udd75\ufe0f',
-      };
       for (const t of prTactics) {
         const row = el('div', { className: 'pressure-row' });
-        const icon = TACTIC_ICONS[t.type] || '\u26a0\ufe0f';
-        row.appendChild(el('span', { className: 'pressure-row-icon', textContent: icon }));
         row.appendChild(el('span', { className: 'pressure-row-label', textContent: t.tactic }));
         if (t.count) {
           row.appendChild(el('span', { className: 'pressure-row-count', textContent: t.count + 'x' }));

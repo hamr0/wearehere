@@ -715,6 +715,12 @@ function buildReport(data) {
         ? [...new Set([...companies, ...scriptCompanies].map(c => c.name))].slice(0, 5)
         : [],
     },
+    network: {
+      totalRequests: data.networkData?.requestCount || 0,
+      trackerDomains: Object.values(data.networkData?.categories || {}).reduce((sum, c) => sum + (c.count || 0), 0),
+      thirdPartyDomains: Object.keys(data.networkData?.thirdPartyDomains || {}).length,
+      brokerCount: Object.keys(data.networkData?.brokers || {}).length,
+    },
   };
 
   report.verdict = computeVerdict(report);
@@ -731,6 +737,9 @@ function computeVerdict(r) {
   if (r.cookies.thirdParty > 10) { score += 20; concerns.push('Heavy cross-site cookie tracking'); }
   else if (r.cookies.thirdParty > 3) { score += 10; concerns.push('Third-party cookies tracking you'); }
   if (r.cookies.longestDays > 365) { score += 5; concerns.push('Cookies last over a year'); }
+
+  if (r.network?.trackerDomains > 10) { score += 10; concerns.push('Many tracker domains in network traffic'); }
+  else if (r.network?.trackerDomains > 3) { score += 5; concerns.push('Tracker domains detected'); }
 
   if (r.trackers.total > 10) { score += 25; concerns.push('Heavy hidden tracking'); }
   else if (r.trackers.total > 3) { score += 15; concerns.push('Hidden trackers on this page'); }

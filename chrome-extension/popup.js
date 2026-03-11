@@ -37,13 +37,15 @@ function render(report) {
   sections.innerHTML = '';
 
   sections.appendChild(cookiesSection(report.cookies));
+  sections.appendChild(networkSection(report.network));
   sections.appendChild(trackersSection(report.trackers));
-  sections.appendChild(fingerprintingSection(report.fingerprinting));
   sections.appendChild(pressureSection(report.pressure));
-  sections.appendChild(tosSection(report.tos));
+  sections.appendChild(sellingDataSection(report.network));
+  sections.appendChild(profilingSection(report.fingerprinting));
   sections.appendChild(localDataSection(report.localData));
-  sections.appendChild(linkTrackingSection(report.linkTracking));
   sections.appendChild(formsSection(report.forms));
+  sections.appendChild(linkTrackingSection(report.linkTracking));
+  sections.appendChild(tosSection(report.tos));
 
   // Full Report button
   const btn = document.createElement('div');
@@ -100,6 +102,14 @@ function cookiesSection(c) {
   return makeSection('🍪', 'Cookies', val, cls, detail);
 }
 
+function networkSection(n) {
+  if (!n) return makeSection('📡', 'Network', '0', 'val-clean', 'No network data yet');
+  const val = n.trackerDomains > 0 ? `${n.trackerDomains}` : '0';
+  const cls = n.trackerDomains > 10 ? 'val-bad' : n.trackerDomains > 0 ? 'val-warn' : 'val-clean';
+  let detail = `${n.totalRequests} requests · ${n.thirdPartyDomains} third-party domain${n.thirdPartyDomains !== 1 ? 's' : ''}`;
+  return makeSection('📡', 'Network', val + ' trackers', cls, detail);
+}
+
 function trackersSection(t) {
   const companies = t.companies || [];
   const names = [...new Set(companies.map(c => c.name))];
@@ -120,7 +130,7 @@ function trackersSection(t) {
   return makeSection('👁', 'Trackers', val, cls, detail);
 }
 
-function fingerprintingSection(fp) {
+function profilingSection(fp) {
   const val = fp.techniques > 0 ? 'Active' : 'None';
   const cls = fp.techniques >= 3 ? 'val-bad' : fp.techniques > 0 ? 'val-warn' : 'val-clean';
 
@@ -132,7 +142,7 @@ function fingerprintingSection(fp) {
     detail = 'Not fingerprinting your device ✓';
   }
 
-  return makeSection('🖐', 'Fingerprinting', val, cls, detail);
+  return makeSection('🔬', 'Profiling', val, cls, detail);
 }
 
 function pressureSection(p) {
@@ -153,6 +163,14 @@ function pressureSection(p) {
   }
 
   return makeSection('⚡', 'Pressure', val, cls, detail);
+}
+
+function sellingDataSection(n) {
+  if (!n) return makeSection('🏪', 'Selling data', 'None', 'val-clean', 'No data brokers detected');
+  const val = n.brokerCount > 0 ? `${n.brokerCount}` : 'None';
+  const cls = n.brokerCount > 5 ? 'val-bad' : n.brokerCount > 0 ? 'val-warn' : 'val-clean';
+  const detail = n.brokerCount > 0 ? `${n.brokerCount} data broker${n.brokerCount !== 1 ? 's' : ''} found in network traffic` : 'No data brokers detected';
+  return makeSection('🏪', 'Selling data', val, cls, detail);
 }
 
 function tosSection(tos) {
@@ -195,7 +213,7 @@ function localDataSection(ld) {
     detail = 'Nothing stored ✓';
   }
 
-  return makeSection('💾', 'Stored on you', val, cls, detail);
+  return makeSection('💾', 'Stored data', val, cls, detail);
 }
 
 function linkTrackingSection(lt) {
@@ -210,26 +228,26 @@ function linkTrackingSection(lt) {
     detail = lt.total > 0 ? 'Links are clean ✓' : 'No links found';
   }
 
-  return makeSection('🔗', 'Links', val, cls, detail);
+  return makeSection('🔗', 'Clicks', val, cls, detail);
 }
 
 function formsSection(f) {
   if (!f || f.fieldCount === 0) {
-    return makeSection('📝', 'Forms', 'None', 'val-clean', 'No form fields on this page');
+    return makeSection('👀', 'Watching', 'None', 'val-clean', 'No form fields on this page');
   }
 
   const watching = f.trackersWhileTyping || 0;
-  const val = watching > 0 ? `${watching} watching` : 'Clean';
+  const val = watching > 0 ? `${watching}` : 'Clean';
   const cls = watching > 3 ? 'val-bad' : watching > 0 ? 'val-warn' : 'val-clean';
 
   let detail = `${f.fieldCount} field${f.fieldCount > 1 ? 's' : ''} on this page`;
   if (watching > 0 && f.trackerNames.length > 0) {
     detail += `. ${f.trackerNames.map(n => escHtml(n)).join(', ')} active while you type`;
   } else if (watching === 0) {
-    detail += ' · no trackers watching ✓';
+    detail += ' · not being watched ✓';
   }
 
-  return makeSection('📝', 'Forms', val, cls, detail);
+  return makeSection('👀', 'Watching', val, cls, detail);
 }
 
 function escHtml(str) {
