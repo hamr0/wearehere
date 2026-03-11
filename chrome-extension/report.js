@@ -2211,12 +2211,38 @@ function netUpdateToggleCount(toggleId, count, label) {
     { pattern: /newrelic|^NRBA/i, name: 'New Relic' },
     { pattern: /^__hssc|^__hstc|^__hsfp|^hubspotutk/i, name: 'HubSpot' },
     { pattern: /^_uetsid|^_uetvid/i, name: 'Microsoft Ads' },
+    // Site-specific tracking keys
+    { pattern: /^events-buffer|^good-visit|^search_impression|^screen-instance|^recent-subreddits|^feed-|^redesign/i, name: 'Reddit' },
+    { pattern: /^amzn|^csm-|^session-id|^ubid-|^x-wl-uid/i, name: 'Amazon' },
+    { pattern: /^ebay|^nonsession|^dp1$/i, name: 'eBay' },
+    { pattern: /^_ym_|yandex/i, name: 'Yandex' },
+    { pattern: /^ab\.|^experiment|^feature[-_]flag/i, name: 'A/B testing' },
+    { pattern: /impression|^viewed[-_]|^seen[-_]/i, name: 'Impression tracking' },
+    { pattern: /^event[-_]|^analytics[-_]|^tracking[-_]/i, name: 'Event tracking' },
+    { pattern: /^consent|^gdpr|^cookie[-_]pref|^optout/i, name: 'Consent management' },
+    { pattern: /^recently[-_]|^recent[-_]|^history[-_]|^last[-_]viewed/i, name: 'Browsing history' },
+    { pattern: /^cache[-_]|[-_]cache$/i, name: 'Local cache' },
   ];
 
   function identifyService(keyName) {
     for (const s of STORAGE_KEY_SERVICES) {
       if (s.pattern.test(keyName)) return s.name;
     }
+    return null;
+  }
+
+  function humanizeKey(key) {
+    const k = key.toLowerCase();
+    if (/event|buffer|log/.test(k)) return 'Stores user activity events';
+    if (/impression|view/.test(k)) return 'Tracks what you\'ve seen';
+    if (/visit|session|instance/.test(k)) return 'Tracks your browsing session';
+    if (/search|query/.test(k)) return 'Tracks your search activity';
+    if (/screen|page/.test(k)) return 'Tracks pages you visit';
+    if (/cache|store/.test(k)) return 'Cached data for tracking';
+    if (/id|uid|uuid|token/.test(k)) return 'Unique identifier for tracking';
+    if (/pref|setting|config/.test(k)) return 'Stores your preferences';
+    if (/consent|gdpr|opt/.test(k)) return 'Cookie consent state';
+    if (/experiment|ab[._-]|variant/.test(k)) return 'A/B test assignment';
     return null;
   }
 
@@ -2256,10 +2282,14 @@ function netUpdateToggleCount(toggleId, count, label) {
       }
       div.appendChild(serviceList);
     } else {
-      // No known services — show raw keys
+      // No known services — show raw keys with humanized tooltips
       const list = el('div', { className: 'data-key-list' });
       for (const key of keys) {
-        list.appendChild(el('span', { className: 'data-key', textContent: escHtml(typeof key === 'string' ? key : key.key || String(key)) }));
+        const keyName = typeof key === 'string' ? key : key.key || String(key);
+        const keyEl = el('span', { className: 'data-key', textContent: escHtml(keyName) });
+        const friendly = humanizeKey(keyName);
+        if (friendly) keyEl.title = friendly;
+        list.appendChild(keyEl);
       }
       div.appendChild(list);
     }
