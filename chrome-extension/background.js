@@ -651,12 +651,10 @@ function buildReport(data) {
   }
 
   // --- Links (from linked module) ---
-  const linked = m.linked || { items: [], totals: { wrappers: 0, tracked: 0, total: 0 } };
-  const linkTotal = linked.items ? linked.items.length : 0;
-  // Count all links on page (tracked + untracked) — linked only reports tracked ones
-  // Use total from linked module (which counts all analyzed links with tracking)
-  const allLinksCount = linkTotal > 0 ? Math.max(linkTotal * 2, linked.totals?.total || 0) : 0;
-  const linkPct = allLinksCount > 0 ? Math.round(((linked.totals?.tracked || 0) / allLinksCount) * 100) : 0;
+  const linked = m.linked || { items: [], totals: { wrappers: 0, tracked: 0, total: 0, allLinks: 0 } };
+  const allLinksCount = linked.totals?.allLinks || linked.totals?.total || 0;
+  const trackedCount = linked.totals?.tracked || 0;
+  const linkPct = allLinksCount > 0 ? Math.round((trackedCount / allLinksCount) * 100) : 0;
 
   // --- Terms (from tosed module) ---
   const tosed = m.tosed || null;
@@ -703,7 +701,7 @@ function buildReport(data) {
     },
     linkTracking: {
       total: allLinksCount,
-      tracked: linked.totals?.tracked || 0,
+      tracked: trackedCount,
       redirectWrappers: linked.totals?.wrappers || 0,
       percentage: linkPct,
       details: (linked.items || []).slice(0, 50),

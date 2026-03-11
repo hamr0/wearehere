@@ -141,9 +141,12 @@ function analyzeLink(href) {
   };
 }
 
+var totalAnchors = 0;
+
 function scanLinks() {
   items = [];
   var anchors = document.querySelectorAll("a[href]");
+  totalAnchors = anchors.length;
   for (var i = 0; i < anchors.length; i++) {
     var result = analyzeLink(anchors[i].href);
     if (result) {
@@ -184,7 +187,7 @@ function sendResults() {
       url: location.href,
       timestamp: Date.now(),
       items: items,
-      totals: { wrappers: wrappers, tracked: tracked, total: items.length },
+      totals: { wrappers: wrappers, tracked: tracked, total: items.length, allLinks: totalAnchors },
     }
   });
 }
