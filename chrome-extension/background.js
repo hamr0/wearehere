@@ -717,7 +717,7 @@ function buildReport(data) {
     },
     network: {
       totalRequests: data.networkData?.requestCount || 0,
-      trackerDomains: Object.values(data.networkData?.categories || {}).reduce((sum, c) => sum + (c.count || 0), 0),
+      trackerDomains: Object.entries(data.networkData?.thirdPartyDomains || {}).filter(([, d]) => d.risky).length,
       thirdPartyDomains: Object.keys(data.networkData?.thirdPartyDomains || {}).length,
       brokerCount: Object.keys(data.networkData?.brokers || {}).length,
     },

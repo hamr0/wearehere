@@ -175,7 +175,7 @@ function sellingDataSection(n) {
 
 function tosSection(tos) {
   if (!tos || tos.loading) {
-    return makeSection('icons/tosed.png', 'Terms', '...', 'val-neutral', '<span class="tos-loading">Scanning their privacy policy...</span>');
+    return makeSection('icons/tosed.png', 'Terms', '...', 'val-neutral', "Couldn't analyze — try visiting their privacy policy page directly, then come back here.");
   }
   if (!tos.found) {
     return makeSection('icons/tosed.png', 'Terms', '???', 'val-neutral', "Couldn't find their terms page");

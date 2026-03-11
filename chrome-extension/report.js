@@ -1754,7 +1754,7 @@ function netUpdateToggleCount(toggleId, count, label) {
     }
 
     if (tos.loading) {
-      panel.innerHTML = '<div class="tos-loading-msg"><span class="spinner"></span>Looking for their privacy policy and terms...</div>';
+      panel.innerHTML = '<div class="tos-loading-msg">Couldn\'t analyze — try visiting their privacy policy page directly, then come back here.</div>';
       return;
     }
 
