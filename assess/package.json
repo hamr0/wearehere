@@ -1,0 +1,31 @@
+{
+  "name": "wearehere",
+  "version": "1.0.0",
+  "description": "Privacy assessment for any website. One call, compact score.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./scripts": "./scripts.js",
+    "./scoring": "./scoring.js",
+    "./data": "./data.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "scripts.js",
+    "scoring.js",
+    "data.js"
+  ],
+  "keywords": [
+    "privacy", "assessment", "cookies", "trackers", "fingerprinting",
+    "dark-patterns", "terms-of-service", "data-brokers", "barebrowse"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hamr0/wearehere"
+  },
+  "license": "MIT"
+}

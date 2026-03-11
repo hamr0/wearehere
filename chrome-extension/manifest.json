@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "wearehere",
   "version": "3.1.1",
-  "description": "Full privacy scan for every site you visit. Cookies, trackers, fingerprinting, dark patterns, terms toxicity, network traffic, form leaks — one popup, complete picture.",
+  "description": "Full privacy scan: cookies, trackers, fingerprinting, dark patterns, terms, network traffic, form leaks. One popup.",
   "permissions": ["activeTab", "storage", "cookies", "webRequest"],
   "host_permissions": ["<all_urls>"],
   "icons": {

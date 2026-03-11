@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="loading">Scanning...</div>
+  <div id="report" style="display:none">
+    <!-- Header -->
+    <div id="header">
+      <div id="site-name"></div>
+      <div id="score-badge"></div>
+    </div>
+    <div id="risk-bar"><div id="risk-fill"></div></div>
+    <div id="summary"></div>
+
+    <div class="divider"></div>
+
+    <!-- Sections -->
+    <div id="sections"></div>
+
+  </div>
+
+  <div id="empty" style="display:none">
+    <div class="empty-title">No data yet</div>
+    <div class="empty-sub">Navigate to a website to scan it.</div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

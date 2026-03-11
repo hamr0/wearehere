@@ -57,20 +57,26 @@ Click **Full Report** in the popup to open the unified dashboard with 5 tabs:
 - **Terms** — toxicity score and flagged clauses for privacy policy and terms of service
 - **Tracking** — 7 sections in 2-column masonry layout: Trackers, Selling data, Pressure, Profiling, Stored data, Watching, Clicks
 
-## MCP server
+## npm package
 
-wearehere also ships an MCP server for AI agents. Give it a URL, get back a full privacy audit as structured JSON — same detection logic, headless browser via [barebrowse](https://github.com/hamr0/barebrowse).
+wearehere publishes an npm package so you can run privacy audits programmatically — same detection logic, headless browser via [barebrowse](https://github.com/hamr0/barebrowse).
 
-```json
-{
-  "mcpServers": {
-    "wearehere": {
-      "command": "node",
-      "args": ["/path/to/wearehere/mcp-server.js"]
-    }
-  }
-}
+```bash
+npm install wearehere
 ```
+
+```js
+import { assess } from 'wearehere';
+
+const page = await connect({ mode: 'headless' }); // from barebrowse
+const result = await assess(page, 'https://example.com');
+console.log(result.score, result.risk);
+await page.close();
+```
+
+The output is a compact assessment: score (0--100), risk level, per-category breakdown (10 categories with score/max/summary), concerns list, and recommendation.
+
+For AI agents, barebrowse exposes wearehere as its `assess` tool — no separate setup needed. Install barebrowse with wearehere and the tool appears automatically.
 
 ## Try It Now
 

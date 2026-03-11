@@ -1,19 +1,134 @@
 /**
- * page-scripts.js — Scripts evaluated AFTER page load via Runtime.evaluate.
- * Scans the live DOM for cookies, trackers, dark patterns, storage, and links.
+ * scripts.js — Page-context scripts for privacy detection.
  *
- * Each function returns a string that can be passed to Runtime.evaluate.
- * The expression must return a JSON-serializable value.
+ * getInitScript() — inject BEFORE navigation (fingerprint + beacon wrappers)
+ * getPageScript() — evaluate AFTER page load (cookies, trackers, dark patterns, storage, links, ToS)
+ *
+ * Both return self-contained strings that run in the browser page context.
  */
 
-import { TRACKER_DOMAINS, DARK_PATTERNS, TRACKING_PARAMS, SUSPICIOUS_STORAGE_PATTERNS } from './data.js';
+import {
+  TRACKER_DOMAINS, DARK_PATTERNS, TRACKING_PARAMS,
+  SUSPICIOUS_STORAGE_PATTERNS,
+} from './data.js';
 
 /**
- * Build the mega evaluation script that runs all page-level detectors
- * and returns results as a single JSON object.
+ * Returns init script source — wraps browser APIs to detect fingerprinting
+ * and beacon calls before any page script runs.
+ * Creates window.__wearehere for result collection.
+ */
+export function getInitScript() {
+  return `
+(function() {
+  'use strict';
+
+  window.__wearehere = {
+    fingerprinting: [],
+    beacons: [],
+  };
+
+  function wrapMethod(obj, prop, category) {
+    if (!obj || !obj[prop]) return;
+    const original = obj[prop];
+    obj[prop] = function(...args) {
+      try {
+        const stack = new Error().stack || '';
+        const frames = stack.split('\\n').slice(1, 4).map(f => f.trim());
+        window.__wearehere.fingerprinting.push({
+          api: category + '.' + prop,
+          category: category,
+          timestamp: Date.now(),
+          stack: frames,
+        });
+      } catch {}
+      return original.apply(this, args);
+    };
+  }
+
+  function wrapGetter(obj, prop, category) {
+    if (!obj) return;
+    const descriptor = Object.getOwnPropertyDescriptor(obj, prop);
+    if (!descriptor || !descriptor.get) return;
+    const originalGet = descriptor.get;
+    Object.defineProperty(obj, prop, {
+      get: function() {
+        try {
+          const stack = new Error().stack || '';
+          const frames = stack.split('\\n').slice(1, 4).map(f => f.trim());
+          window.__wearehere.fingerprinting.push({
+            api: category + '.' + prop,
+            category: category,
+            timestamp: Date.now(),
+            stack: frames,
+          });
+        } catch {}
+        return originalGet.call(this);
+      },
+      configurable: true,
+    });
+  }
+
+  // Canvas
+  if (typeof HTMLCanvasElement !== 'undefined') {
+    wrapMethod(HTMLCanvasElement.prototype, 'toDataURL', 'Canvas');
+    wrapMethod(HTMLCanvasElement.prototype, 'toBlob', 'Canvas');
+  }
+  if (typeof CanvasRenderingContext2D !== 'undefined') {
+    wrapMethod(CanvasRenderingContext2D.prototype, 'getImageData', 'Canvas');
+  }
+
+  // WebGL
+  if (typeof WebGLRenderingContext !== 'undefined') {
+    wrapMethod(WebGLRenderingContext.prototype, 'getParameter', 'WebGL');
+  }
+  if (typeof WebGL2RenderingContext !== 'undefined') {
+    wrapMethod(WebGL2RenderingContext.prototype, 'getParameter', 'WebGL');
+  }
+
+  // AudioContext
+  if (typeof AudioContext !== 'undefined') {
+    wrapMethod(AudioContext.prototype, 'createOscillator', 'AudioContext');
+  }
+  if (typeof OfflineAudioContext !== 'undefined') {
+    wrapMethod(OfflineAudioContext.prototype, 'startRendering', 'AudioContext');
+  }
+
+  // Navigator
+  wrapGetter(Navigator.prototype, 'hardwareConcurrency', 'Navigator');
+  wrapGetter(Navigator.prototype, 'languages', 'Navigator');
+  wrapGetter(Navigator.prototype, 'platform', 'Navigator');
+  wrapGetter(Navigator.prototype, 'deviceMemory', 'Navigator');
+
+  // Screen
+  if (typeof Screen !== 'undefined') {
+    wrapGetter(Screen.prototype, 'colorDepth', 'Screen');
+    wrapGetter(Screen.prototype, 'pixelDepth', 'Screen');
+  }
+
+  // Beacon interception
+  if (navigator.sendBeacon) {
+    const originalSendBeacon = navigator.sendBeacon.bind(navigator);
+    navigator.sendBeacon = function(url, data) {
+      try {
+        window.__wearehere.beacons.push({
+          url: url,
+          dataSize: data ? (typeof data === 'string' ? data.length : 0) : 0,
+          timestamp: Date.now(),
+        });
+      } catch {}
+      return originalSendBeacon(url, data);
+    };
+  }
+
+})();
+`;
+}
+
+/**
+ * Returns the page-level detection script that scans the live DOM.
+ * Detects: cookies, trackers, dark patterns, storage, links, third-party scripts, forms, ToS.
  */
 export function getPageScript() {
-  // We inline the data into the script since it runs in page context
   const trackerDomainsJSON = JSON.stringify(TRACKER_DOMAINS);
   const trackingParamsJSON = JSON.stringify(TRACKING_PARAMS);
   const darkPatternsJSON = JSON.stringify(DARK_PATTERNS);
@@ -29,17 +144,13 @@ export function getPageScript() {
   try {
     const cookieStr = document.cookie || '';
     const cookies = cookieStr ? cookieStr.split(';').map(c => c.trim()).filter(Boolean) : [];
-    const pageHost = location.hostname;
     const parsed = cookies.map(c => {
       const eqIdx = c.indexOf('=');
       const name = eqIdx > -1 ? c.substring(0, eqIdx).trim() : c.trim();
       const value = eqIdx > -1 ? c.substring(eqIdx + 1).trim() : '';
       return { name, valueLength: value.length };
     });
-    results.cookies = {
-      total: parsed.length,
-      items: parsed.slice(0, 50), // cap for sanity
-    };
+    results.cookies = { total: parsed.length, items: parsed.slice(0, 50) };
   } catch (e) {
     results.cookies = { total: 0, items: [], error: e.message };
   }
@@ -50,7 +161,6 @@ export function getPageScript() {
     const pixels = [];
     const hiddenIframes = [];
 
-    // Scan images: 1x1 or hidden
     document.querySelectorAll('img').forEach(img => {
       const isPixel = (img.naturalWidth <= 1 && img.naturalHeight <= 1) ||
                       (img.width <= 1 && img.height <= 1) ||
@@ -64,7 +174,6 @@ export function getPageScript() {
       }
     });
 
-    // Scan iframes: hidden or tiny
     document.querySelectorAll('iframe').forEach(iframe => {
       const isHidden = (iframe.width <= 1 || iframe.height <= 1) ||
                        iframe.style.display === 'none' ||
@@ -77,7 +186,6 @@ export function getPageScript() {
       }
     });
 
-    // Classify tracker domains
     const trackerPixels = pixels.filter(p =>
       trackerDomains.some(td => p.domain.includes(td) || p.src.includes(td))
     );
@@ -100,18 +208,15 @@ export function getPageScript() {
     const detected = [];
     let score = 0;
 
-    // Confirm-shaming: check button/link text
+    // Confirm-shaming
     const clickableText = [];
     document.querySelectorAll('a, button, [role="button"]').forEach(el => {
       clickableText.push((el.textContent || '').trim().toLowerCase());
     });
-    const shamingPhrases = darkPatterns.confirm_shaming || [];
     const shamingMatches = [];
-    for (const phrase of shamingPhrases) {
+    for (const phrase of (darkPatterns.confirm_shaming || [])) {
       for (const text of clickableText) {
-        if (text.includes(phrase)) {
-          shamingMatches.push(text.substring(0, 80));
-        }
+        if (text.includes(phrase)) shamingMatches.push(text.substring(0, 80));
       }
     }
     if (shamingMatches.length > 0) {
@@ -119,10 +224,9 @@ export function getPageScript() {
       score += 20;
     }
 
-    // Fake urgency: regex scan on body text
-    const urgencyPhrases = darkPatterns.fake_urgency || [];
+    // Fake urgency
     const urgencyMatches = [];
-    for (const phrase of urgencyPhrases) {
+    for (const phrase of (darkPatterns.fake_urgency || [])) {
       try {
         const re = new RegExp(phrase, 'i');
         const match = bodyText.match(re);
@@ -135,9 +239,8 @@ export function getPageScript() {
     }
 
     // Countdown timers
-    const timerPhrases = darkPatterns.countdown_timer || [];
     const timerMatches = [];
-    for (const phrase of timerPhrases) {
+    for (const phrase of (darkPatterns.countdown_timer || [])) {
       try {
         const re = new RegExp(phrase, 'i');
         const match = bodyText.match(re);
@@ -154,8 +257,7 @@ export function getPageScript() {
     document.querySelectorAll('input[type="checkbox"][checked], input[type="checkbox"]:checked').forEach(cb => {
       const label = cb.closest('label')?.textContent?.trim() ||
                     cb.parentElement?.textContent?.trim() || '';
-      const labelLower = label.toLowerCase();
-      if (/newsletter|marketing|subscribe|promo|agree|opt.?in|email/i.test(labelLower)) {
+      if (/newsletter|marketing|subscribe|promo|agree|opt.?in|email/i.test(label.toLowerCase())) {
         preChecked.push(label.substring(0, 100));
       }
     });
@@ -164,16 +266,14 @@ export function getPageScript() {
       score += 20;
     }
 
-    // Hidden unsubscribe (tiny text)
+    // Hidden unsubscribe
     const hiddenUnsub = [];
     document.querySelectorAll('a, span, p, div').forEach(el => {
       const text = (el.textContent || '').trim().toLowerCase();
       if (text.includes('unsubscribe') || text.includes('opt out') || text.includes('opt-out')) {
         const style = getComputedStyle(el);
         const fontSize = parseFloat(style.fontSize);
-        if (fontSize < 10) {
-          hiddenUnsub.push({ text: text.substring(0, 60), fontSize: fontSize + 'px' });
-        }
+        if (fontSize < 10) hiddenUnsub.push({ text: text.substring(0, 60), fontSize: fontSize + 'px' });
       }
     });
     if (hiddenUnsub.length > 0) {
@@ -181,10 +281,7 @@ export function getPageScript() {
       score += 20;
     }
 
-    results.dark_patterns = {
-      score: Math.min(score, 100),
-      detected,
-    };
+    results.dark_patterns = { score: Math.min(score, 100), detected };
   } catch (e) {
     results.dark_patterns = { score: 0, detected: [], error: e.message };
   }
@@ -194,7 +291,7 @@ export function getPageScript() {
     const suspiciousPatterns = ${JSON.stringify(suspiciousPatternsSource)};
     const suspiciousFlags = ${JSON.stringify(suspiciousFlagsSource)};
 
-    function scanStorage(storage, name) {
+    function scanStorage(storage) {
       const keys = [];
       const flagged = [];
       try {
@@ -202,8 +299,6 @@ export function getPageScript() {
           const key = storage.key(i);
           const value = storage.getItem(key) || '';
           keys.push({ key, valueLength: value.length });
-
-          // Check if key or value matches suspicious patterns
           for (let p = 0; p < suspiciousPatterns.length; p++) {
             const re = new RegExp(suspiciousPatterns[p], suspiciousFlags[p]);
             if (re.test(key) || re.test(value)) {
@@ -217,8 +312,8 @@ export function getPageScript() {
     }
 
     results.storage = {
-      localStorage: scanStorage(localStorage, 'localStorage'),
-      sessionStorage: scanStorage(sessionStorage, 'sessionStorage'),
+      localStorage: scanStorage(localStorage),
+      sessionStorage: scanStorage(sessionStorage),
     };
   } catch (e) {
     results.storage = { error: e.message };
@@ -235,18 +330,13 @@ export function getPageScript() {
     links.forEach(a => {
       try {
         const url = new URL(a.href, location.origin);
-        // Check tracking params
         const foundParams = trackingParams.filter(p => url.searchParams.has(p));
         if (foundParams.length > 0) {
           withTracking++;
           if (trackingDetails.length < 10) {
-            trackingDetails.push({
-              href: a.href.substring(0, 150),
-              params: foundParams,
-            });
+            trackingDetails.push({ href: a.href.substring(0, 150), params: foundParams });
           }
         }
-        // Check redirect wrappers
         const host = url.hostname;
         if (host.includes('google.com/url') || host.includes('l.facebook.com') ||
             host.includes('lm.facebook.com') || host === 't.co' ||
@@ -286,7 +376,41 @@ export function getPageScript() {
     results.third_party_scripts = { total: 0, domains: [], error: e.message };
   }
 
+  // --- 7. FORMS ---
+  try {
+    const fields = [];
+    document.querySelectorAll('input, textarea, select').forEach(el => {
+      if (el.type === 'hidden' || el.type === 'submit' || el.type === 'button') return;
+      const style = getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      const label = el.getAttribute('aria-label') ||
+                    (el.id && document.querySelector('label[for="' + el.id + '"]')?.textContent?.trim()) ||
+                    el.placeholder || el.name || el.type || 'unknown';
+      fields.push({ type: el.type || el.tagName.toLowerCase(), label: label.substring(0, 60) });
+    });
+    results.forms = { fields: fields.slice(0, 15) };
+  } catch (e) {
+    results.forms = { fields: [], error: e.message };
+  }
+
+  // --- 8. TOS LINKS ---
+  try {
+    const tosLinks = [];
+    const tosPatterns = /privacy|terms|tos|legal|cookie.?policy|data.?policy/i;
+    document.querySelectorAll('a[href]').forEach(a => {
+      const text = (a.textContent || '').trim().toLowerCase();
+      const href = a.href || '';
+      if (tosPatterns.test(text) || tosPatterns.test(href)) {
+        tosLinks.push({ href: href.substring(0, 300), text: text.substring(0, 80) });
+      }
+    });
+    results.tos_links = tosLinks.slice(0, 10);
+  } catch (e) {
+    results.tos_links = [];
+  }
+
   return JSON.stringify(results);
 })();
 `;
 }
+

@@ -6,7 +6,10 @@ Full privacy scan for every site you visit — one popup, complete picture.
 
 The weare____ suite started as 8 separate browser extensions, each exposing a different privacy concern: cookies, trackers, fingerprinting, dark patterns, ToS toxicity, localStorage tracking, link tracking, and form leaks. wearehere unifies all 8 into one extension with a simplified popup for quick awareness and a full-page dashboard for deep analysis.
 
-No AI, no cloud, no accounts — everything runs locally in your browser.
+wearehere ships two ways:
+
+1. **Browser extension** (Chrome + Firefox) — runs locally in the browser, no AI, no cloud, no accounts.
+2. **npm package** (`wearehere` on npm) — exports detection scripts and an `assess()` function so headless browser tools (barebrowse) can integrate privacy assessment as a tool. Zero dependencies.
 
 ## What it scans (all 8 modules)
 
@@ -24,13 +27,15 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 
 ## How it works
 
-### Fingerprinting & beacon detection (inject.js, from wearewatched)
+### Browser extension
+
+#### Fingerprinting & beacon detection (inject.js, from wearewatched)
 - Runs in `MAIN` world at `document_start` — before any page script
 - Wraps prototype methods: `HTMLCanvasElement.toDataURL`, `WebGLRenderingContext.getParameter`, `AudioContext.createOscillator`, `navigator.hardwareConcurrency/languages/platform/deviceMemory`, `screen.colorDepth/pixelDepth`
 - Wraps `navigator.sendBeacon` to intercept beacon calls
 - Relays detections to content script via `postMessage`
 
-### DOM scanning (content.js)
+#### DOM scanning (content.js)
 - Runs at `document_start`, scans after page load
 - **Trackers (wearecooked)**: 258-entry COMPANY_MAP with `lookupCompany()` subdomain walking — resolves raw domains to company names and purposes (Advertising, Analytics, Data broker, etc.)
 - Tracking pixels: 1x1 or hidden `<img>` elements from known tracker domains
@@ -43,7 +48,7 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 - Finds ToS/privacy links on the page and sends them to background for scanning
 - Content-script-side ToS fetch fallback for SPAs (Reddit, etc.) — fetches with page cookies/session when background fetch returns empty shell
 
-### ToS scanning (background.js + tos-scanner.js, from wearetosed)
+#### ToS scanning (background.js + tos-scanner.js, from wearetosed)
 - Tries 20+ common paths (`/privacy`, `/terms`, `/policies/privacy-policy`, etc.)
 - Falls back to links found on the page by content.js
 - Fetches HTML, strips tags, runs wearetosed's `scanText()` — 54 regex patterns across 6 categories
@@ -52,24 +57,103 @@ No AI, no cloud, no accounts — everything runs locally in your browser.
 - Content-script fallback: if background fetch fails (SPA empty shell), sends `fetchToS` message to content script which fetches with page credentials
 - Caches results per domain
 
-### Network monitoring (background.js + network-domains.js, from wearebaked)
+#### Network monitoring (background.js + network-domains.js, from wearebaked)
 - Uses `chrome.webRequest` API (observation-only, non-blocking) for real-time network monitoring
 - Listeners: `onBeforeRequest` (timing, redirect chains, request body size), `onBeforeRedirect` (chain appending), `onCompleted` (domain classification, bytes, per-tab tracking), `onErrorOccurred` (cleanup)
 - **network-domains.js** contains: 454 NET_TRACKER_DOMAINS (categorized: Advertising, Analytics, Social Tracking, Fingerprinting, Data Broker, Error Monitoring, A/B Testing, Chat/Support, Video/Media, Consent, Email/CRM), 82 NET_BROKER_META profiles with name/type/description, NET_PURPOSE_DOMAINS (benign: CDN, fonts, captcha, payment, auth, maps), NET_DOMAIN_PATTERNS (regex fallback)
 - 3-pass domain classification: (1) exact domain DB, (2) pattern regex, (3) request heuristics (tracking pixels by content-length, beacon POSTs by empty response)
 - Per-tab network data: requestCount, thirdPartyDomains, categories, brokers, bytes
 
-### Cookie analysis (background.js)
+#### Cookie analysis (background.js)
 - Uses `chrome.cookies.getAll()` for complete cookie inventory including HttpOnly
 - Classifies first-party vs third-party by domain matching
 - Tracks persistence: session vs persistent, longest expiry in days
 - Cookie cleaner: `cleanCookies` message handler supports 'all' and 'thirdParty' modes via `chrome.cookies.remove()`
 
-### Verdict
+#### Verdict
 - Scores 0-100 based on weighted findings across all 8 categories
 - Risk levels: low (0-15), moderate (16-40), high (41-70), critical (71-100)
 - Scoring includes: cookies (third-party count + persistence), trackers (count + scripts), fingerprinting (technique count), pressure (manipulation score), terms (toxicity score), storage (suspicious keys), links (tracking percentage), network (data broker count), forms (trackers watching while typing)
 - Plain-language recommendation for each level
+
+### npm package (assess/)
+
+The `wearehere` npm package exports the same detection logic for use in headless browser environments. It is consumed by barebrowse as an optional dependency, adding an `assess` tool alongside barebrowse's 12 existing MCP tools. No separate MCP server needed.
+
+#### Architecture
+
+**Before (deprecated)**: wearehere had its own MCP server (`mcp-server.js`) that imported barebrowse as a dependency. This was awkward — users needed to configure two MCP servers.
+
+**After**: wearehere publishes a zero-dependency npm package. barebrowse lists it as an `optionalDependency` and dynamically imports it. If `wearehere` is installed, barebrowse exposes a 13th `assess` tool. If not, barebrowse works normally with its 12 tools. The dependency flows one way: barebrowse depends on wearehere, never the reverse.
+
+#### assess(page, url, opts)
+
+The main entry point. Takes a barebrowse `page` object (not a URL) — wearehere does not manage browser lifecycle, barebrowse does.
+
+Steps:
+1. Injects init scripts (fingerprint/beacon wrappers from `getInitScript()`) before navigation
+2. Navigates to URL, waits for network to settle
+3. Runs page scripts (cookies, trackers, dark patterns, storage, links, ToS detection from `getPageScript()`)
+4. Collects results from the page context
+5. Computes verdict via `computeVerdict()` — same 10-category weighted scoring as the extension
+6. Returns compact structured JSON
+
+#### Compact output shape
+
+```json
+{
+  "site": "example.com",
+  "url": "https://example.com",
+  "score": 62,
+  "risk": "high",
+  "recommendation": "Significant privacy risks. Avoid sharing personal info.",
+  "concerns": ["Heavy hidden tracking", "Aggressive device fingerprinting"],
+  "categories": {
+    "cookies":      { "score": 10, "max": 15, "summary": "7 third-party cookies" },
+    "network":      { "score": 5,  "max": 10, "summary": "5 tracker domains" },
+    "trackers":     { "score": 20, "max": 20, "summary": "14 hidden elements" },
+    "pressure":     { "score": 0,  "max": 15, "summary": "No dark patterns" },
+    "selling_data": { "score": 5,  "max": 10, "summary": "2 broker connections" },
+    "profiling":    { "score": 10, "max": 20, "summary": "Canvas + WebGL" },
+    "stored_data":  { "score": 0,  "max": 5,  "summary": "No suspicious keys" },
+    "watching":     { "score": 0,  "max": 10, "summary": "No form surveillance" },
+    "clicks":       { "score": 5,  "max": 5,  "summary": "68% of links tracked" },
+    "terms":        { "score": 15, "max": 15, "summary": "Binding arbitration" }
+  },
+  "scanned_at": "2026-03-11T..."
+}
+```
+
+The output is designed for agent threshold decisions (compact, structured) rather than verbose human-readable reports.
+
+#### Sub-path exports
+
+| Import path | What it provides |
+|-------------|-----------------|
+| `wearehere` | `assess(page, url, opts)` — full assessment |
+| `wearehere/scripts` | `getInitScript()`, `getPageScript()` — raw detection scripts for custom integration |
+| `wearehere/scoring` | `computeVerdict(results)` — scoring engine only |
+| `wearehere/data` | Tracker domains, broker metadata, `scanText()`, `classifyNetworkDomain()` — raw data |
+
+#### Package modules
+
+| File | Purpose |
+|------|---------|
+| `index.js` | `assess(page, url, opts)` — orchestrates injection, navigation, collection, scoring |
+| `scripts.js` | `getInitScript()` (fingerprint/beacon wrappers), `getPageScript()` (DOM scanners) |
+| `data.js` | Tracker domains, patterns, broker data, ToS patterns — same data as the extension |
+| `scoring.js` | `computeVerdict()` — 10-category weighted scoring system, same weights as extension |
+
+#### How barebrowse integrates
+
+```json
+// barebrowse package.json
+{ "optionalDependencies": { "wearehere": "^1.0.0" } }
+```
+
+- Dynamic import with fallback: `try { wearehere = await import('wearehere') } catch { /* assess tool not available */ }`
+- Adds `assess` as 13th MCP tool alongside goto, click, snapshot, scroll, type, press, back, forward, browse, drag, upload, pdf
+- Also registered in `bareagent.js` tools array for agent use
 
 ## Module reuse
 
@@ -138,40 +222,42 @@ Deep-dive analysis for users who want details.
 
 ```
 wearehere/
-├── mcp-server.js              # MCP server (agent-facing, uses barebrowse)
-├── package.json
-├── src/                       # MCP scanner source
-│   ├── scanner.js
-│   ├── init-scripts.js
-│   ├── page-scripts.js
-│   └── data.js
-├── chrome-extension/
-│   ├── manifest.json          # MV3, v3.0.0
-│   ├── tos-scanner.js         # From wearetosed v0.1.0
-│   ├── network-domains.js     # From wearebaked v0.5.1 (454 domains, 82 brokers)
-│   ├── inject.js              # Page-context prototype wrappers (wearewatched)
-│   ├── detect-cooked.js       # Cookie/tracker detection (from wearecooked)
-│   ├── detect-leaked.js       # Storage scanning (from weareleaking)
-│   ├── detect-linked.js       # Link tracking detection (from wearelinked)
-│   ├── detect-played.js       # Dark pattern detection (from weareplayed)
-│   ├── detect-silent.js       # Form scanning (from wearesilent)
-│   ├── detect-tosed.js        # ToS link finder (from wearetosed)
-│   ├── detect-watched.js      # Fingerprint relay (from wearewatched)
-│   ├── background.js          # Aggregator + ToS fetch + cookies + network monitoring + verdict
-│   ├── popup.html / popup.js / popup.css   # Quick-view popup (8 sections)
-│   ├── report.html / report.js / report.css # Full dashboard (5 tabs)
-│   ├── icons/                 # App + section icons (16/20/48/128px)
-├── firefox-extension/         # MV2 (TODO)
-└── store-assets/
-    ├── prd.md
-    └── wearehere-chrome-v*.zip
+├── assess/                        # npm package (published as "wearehere")
+│   ├── package.json               # name: "wearehere", zero dependencies
+│   ├── index.js                   # assess(page, url, opts) → compact JSON
+│   ├── scripts.js                 # getInitScript(), getPageScript()
+│   ├── data.js                    # tracker domains, patterns, broker data, ToS patterns
+│   └── scoring.js                 # computeVerdict() — 10-category weighted system
+├── chrome-extension/              # Browser extension
+│   ├── manifest.json              # MV3, v3.1.1
+│   ├── background.js              # Aggregator + verdict + badge
+│   ├── inject.js                  # Fingerprint/beacon wrappers (MAIN world)
+│   ├── detect-cooked.js           # Tracker detection
+│   ├── detect-leaked.js           # Storage scanning
+│   ├── detect-linked.js           # Link tracking
+│   ├── detect-played.js           # Dark patterns
+│   ├── detect-silent.js           # Form scanning
+│   ├── detect-tosed.js            # ToS link finder
+│   ├── detect-watched.js          # Fingerprint relay
+│   ├── tos-scanner.js             # scanText() patterns
+│   ├── network-domains.js         # 454 trackers, 82 brokers
+│   ├── popup.html/js/css          # Quick-view popup
+│   └── report.html/js/css         # Full dashboard
+├── firefox-extension/             # MV2 (TODO)
+└── store-assets/                  # Store listings, PRD
 ```
 
-## MCP server
-
-wearehere also ships an MCP server (`mcp-server.js`) for agent-facing use. It exposes a single `scan_site(url)` tool that launches a headless browser via barebrowse, navigates to the URL, and runs the same detection logic. Returns structured JSON with the same categories and verdict. See mcp-server.js and src/ for details.
-
 ## Changelog
+
+### v4.0.0 — npm package, MCP server deprecated
+
+- New `assess/` directory: standalone npm package published as `wearehere` on npm
+- Exports `assess(page, url, opts)` for headless browser integration — takes a barebrowse page object, returns compact privacy assessment JSON
+- Sub-path exports: `wearehere/scripts` (init + page scripts), `wearehere/scoring` (verdict engine)
+- Same 10-category weighted scoring as the extension (cookies, network, trackers, pressure, selling data, profiling, stored data, watching, clicks, terms)
+- Zero dependencies — barebrowse consumes it as an optionalDependency
+- Deprecated standalone MCP server (`mcp-server.js` + `src/`) — barebrowse now exposes `assess` as its 13th MCP tool directly, no second server needed
+- Compact output shape designed for agent threshold decisions (score, risk, concerns, per-category breakdown)
 
 ### v3.1.1 — Content Script Scope Isolation
 
