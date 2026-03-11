@@ -174,6 +174,7 @@ function scanElement(el) {
 }
 
 function sendResults() {
+  totalAnchors = document.querySelectorAll("a[href]").length;
   var wrappers = 0;
   var tracked = 0;
   for (var i = 0; i < items.length; i++) {
