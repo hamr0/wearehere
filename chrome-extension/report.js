@@ -843,8 +843,12 @@ function netUpdateToggleCount(toggleId, count, label) {
       cleanBtn.addEventListener("click", function() {
         cleanBtn.textContent = 'Cleaning...';
         cleanBtn.disabled = true;
+        // Build list of tracking cookies to delete (by category, not domain)
+        var riskyCookies = (reportData.rawCookies || [])
+          .filter(function(c) { return COOKIE_RISKY_CATEGORIES.has(c._category); })
+          .map(function(c) { return { domain: c.domain, name: c.name, secure: c.secure, path: c.path }; });
         chrome.runtime.sendMessage(
-          { type: 'cleanCookies', mode: 'thirdParty', url: reportData.url },
+          { type: 'cleanCookies', mode: 'list', cookies: riskyCookies, url: reportData.url },
           function(response) {
             const count = response && response.deleted !== undefined ? response.deleted : 0;
             cleanBtn.textContent = count + ' deleted';

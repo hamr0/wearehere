@@ -441,16 +441,23 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'cleanCookies') {
     (async () => {
       try {
-        const domain = new URL(msg.url).hostname;
-        // getAll({url}) only returns same-domain cookies, so use getAll({}) for third-party mode
-        const cookies = msg.mode === 'thirdParty'
-          ? await chrome.cookies.getAll({})
-          : await chrome.cookies.getAll({ url: msg.url });
         let deleted = 0;
-        for (const c of cookies) {
-          const cDomain = c.domain.replace(/^\./, '');
-          const isFirstParty = cDomain.includes(domain) || domain.includes(cDomain);
-          if (msg.mode === 'all' || (msg.mode === 'thirdParty' && !isFirstParty)) {
+        if (msg.mode === 'list' && msg.cookies) {
+          // Delete specific cookies by domain+name (from report.js category classification)
+          for (const c of msg.cookies) {
+            const cDomain = c.domain.replace(/^\./, '');
+            const protocol = c.secure ? 'https' : 'http';
+            const cookieUrl = `${protocol}://${cDomain}${c.path}`;
+            try {
+              await chrome.cookies.remove({ url: cookieUrl, name: c.name });
+              deleted++;
+            } catch {}
+          }
+        } else {
+          const domain = new URL(msg.url).hostname;
+          const cookies = await chrome.cookies.getAll({ url: msg.url });
+          for (const c of cookies) {
+            const cDomain = c.domain.replace(/^\./, '');
             const protocol = c.secure ? 'https' : 'http';
             const cookieUrl = `${protocol}://${cDomain}${c.path}`;
             try {
