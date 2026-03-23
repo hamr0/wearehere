@@ -159,9 +159,11 @@
   function adaptReportData(reportData) {
     const domains = {};
     // Use networkDashboard.domains — same source as the Network tab.
-    // Only include domains that were third-party on at least one site
-    // (exactly how the Network tab counts "3P Domains").
+    // Filter by thirdPartyOn matching the report's site when known,
+    // so compare mode shows per-site data not the global pool.
     var rawDomains = {};
+    var siteDomain = reportData.site || '';
+    var siteRoot = siteDomain ? getRootDomain(siteDomain) : '';
     var dashDomains = (reportData.networkDashboard && reportData.networkDashboard.domains) || {};
 
     if (Object.keys(dashDomains).length > 0) {
@@ -170,6 +172,14 @@
         var gi = dashDomains[gd];
         var tpOn = gi.thirdPartyOn || [];
         if (tpOn.length === 0) continue;
+        // Filter to domains third-party on this specific site
+        if (siteRoot) {
+          var matched = false;
+          for (var t = 0; t < tpOn.length; t++) {
+            if (getRootDomain(tpOn[t]) === siteRoot) { matched = true; break; }
+          }
+          if (!matched) continue;
+        }
         var cls = gi.classification || {};
         rawDomains[gd] = {
           count: gi.count || 1,
@@ -1074,20 +1084,16 @@
   function updateStats() {
     var el = document.getElementById('graph-stats');
     if (!el) return;
-    if (!primaryData) { el.textContent = ''; return; }
+    if (nodes.length === 0) { el.textContent = ''; return; }
 
-    // Merge categories from both datasets in compare mode
+    // Count from actual graph nodes — matches what's rendered
     var cats = {};
     var total = 0;
-    var datasets = [primaryData];
-    if (compareMode && compareData) datasets.push(compareData);
-    for (var d = 0; d < datasets.length; d++) {
-      var domains = datasets[d].domains;
-      for (var domain in domains) {
-        var cat = domains[domain].category;
-        cats[cat] = (cats[cat] || 0) + 1;
-        total++;
-      }
+    for (var i = 0; i < nodes.length; i++) {
+      if (nodes[i].category === 'origin') continue;
+      var cat = nodes[i].category;
+      cats[cat] = (cats[cat] || 0) + 1;
+      total++;
     }
 
     el.textContent = '';
@@ -1154,6 +1160,13 @@
         opt.value = otherTabs[i].id;
         opt.textContent = otherTabs[i].domain || 'Tab ' + otherTabs[i].id;
         select.appendChild(opt);
+      }
+
+      // Restore compare state if it was active before DOM rebuild
+      if (compareMode && otherTabs.length > 0) {
+        if (btn) btn.classList.add('active');
+        select.style.display = '';
+        loadCompareTab(parseInt(select.value));
       }
     });
   }
@@ -1338,10 +1351,15 @@
     requestAnimationFrame(function () {
       requestAnimationFrame(function () {
         resize();
-        // Always rebuild when starting — panel was hidden during init
-        // so nodes were positioned at 0,0
+        if (W === 0 || H === 0) return;
+        // Always rebuild with fresh data to ensure correct positioning
         if (reportData) buildFromData(reportData);
         else if (primaryData) rebuildAll();
+        // Re-trigger compare if active
+        if (compareMode) {
+          var sel = document.getElementById('graph-compare-select');
+          if (sel && sel.value) loadCompareTab(parseInt(sel.value));
+        }
         if (!animFrameId) loop();
       });
     });
