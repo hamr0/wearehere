@@ -158,7 +158,32 @@
 
   function adaptReportData(reportData) {
     const domains = {};
-    const rawDomains = (reportData.network && reportData.network.domains) || {};
+    // Use networkDashboard.domains — same source as the Network tab.
+    // Only include domains that were third-party on at least one site
+    // (exactly how the Network tab counts "3P Domains").
+    var rawDomains = {};
+    var dashDomains = (reportData.networkDashboard && reportData.networkDashboard.domains) || {};
+
+    if (Object.keys(dashDomains).length > 0) {
+      for (var gd in dashDomains) {
+        if (!dashDomains.hasOwnProperty(gd)) continue;
+        var gi = dashDomains[gd];
+        var tpOn = gi.thirdPartyOn || [];
+        if (tpOn.length === 0) continue;
+        var cls = gi.classification || {};
+        rawDomains[gd] = {
+          count: gi.count || 1,
+          category: (cls.category && cls.category !== 'unknown') ? cls.category : 'Other',
+          risky: !!cls.risky,
+          brokerName: cls.brokerName || null,
+          brokerType: cls.brokerType || null,
+          brokerDesc: cls.brokerDesc || null,
+          bytesReceived: gi.bytesReceived || 0,
+        };
+      }
+    } else {
+      rawDomains = (reportData.network && reportData.network.domains) || {};
+    }
     const rawCookies = reportData.rawCookies || [];
 
     // Count cookies per root domain
@@ -524,6 +549,16 @@
   // ============================================================================
   function draw() {
     ctx.clearRect(0, 0, W, H);
+
+    // Empty state — no connections captured
+    var nonOriginNodes = nodes.filter(function(n) { return n.category !== 'origin'; });
+    if (nonOriginNodes.length === 0 && !compareMode) {
+      ctx.font = '14px system-ui';
+      ctx.textAlign = 'center';
+      ctx.fillStyle = '#666';
+      ctx.fillText('No network data captured yet.', W / 2, H / 2 - 10);
+      ctx.fillText('Refresh the page to start monitoring.', W / 2, H / 2 + 14);
+    }
 
     // Compare mode divider
     if (compareMode) {

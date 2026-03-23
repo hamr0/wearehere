@@ -357,9 +357,18 @@ function netUpdateToggleCount(toggleId, count, label) {
         if (target === 'network') { startNetworkRefresh(); } else { stopNetworkRefresh(); }
         if (target === 'cookies') { startCookieRefresh(); } else { stopCookieRefresh(); }
 
-        // Graph lifecycle
+        // Graph lifecycle — fetch fresh data when tab activates
         if (target === 'graph') {
-          if (window.WeAreHereGraph) window.WeAreHereGraph.start(reportData);
+          var msg = { type: 'getFullReport' };
+          if (currentTabId) msg.tabId = currentTabId;
+          browser.runtime.sendMessage(msg).then(function (freshReport) {
+            if (freshReport) {
+              reportData = freshReport;
+              if (window.WeAreHereGraph) window.WeAreHereGraph.start(reportData);
+            } else {
+              if (window.WeAreHereGraph) window.WeAreHereGraph.start(reportData);
+            }
+          });
         } else {
           if (window.WeAreHereGraph) window.WeAreHereGraph.stop();
         }
