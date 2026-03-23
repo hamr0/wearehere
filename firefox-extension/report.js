@@ -260,6 +260,12 @@ function netUpdateToggleCount(toggleId, count, label) {
   let networkRefreshInterval = null;
   let cookieRefreshInterval = null;
 
+  // --- Data bridge for graph.js ---
+  window._wearehere = {
+    getReportData: function () { return reportData; },
+    getCurrentTabId: function () { return currentTabId; },
+  };
+
   // --- Init ---
   let currentTabId = null;
 
@@ -285,7 +291,7 @@ function netUpdateToggleCount(toggleId, count, label) {
 
       buildTabDropdown();
       initTabs();
-      var renderers = [renderOverview, renderCookies, renderNetwork, renderTerms, renderTracking];
+      var renderers = [renderOverview, renderCookies, renderNetwork, renderTerms, renderTracking, renderGraph];
       for (var i = 0; i < renderers.length; i++) {
         try { renderers[i](); } catch (e) { console.error('Render error in ' + renderers[i].name + ':', e); }
       }
@@ -350,8 +356,20 @@ function netUpdateToggleCount(toggleId, count, label) {
         // Start/stop auto-refresh based on active tab
         if (target === 'network') { startNetworkRefresh(); } else { stopNetworkRefresh(); }
         if (target === 'cookies') { startCookieRefresh(); } else { stopCookieRefresh(); }
+
+        // Graph lifecycle
+        if (target === 'graph') {
+          if (window.WeAreHereGraph) window.WeAreHereGraph.start(reportData);
+        } else {
+          if (window.WeAreHereGraph) window.WeAreHereGraph.stop();
+        }
       });
     });
+  }
+
+  // --- Graph renderer ---
+  function renderGraph() {
+    if (window.WeAreHereGraph) window.WeAreHereGraph.init(reportData);
   }
 
   // --- Utilities ---

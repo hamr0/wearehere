@@ -49,13 +49,14 @@ wearehere reuses detection logic from the weare____ suite — same code, not rew
 
 ## Dashboard
 
-Click **Full Report** in the popup to open the unified dashboard with 5 tabs:
+Click **Full Report** in the popup to open the unified dashboard with 6 tabs:
 
 - **Overview** — score, at-a-glance cards (10 categories with colored borders), concerns, stacked weight bar, score breakdown with +pts/max
 - **Cookies** — searchable/sortable cookie table, cookie cleaner (Clean Third-Party / Clean All)
 - **Network** — request categories, domain table, data broker detection, redirect chains
 - **Terms** — toxicity score and flagged clauses for privacy policy and terms of service
 - **Tracking** — 7 sections in 2-column masonry layout: Trackers, Selling data, Pressure, Profiling, Stored data, Watching, Clicks
+- **Network Map** — interactive force-directed graph showing all third-party connections from a single page visit. Nodes represent domains (sized by impact, colored by category), edges show the connection from your visit to each tracker. Features: cluster by parent company, essentials mode (green/red split of essential vs non-essential), category filtering, side-by-side comparison of two sites, click-to-trace with full connection details, data flow particles, and cookie count badges
 
 ## npm package
 
