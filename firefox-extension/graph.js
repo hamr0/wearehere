@@ -844,31 +844,30 @@
     tip.style.left = tx + 'px';
     tip.style.top = ty + 'px';
 
-    var html = '<div class="graph-tip-domain">' + escHtml(n.label) + '</div>';
+    tip.textContent = '';
+
+    tip.appendChild(mkEl('div', { cls: 'graph-tip-domain', text: n.label }));
 
     var cat = n.category;
     if (n.parent) cat += ' \u2014 ' + n.parent;
     if (n.brokerName) cat = n.brokerName + ' (' + (n.brokerType || n.category) + ')';
-    html += '<div class="graph-tip-cat">' + escHtml(cat) + '</div>';
+    tip.appendChild(mkEl('div', { cls: 'graph-tip-cat', text: cat }));
 
     if (n.cookies > 0) {
-      html += '<div class="graph-tip-cookies">' + n.cookies + ' cookies set</div>';
+      tip.appendChild(mkEl('div', { cls: 'graph-tip-cookies', text: n.cookies + ' cookies set' }));
     }
 
-    // Chain info
     var curData = n.half === 'R' ? compareData : primaryData;
     var chains = getNodeChains(n.id, curData);
     if (chains.length > 0) {
-      html += '<div class="graph-tip-chain">Chain: ' + escHtml(chains[0]) + '</div>';
+      tip.appendChild(mkEl('div', { cls: 'graph-tip-chain', text: 'Chain: ' + chains[0] }));
     }
 
     var detail = '';
     if (n.count) detail += n.count + ' requests';
     if (n.bytesReceived > 0) detail += ' \u00b7 ' + formatBytes(n.bytesReceived);
     if (n.detail) detail += ' \u2014 ' + n.detail;
-    if (detail) html += '<div class="graph-tip-detail">' + escHtml(detail) + '</div>';
-
-    tip.innerHTML = html;
+    if (detail) tip.appendChild(mkEl('div', { cls: 'graph-tip-detail', text: detail }));
   }
 
   function hideTooltip() {
@@ -886,6 +885,19 @@
     return (b / 1048576).toFixed(1) + ' MB';
   }
 
+  // DOM helper — creates an element with optional class, style, text, and children
+  function mkEl(tag, opts) {
+    var el = document.createElement(tag);
+    if (opts) {
+      if (opts.cls) el.className = opts.cls;
+      if (opts.text) el.textContent = opts.text;
+      if (opts.style) el.setAttribute('style', opts.style);
+      if (opts.id) el.id = opts.id;
+      if (opts.data) { for (var k in opts.data) el.setAttribute('data-' + k, opts.data[k]); }
+    }
+    return el;
+  }
+
   // ============================================================================
   // INFO PANEL — shown on click
   // ============================================================================
@@ -896,45 +908,44 @@
     var curData = n.half === 'R' ? compareData : primaryData;
     var chains = getNodeChains(n.id, curData);
 
-    var html = '<div class="graph-info-header">';
-    html += '<span class="graph-info-domain">' + escHtml(n.label) + '</span>';
-    html += '<button class="graph-info-close" id="graph-info-close">\u00d7</button>';
-    html += '</div>';
+    panel.textContent = '';
 
-    html += '<div class="graph-info-row"><span class="graph-info-label">Category</span>' + escHtml(n.category) + '</div>';
-
-    if (n.parent) {
-      html += '<div class="graph-info-row"><span class="graph-info-label">Owner</span>' + escHtml(n.parent) + '</div>';
-    }
-    if (n.brokerName) {
-      html += '<div class="graph-info-row"><span class="graph-info-label">Broker</span>' + escHtml(n.brokerName) + ' (' + escHtml(n.brokerType || '') + ')</div>';
-    }
-    html += '<div class="graph-info-row"><span class="graph-info-label">Requests</span>' + (n.count || 0) + '</div>';
-    html += '<div class="graph-info-row"><span class="graph-info-label">Cookies</span>' + (n.cookies || 0) + '</div>';
-
-    if (n.bytesReceived > 0) {
-      html += '<div class="graph-info-row"><span class="graph-info-label">Data</span>' + formatBytes(n.bytesReceived) + '</div>';
+    function infoRow(label, value) {
+      var row = mkEl('div', { cls: 'graph-info-row' });
+      row.appendChild(mkEl('span', { cls: 'graph-info-label', text: label }));
+      row.appendChild(document.createTextNode(value));
+      return row;
     }
 
-    if (chains.length > 0) {
-      html += '<div class="graph-info-chains"><span class="graph-info-label">Redirect chains</span>';
-      for (var i = 0; i < chains.length; i++) {
-        html += '<div class="graph-info-chain">' + escHtml(chains[i]) + '</div>';
-      }
-      html += '</div>';
-    }
-
-    if (n.detail) {
-      html += '<div class="graph-info-desc">' + escHtml(n.detail) + '</div>';
-    }
-
-    panel.innerHTML = html;
-    panel.style.display = 'block';
-
-    document.getElementById('graph-info-close').addEventListener('click', function () {
+    var header = mkEl('div', { cls: 'graph-info-header' });
+    header.appendChild(mkEl('span', { cls: 'graph-info-domain', text: n.label }));
+    var closeBtn = mkEl('button', { cls: 'graph-info-close', text: '\u00d7' });
+    closeBtn.addEventListener('click', function () {
       selectedNode = null;
       panel.style.display = 'none';
     });
+    header.appendChild(closeBtn);
+    panel.appendChild(header);
+
+    panel.appendChild(infoRow('Category', n.category));
+    if (n.parent) panel.appendChild(infoRow('Owner', n.parent));
+    if (n.brokerName) panel.appendChild(infoRow('Broker', n.brokerName + ' (' + (n.brokerType || '') + ')'));
+    panel.appendChild(infoRow('Requests', String(n.count || 0)));
+    panel.appendChild(infoRow('Cookies', String(n.cookies || 0)));
+    if (n.bytesReceived > 0) panel.appendChild(infoRow('Data', formatBytes(n.bytesReceived)));
+
+    if (chains.length > 0) {
+      var chainsDiv = mkEl('div', { cls: 'graph-info-chains' });
+      chainsDiv.appendChild(mkEl('span', { cls: 'graph-info-label', text: 'Redirect chains' }));
+      for (var i = 0; i < chains.length; i++) {
+        chainsDiv.appendChild(mkEl('div', { cls: 'graph-info-chain', text: chains[i] }));
+      }
+      panel.appendChild(chainsDiv);
+    }
+
+    if (n.detail) panel.appendChild(mkEl('div', { cls: 'graph-info-desc', text: n.detail }));
+
+    panel.style.display = 'block';
   }
 
   function hideInfoPanel() {
@@ -1050,20 +1061,20 @@
     for (var i = 0; i < nodes.length; i++) {
       if (nodes[i].category !== 'origin') cats[nodes[i].category] = true;
     }
-    var html = '';
+    el.textContent = '';
     for (var cat in cats) {
       var color = CATEGORY_COLORS[cat] || DEFAULT_COLOR;
-      html += '<span class="graph-legend-item">';
-      html += '<span class="graph-legend-dot" style="background:' + color + '"></span>';
-      html += escHtml(cat) + '</span>';
+      var item = mkEl('span', { cls: 'graph-legend-item' });
+      item.appendChild(mkEl('span', { cls: 'graph-legend-dot', style: 'background:' + color }));
+      item.appendChild(document.createTextNode(cat));
+      el.appendChild(item);
     }
-    el.innerHTML = html;
   }
 
   function updateStats() {
     var el = document.getElementById('graph-stats');
     if (!el) return;
-    if (!primaryData) { el.innerHTML = ''; return; }
+    if (!primaryData) { el.textContent = ''; return; }
 
     // Merge categories from both datasets in compare mode
     var cats = {};
@@ -1079,16 +1090,22 @@
       }
     }
 
-    var html = '<div class="graph-stat-count">' + total + '</div>';
-    html += '<div class="graph-stat-label">third-party connections</div>';
+    el.textContent = '';
+    el.appendChild(mkEl('div', { cls: 'graph-stat-count', text: String(total) }));
+    el.appendChild(mkEl('div', { cls: 'graph-stat-label', text: 'third-party connections' }));
 
     var sorted = Object.keys(cats).sort(function (a, b) { return cats[b] - cats[a]; });
     for (var i = 0; i < sorted.length; i++) {
       var cat = sorted[i];
       var color = CATEGORY_COLORS[cat] || DEFAULT_COLOR;
-      html += '<div class="graph-stat-cat" data-cat="' + escHtml(cat) + '" style="color:' + color + ';font-size:12px;margin-top:2px;cursor:pointer">' + cats[cat] + ' ' + escHtml(cat) + '</div>';
+      var catEl = mkEl('div', {
+        cls: 'graph-stat-cat',
+        text: cats[cat] + ' ' + cat,
+        style: 'color:' + color + ';font-size:12px;margin-top:2px;cursor:pointer',
+        data: { cat: cat }
+      });
+      el.appendChild(catEl);
     }
-    el.innerHTML = html;
 
     // Bind click handlers on category items
     var catItems = el.querySelectorAll('.graph-stat-cat');
@@ -1119,7 +1136,7 @@
     if (!select) return;
 
     browser.runtime.sendMessage({ type: 'getOpenTabs' }).then(function (tabs) {
-      select.innerHTML = '';
+      select.textContent = '';
       var currentId = window._wearehere ? window._wearehere.getCurrentTabId() : null;
       var otherTabs = (tabs || []).filter(function (t) { return t.id !== currentId && t.domain; });
 
@@ -1166,21 +1183,36 @@
     var panel = document.getElementById('panel-graph');
     if (!panel) return;
 
-    panel.innerHTML = '' +
-      '<div id="graph-container" class="graph-container">' +
-        '<div class="graph-toolbar">' +
-          '<input type="text" id="graph-search" placeholder="Filter: Google, Meta, broker...">' +
-          '<button class="graph-btn active" id="graph-btn-cluster">Cluster</button>' +
-          '<button class="graph-btn" id="graph-btn-risk">Essentials</button>' +
-          '<button class="graph-btn" id="graph-btn-compare" style="display:none">Compare</button>' +
-          '<select id="graph-compare-select" style="display:none"></select>' +
-        '</div>' +
-        '<div class="graph-stats-box" id="graph-stats"></div>' +
-        '<canvas id="graph-canvas"></canvas>' +
-        '<div id="graph-tooltip" class="graph-tooltip"></div>' +
-        '<div id="graph-info" class="graph-info"></div>' +
-        '<div id="graph-legend" class="graph-legend"></div>' +
-      '</div>';
+    panel.textContent = '';
+
+    var container = mkEl('div', { cls: 'graph-container', id: 'graph-container' });
+
+    var toolbar = mkEl('div', { cls: 'graph-toolbar' });
+    var search = document.createElement('input');
+    search.type = 'text';
+    search.id = 'graph-search';
+    search.placeholder = 'Filter: Google, Meta, broker...';
+    toolbar.appendChild(search);
+    toolbar.appendChild(mkEl('button', { cls: 'graph-btn active', id: 'graph-btn-cluster', text: 'Cluster' }));
+    toolbar.appendChild(mkEl('button', { cls: 'graph-btn', id: 'graph-btn-risk', text: 'Essentials' }));
+    var compareBtn = mkEl('button', { cls: 'graph-btn', id: 'graph-btn-compare', text: 'Compare' });
+    compareBtn.style.display = 'none';
+    toolbar.appendChild(compareBtn);
+    var compareSel = document.createElement('select');
+    compareSel.id = 'graph-compare-select';
+    compareSel.style.display = 'none';
+    toolbar.appendChild(compareSel);
+    container.appendChild(toolbar);
+
+    container.appendChild(mkEl('div', { cls: 'graph-stats-box', id: 'graph-stats' }));
+    var cvs = document.createElement('canvas');
+    cvs.id = 'graph-canvas';
+    container.appendChild(cvs);
+    container.appendChild(mkEl('div', { cls: 'graph-tooltip', id: 'graph-tooltip' }));
+    container.appendChild(mkEl('div', { cls: 'graph-info', id: 'graph-info' }));
+    container.appendChild(mkEl('div', { cls: 'graph-legend', id: 'graph-legend' }));
+
+    panel.appendChild(container);
   }
 
   function bindControls() {
