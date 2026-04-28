@@ -7,5 +7,5 @@
   "scripts": {
     "test": "node --test test/*.test.js"
   },
-  "license": "MIT"
+  "license": "Apache-2.0"
 }
