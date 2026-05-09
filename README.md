@@ -1,5 +1,10 @@
 # wearehere
 
+<p align="center">
+  <img src="https://img.shields.io/github/package-json/v/hamr0/wearehere?label=version&color=2a4f8c" alt="version (auto from package.json)">
+  <img src="https://img.shields.io/badge/license-MIT-2a4f8c" alt="license: MIT">
+</p>
+
 > Full privacy scan for every site you visit — one popup, complete picture.
 
 Every website you visit drops cookies, hides tracking pixels, fingerprints your device, buries toxic clauses in its terms, and tags your clicks. Each of these is a separate problem. wearehere scans for all of them at once and gives you a single risk score — so you know what you're walking into before you hand over anything.
