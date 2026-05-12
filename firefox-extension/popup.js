@@ -127,7 +127,7 @@ function networkSection(n) {
   if (!n) return makeSection('icons/baked.png', 'Network', '0', 'val-clean', 'No network data yet');
   const val = n.trackerDomains > 0 ? `${n.trackerDomains}` : '0';
   const cls = n.trackerDomains > 10 ? 'val-bad' : n.trackerDomains > 0 ? 'val-warn' : 'val-clean';
-  let detail = `${n.totalRequests} requests · ${n.thirdPartyDomains} outside service${n.thirdPartyDomains !== 1 ? 's' : ''}`;
+  let detail = `${n.totalRequests} requests · reaches ${n.thirdPartyDomains} outside service${n.thirdPartyDomains !== 1 ? 's' : ''}`;
   return makeSection('icons/baked.png', 'Network', val + ' trackers', cls, detail);
 }
 

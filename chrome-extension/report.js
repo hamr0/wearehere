@@ -503,12 +503,15 @@ function netUpdateToggleCount(toggleId, count, label) {
       const ckNoun = ckSnoops === 1 ? 'snoop' : 'snoops';
       ckSub = vendors.length ? `${ckSnoops} ${ckNoun} · ${vendors.join(', ')}` : `${ckSnoops} ${ckNoun}`;
     } else if (r.cookies.thirdParty > 0) {
-      ckSub = `${r.cookies.thirdParty} third-party`;
+      ckSub = `${r.cookies.thirdParty} from outside`;
     } else {
       ckSub = 'all first-party';
     }
     grid.appendChild(summaryCard('icons/cooked.png', 'Cookies', r.cookies.total, ckSub, '#e67e22'));
-    grid.appendChild(summaryCard('icons/baked.png', 'Network', (r.network?.trackerDomains || 0) + ' trackers', r.network?.totalRequests + ' requests', '#5dade2'));
+    const netTpd = r.network?.thirdPartyDomains || 0;
+    const netSub = (r.network?.totalRequests || 0) + ' requests'
+      + (netTpd > 0 ? ' · reaches ' + netTpd + ' outside service' + (netTpd !== 1 ? 's' : '') : '');
+    grid.appendChild(summaryCard('icons/baked.png', 'Network', (r.network?.trackerDomains || 0) + ' trackers', netSub, '#5dade2'));
     grid.appendChild(summaryCard('icons/cooked.png', 'Trackers', trCompanyCount || r.trackers.total, trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (r.trackers.total > 0 ? 'hidden elements' : 'none found'), '#ff6b6b'));
     grid.appendChild(summaryCard('icons/played.png', 'Pressure', r.pressure.tactics.length + ' tactic' + (r.pressure.tactics.length !== 1 ? 's' : ''), r.pressure.score > 0 ? r.pressure.score + '/100' : 'none', '#9b59b6'));
     grid.appendChild(summaryCard('icons/baked.png', 'Selling data', (r.network?.brokerCount || 0) + ' broker' + ((r.network?.brokerCount || 0) !== 1 ? 's' : ''), '', '#ff85a2'));
@@ -1782,7 +1785,7 @@ function netUpdateToggleCount(toggleId, count, label) {
       var third = document.createElement('div');
       third.className = 'net-tab-third';
       var tp = (tab.thirdParties || []).length;
-      third.textContent = tp > 0 ? tp + ' third-party domains' : 'No third-party connections';
+      third.textContent = tp > 0 ? tp + ' outside service' + (tp !== 1 ? 's' : '') : 'No outside connections';
       if (tp === 0) third.style.color = '#2ecc71';
 
       item.appendChild(domainEl);
