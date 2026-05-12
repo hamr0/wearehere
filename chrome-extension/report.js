@@ -119,7 +119,7 @@ function deriveFirstPartyDomains(cookies) {
   return domains;
 }
 
-function classifyCookie(domain, name, firstPartyDomains) {
+function classifyCookieByDomain(domain, name, firstPartyDomains) {
   const nameLower = name.toLowerCase();
   const domainLower = domain.toLowerCase().replace(/^\./, "");
 
@@ -674,7 +674,11 @@ function netUpdateToggleCount(toggleId, count, label) {
     // Classify
     const firstParty = deriveFirstPartyDomains(cookies);
     for (const c of cookies) {
-      c._category = classifyCookie(c.domain, c.name, firstParty);
+      c._category = classifyCookieByDomain(c.domain, c.name, firstParty);
+      const ocdHit = (typeof classifyCookie === 'function') ? classifyCookie(c.name) : null;
+      c._ocdCategory = ocdHit ? ocdHit.category : null;
+      c._ocdVendor = ocdHit ? ocdHit.vendor : null;
+      c._isSnoop = !!(ocdHit && typeof isTrackerCategory === 'function' && isTrackerCategory(ocdHit.category));
       c._expiresStr = c.expirationDate ? cookieFmtDate(c.expirationDate) : "Session";
       c._valueShort = c.value ? (c.value.length > 120 ? c.value.slice(0, 120) + "..." : c.value) : "";
       c._sameSiteLabel = { "no_restriction": "None", "lax": "Lax", "strict": "Strict", "unspecified": "Unspecified" }[c.sameSite] || c.sameSite || "Unspecified";
@@ -851,7 +855,9 @@ function netUpdateToggleCount(toggleId, count, label) {
                       (c.httpOnly ? '<span class="ck-flag ck-httponly">HttpOnly</span>' : '') +
                       '<span class="ck-flag ck-samesite">SS:' + c._sameSiteLabel + '</span>' +
                     '</td>' +
-                    '<td><span class="ck-cat-badge" style="background:' + color + '">' + escHtml(cat) + '</span></td>' +
+                    '<td><span class="ck-cat-badge" style="background:' + color + '">' + escHtml(cat) + '</span>' +
+                      (c._isSnoop ? '<br><span class="ck-cat-badge" style="background:#c0392b;margin-top:4px;display:inline-block">snoop' + (c._ocdVendor ? ' · ' + escHtml(c._ocdVendor) : '') + '</span>' : '') +
+                    '</td>' +
                   '</tr>';
                 }).join("") +
               '</tbody>' +
@@ -2183,6 +2189,16 @@ function netUpdateToggleCount(toggleId, count, label) {
       const chip = el('span', { className: 'data-service-chip' });
       chip.appendChild(el('span', { className: 'data-service-name', textContent: c.name }));
       if ((c.count || 1) > 1) chip.appendChild(el('span', { className: 'data-service-count', textContent: '(' + c.count + ')' }));
+      // Source breakdown: cookie-only vs pixel-only vs mixed. cookie-only is the
+      // surprise — these are vendors that have NO network pixel but DO have
+      // tracker cookies (e.g. first-party Google SID family on google.com).
+      const viaCookies = c.viaCookies || 0;
+      const viaPixels = c.viaPixels || 0;
+      if (viaCookies > 0 && viaPixels === 0) {
+        chip.appendChild(el('span', { className: 'data-service-source', textContent: ' · via cookies' }));
+      } else if (viaCookies > 0 && viaPixels > 0) {
+        chip.appendChild(el('span', { className: 'data-service-source', textContent: ' · pixels + cookies' }));
+      }
       chipList.appendChild(chip);
     }
     cat.appendChild(chipList);
