@@ -6,3 +6,34 @@ you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
     https://www.apache.org/licenses/LICENSE-2.0
+
+------------------------------------------------------------------------
+Third-party data attribution
+
+This product bundles factual data lifted from the following upstream
+projects. No upstream source code is included; only the factual lists
+(cookie names + their categorization, and the enumeration of Web API
+surfaces relevant to fingerprinting) are vendored, with attribution.
+
+1. Open Cookie Database
+   https://github.com/jkwakman/Open-Cookie-Database
+   Licensed under the Apache License, Version 2.0.
+   Used by: chrome-extension/cookie-database.js,
+            firefox-extension/cookie-database.js
+   Snapshot: 0ee5a17fe1cb (vendored 2026-05-12)
+
+2. JShelter web-extension
+   https://github.com/patrik-dekys/JShelter-webextension
+   (development mirror of https://pagure.io/JShelter/webextension)
+   Licensed under the GNU General Public License, Version 3.
+   Used by: chrome-extension/fingerprint-surfaces.js,
+            firefox-extension/fingerprint-surfaces.js
+   The enumeration of Web API surfaces wrapped by JShelter is lifted as
+   factual data with attribution. JShelter's wrapper implementations are
+   not reused; wearehere wraps a small subset of these surfaces with its
+   own code in inject.js for detection purposes only. The surface-list
+   data file under chrome-extension/fingerprint-surfaces.js and
+   firefox-extension/fingerprint-surfaces.js is a fact compilation; the
+   surrounding wearehere code that consumes it is original work and
+   remains licensed under Apache-2.0.
+   Snapshot: f5b87ba5b534 (vendored 2026-05-12)

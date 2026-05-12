@@ -1,21 +1,25 @@
 # wearehere — Phase 0 PRD
 
-> Status: planning. wearehere v3.2.0 ships a 10-category privacy scanner. Phase 0 extends the **Cookies** category with curated tracker-name classification borrowed from Cookie AutoDelete. Detection only — no intervention, no behavior change. This PRD covers Phase 0 in isolation; Phase 1+ (cookie scoping, fingerprint farbling) live in [wearecooked v5's PRD](https://github.com/hamr0/wearecooked/blob/main/PRD.md).
+> Status: in progress. wearehere v3.2.0 ships a 10-category privacy scanner. Phase 0 extends the **Cookies** category with curated tracker-name classification borrowed from the Open Cookie Database, plus a fingerprint-surface enumeration borrowed from JShelter. Detection only — no intervention, no behavior change. This PRD covers Phase 0 in isolation; Phase 1+ (cookie scoping, fingerprint farbling) live in [wearecooked v5's PRD](https://github.com/hamr0/wearecooked/blob/main/PRD.md).
+>
+> **Source correction (2026-05-12).** Original draft named *Cookie AutoDelete* as the cookie-pattern source; investigation showed CAD bundles no curated list — it's a user-defined-expressions framework. Switched to the **Open Cookie Database** (jkwakman/Open-Cookie-Database, Apache-2.0, 2,264 cookies / 354 vendors / 6 categories). Same shape, better data, license-compatible. Phase 0 data files now landed: see `chrome-extension/cookie-database.js` and `chrome-extension/fingerprint-surfaces.js`.
 
 ## Why Phase 0 in wearehere
 
 wearehere is the aggregator — it observes, scores, reports. Today its cookie classification uses (1) third-party domain heuristic and (2) the network-domains.js tracker list. It does *not* classify cookies by their **name**, which is where the richest tracker signal lives (`_ga`, `_fbp`, `IDE`, `MUID`, `__utma`, …).
 
-Phase 0 closes that gap by lifting Cookie AutoDelete's hand-curated tracker-name list — ~7 years of issue-driven curation — into wearehere as a data file consumed by the existing cookie classifier. Pure detection upgrade; matches wearehere's mission.
+Phase 0 closes that gap by lifting the **Open Cookie Database** — a hand-curated 2,264-entry classification of well-known cookies by name, vendor, and purpose, maintained as the de-facto seed dataset for cookie consent tools (Cookiebot, Klaro, and friends derive from it). The data file is consumed by wearehere's existing cookie classifier; pure detection upgrade, matches wearehere's mission.
 
 The same data file is the dependency for [wearecooked v5 phase 1](https://github.com/hamr0/wearecooked/blob/main/PRD.md) (cookie scoper), so this phase unblocks two repos with one extraction.
+
+In parallel, the JShelter fingerprint-surface enumeration ships as `fingerprint-surfaces.js` — 149 Web API surfaces categorized by fingerprint signal (canvas / webgl / audio / navigator / screen / fonts / timing / sensors / storage / locale / permissions / inspector). Today's `inject.js` wraps ~6 of these for detection; the surface list documents the larger universe for future expansion without committing to wrap all of them now.
 
 ## What we borrow, exactly
 
 | Source | Files | What we extract | License posture |
 |---|---|---|---|
-| **Cookie AutoDelete** ([github.com/Cookie-AutoDelete/Cookie-AutoDelete](https://github.com/Cookie-AutoDelete/Cookie-AutoDelete)) | `extension/lib/lists/*` (tracker-name patterns) | ~200 cookie-name patterns classified by category (Analytics, Advertising, Social, Session, …) | GPL-3.0 source. Lists are facts (not copyrightable in US; weak DB right in EU). Lifted with NOTICE attribution, not as derived code. wearehere stays MIT. |
-| Cookie AutoDelete (same repo) | Essential-cookie allowlist for top sites | Per-domain "don't touch these" patterns for banking / gov / mail | Same posture |
+| **Open Cookie Database** ([github.com/jkwakman/Open-Cookie-Database](https://github.com/jkwakman/Open-Cookie-Database)) | `open-cookie-database.json` | 1,989 exact-match cookie names + 260 prefix-match patterns × {Analytics, Marketing, Functional, Necessary, Security, Personalization} across 354 vendors | Apache-2.0. License-compatible with wearehere (also Apache-2.0). Lifted as factual data with NOTICE attribution. Snapshot SHA pinned. |
+| **JShelter web-extension** ([github.com/patrik-dekys/JShelter-webextension](https://github.com/patrik-dekys/JShelter-webextension)) | `common/fp_config/wrappers-lvl_0_1.json` | 149 Web API surfaces (74 properties + 75 functions) categorized into 12 fingerprint groups | GPL-3.0 source. Enumeration of API surfaces is factual data; lifted with NOTICE attribution. No JShelter source code reused. wearehere stays Apache-2.0; the wrapper implementations in `inject.js` are original. |
 
 **Scope discipline:** lists only. No code, no UX patterns. The lifecycle UX ("delete N seconds after tab close") belongs to wearecooked v5, not here.
 
@@ -62,8 +66,9 @@ Mirror to `firefox-extension/` is identical. Same data file shipped twice (or re
 
 Captured from the discussion that led to this PRD; here so a returning reader doesn't re-derive them.
 
-- **Maintenance-mode ≠ Chrome outplayed it.** Cookie AutoDelete is stalled on MV3 port effort and maintainer time, *not* on API death. `chrome.cookies` is fully alive in MV3. So lifting the knowledge is reasonable; the techniques still work.
-- **Lift knowledge, not plumbing.** The valuable part of Cookie AutoDelete is the curated lists. The MV2 background-page plumbing is throwaway. Same pattern applied to JShelter for the fingerprint side (relevant to wearecooked v5, not here).
+- **Maintenance-mode ≠ Chrome outplayed it.** Cookie AutoDelete and JShelter are stalled on MV3 port effort and maintainer time, *not* on API death. `chrome.cookies` and `chrome.scripting` MAIN-world are fully alive in MV3. Lifting the knowledge is reasonable; the techniques still work.
+- **Lift knowledge, not plumbing.** The valuable part of these projects is the curated data — lists, taxonomies, surface enumerations. The MV2 background-page plumbing is throwaway.
+- **Source-of-truth correction.** The original PRD draft pointed at Cookie AutoDelete for the cookie-name list. Investigation showed CAD bundles no curated list — it's a framework, not a dataset. The Open Cookie Database (which seeds most consent-tool ecosystems) is the correct source. The pattern of "verify the prior art before committing the integration" earned its keep here.
 - **Lists are facts, code is code.** GPL-3 source doesn't infect MIT consumers when we lift a *list* with attribution. If we ever lifted source files verbatim, they'd need to live in a GPL-3 sub-package.
 - **Phase 0 is the unblock.** Both wearehere's classification upgrade and wearecooked v5's scoper need the same name list. Doing the extraction once in wearehere unblocks both.
 - **Detection stays detection.** Resisting the urge to add intervention here protects wearehere's truth-of-observation premise. wearehere's job is "tell the user what's happening"; the moment it starts altering reality, its own scores become meta. Intervention lives in wearecooked v5.
@@ -79,12 +84,12 @@ Captured from the discussion that led to this PRD; here so a returning reader do
 
 ## Concrete next steps (do not execute from this PRD)
 
-1. Pull Cookie AutoDelete's tracker list files from upstream (last stable release tag).
-2. Transform into the canonical `cookie-patterns.js` shape (pattern → category, plus essential allowlist by domain).
-3. Wire into `background.js` `fetchCookies()` — name lookup, category aggregation in `tabData[tabId].cookies`.
-4. Surface in popup and report cookies tab.
-5. Ship as wearehere v3.3.0. No new permissions, no new tabs, no new score categories.
-6. Pin the same `cookie-patterns.js` snapshot into wearecooked v5 as its phase 1 input.
+1. ✅ Pull Open Cookie Database into `chrome-extension/cookie-database.js` (+ Firefox mirror). NOTICE updated.
+2. ✅ Pull JShelter fingerprint-surface enumeration into `chrome-extension/fingerprint-surfaces.js` (+ Firefox mirror). NOTICE updated.
+3. ⏳ Wire `classifyCookie()` into `background.js` `fetchCookies()` — name lookup, category aggregation in `tabData[tabId].cookies`. Out of scope for the data-extraction commit; separate change.
+4. ⏳ Surface category breakdown in popup (`cookiesSection`) and report cookies tab.
+5. ⏳ Ship as wearehere v3.3.0. No new permissions, no new tabs, no new score categories.
+6. ⏳ wearecooked v5 vendors the same `cookie-database.js` snapshot as its phase 1 input.
 
 ## Open questions
 
