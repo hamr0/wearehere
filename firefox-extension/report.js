@@ -501,7 +501,22 @@ function netUpdateToggleCount(toggleId, count, label) {
     panel.appendChild(el('div', { className: 'section-heading mt-16', textContent: 'At a Glance' }));
     const grid = el('div', { className: 'summary-grid' });
 
-    grid.appendChild(summaryCard('icons/cooked.png', 'Cookies', r.cookies.total, r.cookies.thirdParty + ' third-party', '#e67e22'));
+    const ckSnoops = r.cookies.snoops || 0;
+    const ckSiteDomain = (r.site || '').toLowerCase();
+    let ckSub;
+    if (ckSnoops > 0) {
+      const vendors = (r.cookies.snoopVendors || [])
+        .map(v => v.name)
+        .filter(n => !ckSiteDomain.includes(n.toLowerCase()))
+        .slice(0, 2);
+      const ckNoun = ckSnoops === 1 ? 'snoop' : 'snoops';
+      ckSub = vendors.length ? `${ckSnoops} ${ckNoun} · ${vendors.join(', ')}` : `${ckSnoops} ${ckNoun}`;
+    } else if (r.cookies.thirdParty > 0) {
+      ckSub = `${r.cookies.thirdParty} third-party`;
+    } else {
+      ckSub = 'all first-party';
+    }
+    grid.appendChild(summaryCard('icons/cooked.png', 'Cookies', r.cookies.total, ckSub, '#e67e22'));
     grid.appendChild(summaryCard('icons/baked.png', 'Network', (r.network?.trackerDomains || 0) + ' trackers', r.network?.totalRequests + ' requests', '#5dade2'));
     grid.appendChild(summaryCard('icons/cooked.png', 'Trackers', trCompanyCount || r.trackers.total, trCompanyCount > 0 ? trCompanyCount + ' compan' + (trCompanyCount !== 1 ? 'ies' : 'y') : (r.trackers.total > 0 ? 'hidden elements' : 'none found'), '#ff6b6b'));
     grid.appendChild(summaryCard('icons/played.png', 'Pressure', r.pressure.tactics.length + ' tactic' + (r.pressure.tactics.length !== 1 ? 's' : ''), r.pressure.score > 0 ? r.pressure.score + '/100' : 'none', '#9b59b6'));
@@ -597,9 +612,16 @@ function netUpdateToggleCount(toggleId, count, label) {
     let pts;
 
     pts = 0;
-    if (r.cookies.thirdParty > 10) pts = 15;
-    else if (r.cookies.thirdParty > 3) pts = 10;
-    else if (r.cookies.longestDays > 365) pts = 5;
+    {
+      const ck = r.cookies;
+      if (ck.snoops >= 10) pts += 12;
+      else if (ck.snoops >= 3) pts += 8;
+      else if (ck.snoops >= 1) pts += 3;
+      if (ck.embeds >= 16) pts += 2;
+      if (ck.longestDays > 730) pts += 2;
+      else if (ck.longestDays > 365) pts += 1;
+      pts = Math.min(15, pts);
+    }
     rows.push({ icon: 'icons/cooked.png', label: 'Cookies', points: pts, max: 15 });
 
     pts = 0;

@@ -36,7 +36,7 @@ function render(report) {
   const sections = document.getElementById('sections');
   sections.textContent = '';
 
-  sections.appendChild(cookiesSection(report.cookies));
+  sections.appendChild(cookiesSection(report.cookies, report.site));
   sections.appendChild(networkSection(report.network));
   sections.appendChild(trackersSection(report.trackers));
   sections.appendChild(pressureSection(report.pressure));
@@ -92,16 +92,31 @@ function makeSection(iconSrc, label, value, valueClass, detailHTML) {
   return div;
 }
 
-function cookiesSection(c) {
-  const val = c.thirdParty > 5 ? `${c.total}` : c.total > 0 ? `${c.total}` : '0';
-  const cls = c.thirdParty > 5 ? 'val-bad' : c.thirdParty > 0 ? 'val-warn' : 'val-clean';
+function cookiesSection(c, siteDomain) {
+  const snoops = c.snoops || 0;
+  const embeds = c.embeds || 0;
+  const val = `${c.total}`;
+  const cls = snoops > 5 ? 'val-bad'
+            : snoops > 0 || embeds > 10 ? 'val-warn'
+            : 'val-clean';
 
-  let detail = '';
-  if (c.thirdParty > 0) {
-    detail = `${c.firstParty} from this site · ${c.thirdParty} from outside`;
-  } else {
-    detail = `All from this site`;
+  const parts = [];
+  if (snoops > 0) {
+    const vendors = (c.snoopVendors || [])
+      .map(v => v.name)
+      .filter(n => !siteDomain || !siteDomain.includes(n.toLowerCase()))
+      .slice(0, 3);
+    const noun = snoops === 1 ? 'snoop' : 'snoops';
+    parts.push(vendors.length ? `${snoops} ${noun} · ${vendors.join(', ')}` : `${snoops} ${noun}`);
   }
+  if (snoops === 0 && c.thirdParty > 0) {
+    parts.push(`${c.firstParty} from this site · ${c.thirdParty} from outside`);
+  } else if (snoops === 0) {
+    parts.push('All from this site');
+  } else if (embeds > 0) {
+    parts.push(`${embeds} from outside`);
+  }
+  let detail = parts.join(' · ');
   if (c.longestDays > 0) {
     detail += ` · last ${c.longestDays > 365 ? Math.round(c.longestDays / 365) + ' year(s)' : c.longestDays + ' days'}`;
   }
