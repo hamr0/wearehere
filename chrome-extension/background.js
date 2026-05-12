@@ -6,6 +6,7 @@
 
 importScripts('tos-scanner.js');
 importScripts('network-domains.js');
+importScripts('cookie-database.js');
 
 // --- Per-tab state ---
 const tabData = {};
@@ -570,6 +571,37 @@ async function fetchCookies(tabId, url, domain) {
       }
     }
 
+    // OCD-based classification: distinguish snoops (Analytics+Marketing) from
+    // essential (1st-party non-snoop) and embeds (3rd-party non-snoop). Snoops can be
+    // first-party (e.g. Google's __Secure-1PSID family on google.com), which is why
+    // we can't infer this from the thirdParty count alone.
+    const isFirstParty = (c) =>
+      c.domain.includes(domain) || domain.includes(c.domain.replace(/^\./, ''));
+    let snoops = 0, embeds = 0, essential = 0;
+    const vendorMap = {}; // vendor -> { analytics, marketing }
+    for (const c of cookies) {
+      const ocd = classifyCookie(c.name);
+      if (ocd && isTrackerCategory(ocd.category)) {
+        snoops++;
+        const v = ocd.vendor || 'Unknown';
+        if (!vendorMap[v]) vendorMap[v] = { analytics: 0, marketing: 0 };
+        if (ocd.category === 'Marketing') vendorMap[v].marketing++;
+        else vendorMap[v].analytics++;
+      } else if (isFirstParty(c)) {
+        essential++;
+      } else {
+        embeds++;
+      }
+    }
+    // Marketing wins ties — the more privacy-concerning label surfaces first.
+    const snoopVendors = Object.entries(vendorMap)
+      .map(([name, c]) => ({
+        name,
+        count: c.analytics + c.marketing,
+        purpose: c.marketing >= c.analytics ? 'Advertising' : 'Analytics',
+      }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
     tabData[tabId].cookies = {
       total: cookies.length,
       firstParty: firstParty.length,
@@ -578,6 +610,7 @@ async function fetchCookies(tabId, url, domain) {
       session: cookies.filter(c => c.session).length,
       persistent: cookies.filter(c => !c.session).length,
       longestDays,
+      snoops, embeds, essential, snoopVendors,
     };
     updateBadge(tabId);
   } catch {}
@@ -608,7 +641,7 @@ function buildReport(data) {
   if (!data) return null;
 
   const m = data.modules;
-  const cookies = data.cookies || { total: 0, firstParty: 0, thirdParty: 0, thirdPartyDomains: [], session: 0, persistent: 0, longestDays: 0 };
+  const cookies = data.cookies || { total: 0, firstParty: 0, thirdParty: 0, thirdPartyDomains: [], session: 0, persistent: 0, longestDays: 0, snoops: 0, embeds: 0, essential: 0, snoopVendors: [] };
 
   // --- Fingerprinting (from watched module) ---
   const watched = m.watched || { items: [], totals: { fingerprint: 0, permission: 0, total: 0 } };
@@ -623,14 +656,23 @@ function buildReport(data) {
     technique, apis: [...d.apis], calls: d.count,
   }));
 
-  // --- Trackers (from cooked module) ---
+  // --- Trackers (from cooked module + cookie-snoop vendors) ---
   const cooked = m.cooked || { items: [], totals: { pixels: 0, iframes: 0, beacons: 0, prefetches: 0, total: 0 } };
   const cookedItems = cooked.items || [];
   const trackerCompanies = {};
   for (const item of cookedItems) {
     const name = item.company || item.domain;
-    if (!trackerCompanies[name]) trackerCompanies[name] = { name, purpose: item.purpose || 'Unknown', count: 0 };
+    if (!trackerCompanies[name]) trackerCompanies[name] = { name, purpose: item.purpose || 'Unknown', count: 0, viaPixels: 0, viaCookies: 0 };
     trackerCompanies[name].count++;
+    trackerCompanies[name].viaPixels++;
+  }
+  // Merge cookie-snoop vendors so "Who's tracking you" surfaces first-party tracker cookies too.
+  for (const sv of (cookies.snoopVendors || [])) {
+    if (!trackerCompanies[sv.name]) {
+      trackerCompanies[sv.name] = { name: sv.name, purpose: sv.purpose, count: 0, viaPixels: 0, viaCookies: 0 };
+    }
+    trackerCompanies[sv.name].count += sv.count;
+    trackerCompanies[sv.name].viaCookies += sv.count;
   }
   const companies = Object.values(trackerCompanies).sort((a, b) => b.count - a.count).slice(0, 20);
   const trackerTotal = (cooked.totals?.pixels || 0) + (cooked.totals?.beacons || 0) + (cooked.totals?.iframes || 0);
@@ -690,6 +732,8 @@ function buildReport(data) {
     cookies: {
       total: cookies.total, firstParty: cookies.firstParty, thirdParty: cookies.thirdParty,
       thirdPartyDomains: cookies.thirdPartyDomains, longestDays: cookies.longestDays,
+      snoops: cookies.snoops || 0, embeds: cookies.embeds || 0, essential: cookies.essential || 0,
+      snoopVendors: cookies.snoopVendors || [],
     },
     trackers: {
       pixels: cooked.totals?.pixels || 0,
@@ -751,9 +795,19 @@ function computeVerdict(r) {
   const concerns = [];
 
   // Cookies (max 15)
-  if (r.cookies.thirdParty > 10) { score += 15; concerns.push('Heavy cross-site cookie tracking'); }
-  else if (r.cookies.thirdParty > 3) { score += 10; concerns.push('Third-party cookies tracking you'); }
-  else if (r.cookies.longestDays > 365) { score += 5; concerns.push('Cookies last over a year'); }
+  // Cookies (max 15): snoops dominate (curated OCD tracker identification),
+  // embeds is a soft modifier (3rd-party non-snoop), persistence is a tiebreaker.
+  // Snoop-driven scoring catches first-party tracking (e.g. Google's *PSID family)
+  // that the old thirdParty proxy missed entirely.
+  let cookiePts = 0;
+  const ck = r.cookies;
+  if (ck.snoops >= 10) { cookiePts += 12; concerns.push('Aggressive ad-tracking via cookies'); }
+  else if (ck.snoops >= 3) { cookiePts += 8; concerns.push('Multiple ad-trackers tracking you'); }
+  else if (ck.snoops >= 1) { cookiePts += 3; concerns.push('Ad-tracker cookies set'); }
+  if (ck.embeds >= 16) { cookiePts += 2; concerns.push('Heavy use of outside cookies'); }
+  if (ck.longestDays > 730) { cookiePts += 2; concerns.push('Cookies persist for years'); }
+  else if (ck.longestDays > 365) { cookiePts += 1; concerns.push('Cookies last over a year'); }
+  score += Math.min(15, cookiePts);
 
   // Network (max 10)
   if (r.network?.trackerDomains > 10) { score += 10; concerns.push('Many tracker domains in network traffic'); }

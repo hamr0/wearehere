@@ -18,7 +18,7 @@
     }
   },
   "background": {
-    "scripts": ["tos-scanner.js", "network-domains.js", "background.js"]
+    "scripts": ["tos-scanner.js", "network-domains.js", "cookie-database.js", "background.js"]
   },
   "content_scripts": [
     {
