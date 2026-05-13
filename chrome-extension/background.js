@@ -20,6 +20,9 @@ importScripts('scoper/scoper.js');
 const tabData = {};
 const domainTosCache = {};
 let dashboardTabId = null;
+// Serialize trust-list writes so rapid add/remove from the dashboard
+// can't lose updates via read-modify-write clobber.
+let trustWriteChain = Promise.resolve();
 
 // --- Network traffic state (from wearebaked v0.5.1) ---
 const networkTraffic = {
@@ -71,6 +74,28 @@ function isSafeBgFetchUrl(url) {
     if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT
   }
   return true;
+}
+
+// Manual-redirect fetch for bgFetch. Walks up to MAX_BG_REDIRECTS hops,
+// re-checking each Location through isSafeBgFetchUrl before following.
+// Without this, a server-side 30x to a private IP would be followed
+// silently after the initial URL passed the public-facing check.
+const MAX_BG_REDIRECTS = 5;
+async function safeBgFetch(url, hops) {
+  let next = url;
+  for (let i = 0; i <= hops; i++) {
+    if (!isSafeBgFetchUrl(next)) throw new Error('Unsafe redirect target');
+    const resp = await fetch(next, { redirect: 'manual' });
+    if (resp.type === 'opaqueredirect' || (resp.status >= 300 && resp.status < 400)) {
+      const loc = resp.headers.get('location');
+      if (!loc) throw new Error('Redirect without Location');
+      try { next = new URL(loc, next).href; } catch { throw new Error('Bad redirect URL'); }
+      continue;
+    }
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    return resp.text();
+  }
+  throw new Error('Too many redirects');
 }
 
 function ensureTab(tabId) {
@@ -336,11 +361,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse(null);
       return true;
     }
-    fetch(url, { redirect: 'follow' })
-      .then(resp => {
-        if (!resp.ok) throw new Error('HTTP ' + resp.status);
-        return resp.text();
-      })
+    safeBgFetch(url, MAX_BG_REDIRECTS)
       .then(html => {
         const metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
         if (metaRedirect && html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length < 500) {
@@ -348,8 +369,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             try { return new URL(metaRedirect[1], url).href; } catch { return null; }
           })();
           if (!redirectUrl || !isSafeBgFetchUrl(redirectUrl)) throw new Error('Unsafe meta redirect');
-          return fetch(redirectUrl, { redirect: 'follow' })
-            .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
+          return safeBgFetch(redirectUrl, MAX_BG_REDIRECTS);
         }
         return html;
       })
@@ -622,18 +642,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'scoper:set-trust') {
     if (typeof msg.etld1 !== 'string') { sendResponse({ error: 'etld1 required' }); return; }
-    chrome.storage.local.get('cookieScopeTrust', (o) => {
+    if (msg.cap !== 0 && msg.cap !== 30 && msg.cap !== 90) {
+      sendResponse({ error: 'cap must be 0, 30, or 90' });
+      return;
+    }
+    // Serialize through a single chain so two rapid trust adds (or an
+    // add + remove racing) can't both read the same starting object and
+    // clobber each other's update.
+    trustWriteChain = trustWriteChain.then(async () => {
+      const o = await chrome.storage.local.get('cookieScopeTrust');
       const t = o.cookieScopeTrust || {};
-      if (msg.cap === 0) {
-        delete t[msg.etld1];
-      } else if (msg.cap === 30 || msg.cap === 90) {
-        t[msg.etld1] = { capDays: msg.cap, addedAt: Date.now() };
-      } else {
-        sendResponse({ error: 'cap must be 0, 30, or 90' });
-        return;
-      }
-      chrome.storage.local.set({ cookieScopeTrust: t }, () => sendResponse({ ok: true, trust: t }));
-    });
+      if (msg.cap === 0) delete t[msg.etld1];
+      else t[msg.etld1] = { capDays: msg.cap, addedAt: Date.now() };
+      await chrome.storage.local.set({ cookieScopeTrust: t });
+      sendResponse({ ok: true, trust: t });
+    }).catch((e) => { try { sendResponse({ error: String(e && e.message || e) }); } catch {} });
     return true;
   }
 
@@ -770,17 +793,26 @@ function buildTosModuleData(domain, privacyResult, termsResult) {
 // =============================================================================
 // Cookie fetching
 // =============================================================================
+// eTLD+1 compare for first-party vs third-party. Substring matching
+// would conflate `foo.com` with `mfoo.com` / `evil-foo.com`. We use the
+// last-two-labels heuristic — same naive PSL approximation the rest of
+// the codebase uses (acknowledged limitation for `*.co.uk` etc.).
+function etld1ForCookie(host) {
+  if (!host) return '';
+  const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  const labels = cleaned.toLowerCase().split('.').filter(Boolean);
+  return labels.length < 2 ? cleaned.toLowerCase() : labels.slice(-2).join('.');
+}
+
 async function fetchCookies(tabId, url, domain) {
   try {
     const cookies = await chrome.cookies.getAll({ url });
     if (!tabData[tabId]) return;
 
-    const firstParty = cookies.filter(c =>
-      c.domain.includes(domain) || domain.includes(c.domain.replace(/^\./, ''))
-    );
-    const thirdParty = cookies.filter(c =>
-      !c.domain.includes(domain) && !domain.includes(c.domain.replace(/^\./, ''))
-    );
+    const pageEtld1 = etld1ForCookie(domain);
+    const cookieIsFirstParty = (c) => etld1ForCookie(c.domain) === pageEtld1;
+    const firstParty = cookies.filter(cookieIsFirstParty);
+    const thirdParty = cookies.filter((c) => !cookieIsFirstParty(c));
 
     let longestDays = 0;
     const now = Date.now() / 1000;
@@ -795,8 +827,7 @@ async function fetchCookies(tabId, url, domain) {
     // essential (1st-party non-snoop) and embeds (3rd-party non-snoop). Snoops can be
     // first-party (e.g. Google's __Secure-1PSID family on google.com), which is why
     // we can't infer this from the thirdParty count alone.
-    const isFirstParty = (c) =>
-      c.domain.includes(domain) || domain.includes(c.domain.replace(/^\./, ''));
+    const isFirstParty = cookieIsFirstParty;
     let snoops = 0, embeds = 0, essential = 0;
     const vendorMap = {}; // vendor -> { analytics, marketing }
     for (const c of cookies) {
@@ -1235,7 +1266,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     .catch((e) => console.warn('[snapshots] recompute failed', e));
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => { snapshotAndEvict(tabId); markTabRemoved(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => {
+  // Mark *before* evict — a late detection message arriving during the
+  // async session-storage read inside snapshotAndEvict would otherwise
+  // resurrect tabData via ensureTab, then a follow-up badge write
+  // rejects with "No tab with id: …".
+  markTabRemoved(tabId);
+  snapshotAndEvict(tabId);
+});
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     const oldDomain = tabData[tabId]?.domain;

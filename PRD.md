@@ -647,3 +647,38 @@ After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage), these it
 
 Audit + remove dead CSS classes, retired-tab images (`baked.png`, `cooked.png`, `played.png`, `linked.png`, `silent.png`, `tosed.png`, `watched.png`, `leaking.png`), and any manifest permissions no longer reachable from live code. Single contained commit. Pre-requisite before the Firefox mirror — porting dead code wastes effort.
 
+### Pre-Firefox-mirror code review — findings logged 2026-05-13
+
+Full review (`quality-assurance` subagent, scope `2d81a5a..c0a7133`) surfaced 8 Critical + 17 Important findings. Fixed in-line before this commit landed:
+
+- **Dead `gated/anchorSize` branch** in `popup.js` — 1p-anchor + cron-gate machinery was dropped from `scoper.js` but the popup still rendered the gated state. Removed.
+- **`tabs.onRemoved` ordering** — `markTabRemoved` now runs *before* `snapshotAndEvict`; a late `detection` message during the async session-storage read can no longer resurrect a torn-down tab and trigger a badge-write rejection.
+- **`activeTab` permission** — declared in manifest but unused (we have `<all_urls>` host permissions). Dropped before AMO submission to minimise the requested-permission set.
+- **`registerDashboard` reuse path** — handler existed but no caller; every `openDashboard` opened a fresh tab. `report.js:init` now sends `registerDashboard` so the single-dashboard-tab optimisation works.
+- **`fetchCookies` substring match** — `c.domain.includes(domain)` conflated `foo.com` with `mfoo.com` / `evil-foo.com`. Switched to last-two-labels eTLD+1 comparison via a new `etld1ForCookie` helper.
+- **Trust-list write race** — concurrent `scoper:set-trust` calls could clobber each other; now serialized through a module-level `trustWriteChain` promise.
+- **`visitHistory` write race** — concurrent tab-close `appendVisit` calls could lose visits; now serialized through `appendChain`.
+- **`bgFetch` redirect re-check** — was `redirect: 'follow'`, so a server 30x to a private IP would be followed silently after the initial public-IP check. Switched to `redirect: 'manual'` via new `safeBgFetch` helper which re-runs `isSafeBgFetchUrl` on every `Location` hop (up to `MAX_BG_REDIRECTS = 5`).
+- **`renderWhatChanged` placeholder copy** — `${overviewWindow}` interpolated raw into innerHTML. Constrained to `WINDOW_OPTIONS` today, but wrapped in `escapeText` for defense-in-depth.
+- **Snapshot watcherMech case-sensitivity** — case variants of a watcher name (`Google`/`google`) deduped on `hits` but the per-company mech rollup looked up by original-case key, missing the dedup'd entries. Lowercased the lookup table.
+
+### Deferred (review findings worth tracking but not fixing pre-FF mirror)
+
+These are real findings the review surfaced; they're documented here so the Firefox port either inherits the same shape or addresses them concurrently.
+
+| Finding | Severity | Reason for deferring |
+|---|---|---|
+| **Tab-close 3p deletion not implemented** — scoper has no `tabs.onRemoved` handler that targets cookies. PRD line 461 and the dashboard "kill on close" label promised tab-close semantics. UI copy now reads "demoted to session" (= killed on browser close, not tab close), which matches what the code actually does. | Critical → spec correction | Per-tab cookie attribution is a major engineering effort and not what the user actually wants (session-on-browser-close is the common privacy mental model). PRD will reflect the actual behavior in a future revision. |
+| **`partitionKey` (CHIPS Partitioned cookies) not preserved on rewrite** | Critical | `chrome.cookies.set` doesn't carry `partitionKey` through; rewritten partitioned trackers collapse into a single unpartitioned cookie. Edge case today (CHIPS rollout is partial) but a real regression hazard. Track separately. |
+| **`persistPendingVisit` writes session-storage on every `detection` message** — heavy SPAs may approach Chrome's per-minute write cap. | Important | No observed quota hit; debounce is one-line additive — defer until we see it. |
+| **SPA `pushState` navigation produces one visit record** for the entire session — `tabs.onUpdated` only fires for `url` changes Chrome treats as navigations. | Important | Requires `webNavigation` permission to fix; adds another permission to the AMO ask. Acceptable trade-off today. |
+| **`scoper:ensureAlarm` may reset the next-fire delay on every SW wake** — `chrome.alarms.create` with an existing name silently replaces. | Important | Mirror the `chrome.alarms.get` pre-check pattern that `SNAPSHOT_ALARM` uses in `background.js`. Straightforward fix; not blocking. |
+| **`buildSetDetails` returns `null` for `sameSite=no_restriction && !Secure` combos** and the caller counts them as `failed` instead of `skipped` — telemetry shows phantom failures. | Important | Counter cosmetic; doesn't affect actual sweeping. |
+| **Popup trust-input validates URL-shape weakly** — accepts `localhost.com`, `..invalid..foo.com`, IPs. | Important | User-facing self-inflicted, not a security issue; fix in same pass as the `[ Inspect all N ]` expander work. |
+| **`buildReport` device-id hostToCompany uses last-two-labels** — mis-buckets `.co.uk` etc. Acknowledged limitation throughout the codebase. | Minor | PSL not vendored anywhere; one-shot fix would touch every etld1 site simultaneously. |
+| **No CSP declared in manifest** | Minor | MV3 default CSP is strict (no eval/inline). Optional defense-in-depth. |
+| **Stack-walk wrap set in `inject.js` is intentionally minimal** — no `getImageData` / `toBlob` / `OffscreenCanvas` / WebGL2 surfaces. | Minor | Per PRD vocabulary lock. Lock-set asserted in code review; tests for the locked set don't exist yet. |
+| **`renderRecentVisits` etld1 calc** uses last-two-labels — same `.co.uk` limitation. | Minor | Same as above. |
+| **`compactVisit` brokerCount falls back to `network.brokerCount` when typed `brokers` is empty** — UI can show "5 brokers" with zero names. | Minor | Real but rare; one-line correction. |
+| **Test-coverage gaps** — `safeBgFetch` redirect chain, `removedTabs` LRU eviction, `snapshotAndEvict` session-storage recovery path, `cookieScopeCounters.bySite` accumulation, `buildSetDetails` `__Host-` violations, message-handler vs sender exhaustive cross-check. | Minor | Current 18-test suite covers the data pipeline; these are higher-effort tests for less-trafficked paths. Add after Firefox mirror so both extensions benefit. |
+

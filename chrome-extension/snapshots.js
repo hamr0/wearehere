@@ -94,7 +94,12 @@ function aggregateWindow(visits, start, end) {
       }
     }
 
-    const wm = v.watcherMech || {};
+    // watcherMech keys come from buildReport using the original company
+    // name. We index by lowercase here so case variants ('Google' vs
+    // 'google') roll up into one bucket and the mech lookup also
+    // tolerates case drift on the writer side.
+    const wm = {};
+    for (const k of Object.keys(v.watcherMech || {})) wm[k.toLowerCase()] = v.watcherMech[k];
     const seenInVisit = new Set();
     for (const name of (v.watchers || [])) {
       const k = name.toLowerCase();
@@ -107,7 +112,7 @@ function aggregateWindow(visits, start, end) {
         seenInVisit.add(k);
         w.contacts++;
       }
-      const m = wm[name];
+      const m = wm[k];
       if (m) {
         watcherHits[k].mech.cookies  += m.cookies  || 0;
         watcherHits[k].mech.pixels   += m.pixels   || 0;

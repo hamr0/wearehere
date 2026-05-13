@@ -292,9 +292,6 @@ function wireScoperButtons() {
       if (!resp || resp.error) {
         status.className = 'warn';
         status.textContent = resp && resp.error ? 'error: ' + resp.error : 'no response';
-      } else if (resp.gated) {
-        status.className = 'gated';
-        status.textContent = `gated — only ${resp.anchorSize} sites known (need ≥10)`;
       } else {
         status.className = 'ok';
         status.textContent =

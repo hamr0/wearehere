@@ -35,6 +35,12 @@ function init(report) {
   $('loading').hidden = true;
   $('report').hidden = false;
 
+  // Let background know this tab IS the dashboard so subsequent
+  // openDashboard clicks reuse it instead of opening a new tab.
+  // sender.tab is missing for extension-page senders, so background
+  // falls back to a URL match against this report.html URL.
+  chrome.runtime.sendMessage({ type: 'registerDashboard' });
+
   // Force a sane title so Chrome's window-picker and tab-switcher show
   // "wearehere — dashboard" instead of the extension-ID URL during the
   // pre-paint window where the static <title> hasn't been picked up.
@@ -263,7 +269,7 @@ function renderWhatChanged(cur, prev) {
 
   const events = diffAggregates(cur, prev);
   if (events.length === 0) {
-    el.innerHTML = `<div class="placeholder"><div>no notable changes vs the prior ${overviewWindow}.</div></div>`;
+    el.innerHTML = `<div class="placeholder"><div>no notable changes vs the prior ${escapeText(overviewWindow)}.</div></div>`;
     return;
   }
   el.innerHTML = events.slice(0, 20).map((e) => `
@@ -1035,7 +1041,7 @@ function renderCoverage() {
         <div class="block-sub">coverage · what the scoper will do</div>
         <div class="bar-row"><span class="nval">${cov.capped}</span> ${bar(cov.capped, maxCov)} <span class="nlbl">capped (1p · 7d)</span></div>
         <div class="bar-row"><span class="nval">${cov.trusted}</span> ${bar(cov.trusted, maxCov)} <span class="nlbl">trusted (passing through)</span></div>
-        <div class="bar-row"><span class="nval">${cov.killOnClose}</span> ${bar(cov.killOnClose, maxCov)} <span class="nlbl">tracker (kill on close)</span></div>
+        <div class="bar-row"><span class="nval">${cov.killOnClose}</span> ${bar(cov.killOnClose, maxCov)} <span class="nlbl">tracker (demoted to session)</span></div>
 
         <div class="block-sub">by expiry</div>
         <div class="bar-row"><span class="nval">${expiry.session}</span> ${bar(expiry.session, maxExpiry)} <span class="nlbl">session</span></div>

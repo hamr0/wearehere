@@ -102,24 +102,33 @@ function compactVisit(report) {
   };
 }
 
+// Serialize appends through a promise chain. Without this, two
+// near-simultaneous tab closes both `get → unshift → set` from the
+// same starting array, and the second `set` clobbers the first — one
+// visit is silently lost. Chaining keeps read-modify-write atomic.
+let appendChain = Promise.resolve();
 async function appendVisit(report) {
   const record = compactVisit(report);
   if (!record || !record.etld1) return;
 
-  // Snapshot per-site scoper tightened count at visit time so the
-  // "sweep impact" event can fire as a delta vs a previous visit.
-  try {
-    const { cookieScopeCounters } = await chrome.storage.local.get('cookieScopeCounters');
-    const bySite = cookieScopeCounters && cookieScopeCounters.bySite;
-    const here = bySite && bySite[record.etld1];
-    record.scoperTightened = (here && here.tightened) || 0;
-  } catch (e) { record.scoperTightened = 0; }
+  const job = appendChain.then(async () => {
+    try {
+      const { cookieScopeCounters } = await chrome.storage.local.get('cookieScopeCounters');
+      const bySite = cookieScopeCounters && cookieScopeCounters.bySite;
+      const here = bySite && bySite[record.etld1];
+      record.scoperTightened = (here && here.tightened) || 0;
+    } catch (e) { record.scoperTightened = 0; }
 
-  const { visitHistory } = await chrome.storage.local.get(VISIT_HISTORY_KEY);
-  const arr = Array.isArray(visitHistory) ? visitHistory.slice() : [];
-  arr.unshift(record);
-  if (arr.length > VISIT_HISTORY_MAX) arr.length = VISIT_HISTORY_MAX;
-  await chrome.storage.local.set({ [VISIT_HISTORY_KEY]: arr });
+    const { visitHistory } = await chrome.storage.local.get(VISIT_HISTORY_KEY);
+    const arr = Array.isArray(visitHistory) ? visitHistory.slice() : [];
+    arr.unshift(record);
+    if (arr.length > VISIT_HISTORY_MAX) arr.length = VISIT_HISTORY_MAX;
+    await chrome.storage.local.set({ [VISIT_HISTORY_KEY]: arr });
+  });
+  // Swallow rejections in the chain so a single failed append doesn't
+  // permanently block all subsequent appends.
+  appendChain = job.catch(() => {});
+  return job;
 }
 
 // Window filter. `null` returns everything.
