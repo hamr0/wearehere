@@ -7,6 +7,11 @@
 importScripts('tos-scanner.js');
 importScripts('network-domains.js');
 importScripts('cookie-database.js');
+importScripts('visits.js');
+// Cookie scoper — loaded after cookie-database.js so classifyCookie is
+// available for tracker-demotion. Self-contained module: registers its
+// own alarm + onAlarm listener at load time.
+importScripts('scoper/scoper.js');
 
 // --- Per-tab state ---
 const tabData = {};
@@ -242,6 +247,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
 
     updateBadge(tabId);
+
+    // Mirror a compact snapshot to session storage so we can recover the
+    // visit record even if the SW goes idle between this detection event
+    // and tabs.onRemoved firing. In-memory tabData is lost on SW restart;
+    // chrome.storage.session survives until browser close.
+    persistPendingVisit(tabId, tab);
     return;
   }
 
@@ -395,14 +406,40 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   // --- Dashboard: getOpenTabs (for tab dropdown) ---
+  // Returns every http(s) tab, not just tabs we've collected detection
+  // data for. SPAs like CNN can take long to fire detection messages; if
+  // we limit the dropdown to tabs already in `tabData` the user can't
+  // even select the site to see "no live capture yet". With the broader
+  // list, fetchTabReport falls through to the noData placeholder for
+  // tabs with no report instead of hiding the tab entirely.
   if (msg.type === 'getOpenTabs') {
-    const tabs = [];
-    for (const [id, data] of Object.entries(tabData)) {
-      if (data.domain) {
-        tabs.push({ id: parseInt(id), domain: data.domain, url: data.url });
+    chrome.tabs.query({}, (allTabs) => {
+      const out = [];
+      for (const t of allTabs) {
+        if (!t.url) continue;
+        let host = '';
+        try {
+          const u = new URL(t.url);
+          if (u.protocol !== 'http:' && u.protocol !== 'https:') continue;
+          host = u.hostname;
+        } catch (e) { continue; }
+        const known = tabData[t.id];
+        const domain = (known && known.domain) || host;
+        // Watcher count: build a quick report and count tracker
+        // companies + snoop-vendors. Lets the dropdown signal
+        // "this tab has data and how much" without selecting it.
+        let watcherCount = null;
+        if (known) {
+          try {
+            const r = buildReport(known);
+            const tc = (r && r.trackers && Array.isArray(r.trackers.companies)) ? r.trackers.companies.length : 0;
+            watcherCount = tc;
+          } catch (e) { watcherCount = 0; }
+        }
+        out.push({ id: t.id, domain, url: t.url, hasReport: !!known, watcherCount });
       }
-    }
-    sendResponse(tabs);
+      sendResponse(out);
+    });
     return true;
   }
 
@@ -476,6 +513,111 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ deleted });
       } catch { sendResponse({ deleted: 0 }); }
     })();
+    return true;
+  }
+
+  // Coverage sub-block source: bucket every cookie by what the scoper
+  // policy will do to it. Same logic as scoper.js decideCap, applied as
+  // a read-only classification for the dashboard.
+  if (msg.type === 'cookies:bucket') {
+    chrome.cookies.getAll({}, (cookies) => {
+      chrome.storage.local.get('cookieScopeTrust', (o) => {
+        const trust = (o && o.cookieScopeTrust) || {};
+        const classify = self.classifyCookie || (() => null);
+        const buckets = { capped: 0, trusted: 0, killOnClose: 0, total: 0 };
+        for (const c of cookies || []) {
+          buckets.total++;
+          const cls = classify(c.name);
+          if (cls && (cls.category === 'Marketing' || cls.category === 'Analytics')) {
+            buckets.killOnClose++;
+            continue;
+          }
+          // Simple eTLD+1 (last two labels) — matches scoper.js's etld1Of.
+          const host = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
+          const labels = host.toLowerCase().split('.').filter(Boolean);
+          const etld1 = labels.length >= 2 ? labels.slice(-2).join('.') : null;
+          if (etld1 && trust[etld1]) buckets.trusted++;
+          else buckets.capped++;
+        }
+        sendResponse(buckets);
+      });
+    });
+    return true;
+  }
+
+  // --- Cookie scoper API (same-extension messages from popup + dashboard) ---
+  if (msg.type === 'scoper:get-state') {
+    chrome.storage.local.get(
+      ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory'],
+      (s) => sendResponse(s || {})
+    );
+    return true;
+  }
+
+  if (msg.type === 'scoper:set-trust') {
+    if (typeof msg.etld1 !== 'string') { sendResponse({ error: 'etld1 required' }); return; }
+    chrome.storage.local.get('cookieScopeTrust', (o) => {
+      const t = o.cookieScopeTrust || {};
+      if (msg.cap === 0) {
+        delete t[msg.etld1];
+      } else if (msg.cap === 30 || msg.cap === 90) {
+        t[msg.etld1] = { capDays: msg.cap, addedAt: Date.now() };
+      } else {
+        sendResponse({ error: 'cap must be 0, 30, or 90' });
+        return;
+      }
+      chrome.storage.local.set({ cookieScopeTrust: t }, () => sendResponse({ ok: true, trust: t }));
+    });
+    return true;
+  }
+
+  if (msg.type === 'scoper:set-settings') {
+    const min = msg.settings && msg.settings.sweepPeriodMin;
+    if (![15, 60, 240, 720].includes(min)) {
+      sendResponse({ error: 'sweepPeriodMin must be 15, 60, 240, or 720' });
+      return;
+    }
+    chrome.storage.local.set({ cookieScopeSettings: { sweepPeriodMin: min } }, () => {
+      if (typeof self.scoperEnsureAlarm === 'function') {
+        self.scoperEnsureAlarm().then(() => sendResponse({ ok: true })).catch((e) => sendResponse({ error: String(e) }));
+      } else {
+        sendResponse({ error: 'scoper not loaded' });
+      }
+    });
+    return true;
+  }
+
+  // --- Visit history API ---
+  if (msg.type === 'visits:get') {
+    const win = typeof msg.window === 'string' ? msg.window : 'all';
+    self.visitsGet(win).then((arr) => sendResponse(arr || []));
+    return true;
+  }
+
+  if (msg.type === 'visits:clear') {
+    self.visitsClear().then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'scoper:get-alarm') {
+    chrome.alarms.get('wearehere-scoper-sweep', (a) => {
+      sendResponse(a ? { periodInMinutes: a.periodInMinutes, scheduledTime: a.scheduledTime } : null);
+    });
+    return true;
+  }
+
+  if (msg.type === 'scoper:sweep-now') {
+    if (typeof self.scoperSweep !== 'function') {
+      console.error('[scoper] scoperSweep not loaded — check importScripts order');
+      sendResponse({ error: 'scoper module not loaded' });
+      return false;
+    }
+    self.scoperSweep('manual')
+      .then((stats) => sendResponse(stats || {}))
+      .catch((err) => {
+        console.error('[scoper] sweep-now failed:', err);
+        sendResponse({ error: String(err && err.message || err) });
+      });
     return true;
   }
 
@@ -878,17 +1020,74 @@ function updateBadge(tabId) {
 // =============================================================================
 // Tab lifecycle
 // =============================================================================
-chrome.tabs.onRemoved.addListener((tabId) => { delete tabData[tabId]; });
+// Snapshot then evict: a visit is "complete" the moment the user leaves
+// it (tab close, or in-tab domain change). We capture the final state
+// before clearing tabData so visitHistory has the right value for that
+// page-load.
+const PENDING_VISIT_KEY = (tabId) => 'pendingVisit:' + tabId;
+
+// Write a compact snapshot of the current tab state to session storage.
+// Called after every detection write so the latest known state survives
+// SW dormancy. The session-storage record is what snapshotAndEvict reads
+// from when in-memory tabData has been cleared.
+function persistPendingVisit(tabId, tab) {
+  if (!tab || !tab.domain) return;
+  try {
+    const report = buildReport(tab);
+    if (!report) return;
+    chrome.storage.session.set({ [PENDING_VISIT_KEY(tabId)]: report });
+  } catch (e) {
+    console.warn('[visits] pending-write failed for tab', tabId, e);
+  }
+}
+
+function snapshotAndEvict(tabId) {
+  console.log('[visits] onRemoved tab', tabId);
+  const data = tabData[tabId];
+  const finalize = (report, source) => {
+    if (!report) {
+      console.log('[visits] skip — no report for tab', tabId);
+      return;
+    }
+    console.log('[visits] snapshot tab', tabId, '·', report.site, '· score', report.verdict && report.verdict.score, '·', source);
+    self.visitsAppend(report)
+      .then(() => console.log('[visits] persisted', report.site))
+      .catch((e) => console.warn('[visits] persist failed', e));
+  };
+
+  if (data && data.domain) {
+    try { finalize(buildReport(data), 'memory'); }
+    catch (e) { console.warn('[visits] snapshot failed for tab', tabId, e); }
+    delete tabData[tabId];
+    chrome.storage.session.remove(PENDING_VISIT_KEY(tabId));
+    return;
+  }
+
+  // Memory empty (SW restarted while tab was open) — read the most recent
+  // snapshot from session storage and finalize that instead.
+  chrome.storage.session.get(PENDING_VISIT_KEY(tabId), (s) => {
+    const pending = s && s[PENDING_VISIT_KEY(tabId)];
+    if (pending) {
+      finalize(pending, 'session');
+      chrome.storage.session.remove(PENDING_VISIT_KEY(tabId));
+    } else {
+      console.log('[visits] skip — no memory + no session record for tab', tabId);
+    }
+  });
+  delete tabData[tabId];
+}
+
+chrome.tabs.onRemoved.addListener((tabId) => { snapshotAndEvict(tabId); });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     const oldDomain = tabData[tabId]?.domain;
     try {
       const newDomain = new URL(changeInfo.url).hostname;
       if (oldDomain && oldDomain !== newDomain) {
-        delete tabData[tabId];
+        snapshotAndEvict(tabId);
       }
     } catch {
-      delete tabData[tabId];
+      snapshotAndEvict(tabId);
     }
   }
 });
