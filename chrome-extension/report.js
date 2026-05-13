@@ -35,6 +35,11 @@ function init(report) {
   $('loading').hidden = true;
   $('report').hidden = false;
 
+  // Force a sane title so Chrome's window-picker and tab-switcher show
+  // "wearehere — dashboard" instead of the extension-ID URL during the
+  // pre-paint window where the static <title> hasn't been picked up.
+  document.title = 'wearehere — dashboard';
+
   // On refresh (or after the source tab has been closed), getFullReport
   // returns null. The Overview + Scoper tabs and the cross-session
   // blocks of Watchers are storage-driven and should still render —
@@ -554,7 +559,10 @@ function renderWatchers(report) {
     <div id="w-who-summary" class="dim" style="font-size:11px;margin-bottom:8px"></div>
     <div id="w-who"></div>
 
-    <div class="frame-title">recent visits</div>
+    <div class="frame-title with-sel">
+      <span>recent visits</span>
+      <button class="btn-mini" id="clear-visits" type="button" title="erase the visit-history ring buffer">[ clear history ]</button>
+    </div>
     <div id="w-recent"></div>
 
     <div class="dig-deeper">// dig deeper · per site</div>
@@ -574,12 +582,30 @@ function renderWatchers(report) {
 
   wireSiteSelectors();
   populateSiteSelectors();
+  wireClearVisits();
 
   renderWindowSelector('w-window', watchersWindow, (w) => {
     watchersWindow = w;
     loadCrossSiteWatchers();
   });
   loadCrossSiteWatchers();
+}
+
+function wireClearVisits() {
+  const btn = $('clear-visits');
+  if (!btn) return;
+  btn.addEventListener('click', () => {
+    if (!confirm('Erase the visit-history ring buffer? This wipes the data behind Overview + Watchers cross-session blocks. Cookie scoper history is kept.')) return;
+    btn.disabled = true;
+    btn.textContent = '[ clearing… ]';
+    chrome.runtime.sendMessage({ type: 'visits:clear' }, () => {
+      btn.disabled = false;
+      btn.textContent = '[ cleared ✓ ]';
+      setTimeout(() => { btn.textContent = '[ clear history ]'; }, 1400);
+      // The visitHistory storage change will fan out and re-render
+      // Overview + cross-session watchers via watchVisitsStorage().
+    });
+  });
 }
 
 function loadCrossSiteWatchers() {
