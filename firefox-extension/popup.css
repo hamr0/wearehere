@@ -1,0 +1,312 @@
+/* wearehere popup — variant A · retro terminal
+   dark by default; light via prefers-color-scheme. */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+/* Dark = Tokyo Night (Night variant). Light = warm parchment.
+   --brand is the [we] amber; lives independently of --fg-bright so the
+   logo stays warm even on the cool TN palette. */
+:root {
+  --bg: #1a1b26;
+  --fg: #c0caf5;
+  --fg-bright: #ffffff;
+  --fg-mute: #9aa5ce;
+  --fg-faint: #565f89;
+  --line: #292e42;
+  --warn: #ff9e64;
+  --ok: #9ece6a;
+  --bad: #f7768e;
+  --brand: #e0af68;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f0eadc;
+    --fg: #2d2820;
+    --fg-bright: #1a1610;
+    --fg-mute: #786b50;
+    --fg-faint: #c9bfa8;
+    --line: #b8ad94;
+    --warn: #b53f1c;
+    --ok: #2f6b3a;
+    --bad: #a51919;
+    --brand: #8a6912;
+  }
+}
+
+/* Manual theme override (set on <html> by popup.js/report.js). Wins over
+   the prefers-color-scheme query because of specificity + source order. */
+html[data-theme="light"] {
+  --bg: #f0eadc;
+  --fg: #2d2820;
+  --fg-bright: #1a1610;
+  --fg-mute: #786b50;
+  --fg-faint: #c9bfa8;
+  --line: #b8ad94;
+  --warn: #b53f1c;
+  --ok: #2f6b3a;
+  --bad: #a51919;
+  --brand: #8a6912;
+}
+
+html[data-theme="dark"] {
+  --bg: #1a1b26;
+  --fg: #c0caf5;
+  --fg-bright: #ffffff;
+  --fg-mute: #9aa5ce;
+  --fg-faint: #565f89;
+  --line: #292e42;
+  --warn: #ff9e64;
+  --ok: #9ece6a;
+  --bad: #f7768e;
+  --brand: #e0af68;
+}
+
+body {
+  width: 380px;
+  min-width: 380px;
+  max-width: 380px;
+  min-height: 200px;
+  max-height: 600px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'IBM Plex Mono', 'JetBrains Mono', 'Menlo', 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 14px 16px;
+  /* Lock down children — long words/URLs shouldn't push the column wider. */
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+#loading,
+#empty {
+  padding: 32px 8px;
+  text-align: center;
+  color: var(--fg-mute);
+}
+
+.empty-title { color: var(--fg-bright); font-weight: 700; margin-bottom: 4px; }
+.empty-sub { font-size: 11px; }
+
+/* Brand lockup — [we] svg fused with "arehere" text reads "[we]arehere". */
+#brand {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--fg-bright);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  margin-bottom: 8px;
+}
+#brand-icon { color: var(--brand); display: block; }
+#brand-name { text-transform: lowercase; line-height: 1; }
+
+#head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+#site {
+  color: var(--fg-bright);
+  font-weight: 700;
+  font-size: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#score {
+  color: var(--warn);
+  font-weight: 700;
+  font-size: 13px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+#score.risk-low { color: var(--ok); }
+#score.risk-moderate { color: var(--warn); }
+#score.risk-high,
+#score.risk-critical { color: var(--bad); }
+
+#verdict {
+  color: var(--fg-mute);
+  font-size: 12px;
+  margin-bottom: 14px;
+}
+
+#verdict::before {
+  content: "> ";
+  color: var(--fg-faint);
+}
+
+.block-title {
+  color: var(--fg-mute);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  margin: 10px 0 5px;
+}
+
+.block-title::before {
+  content: "// ";
+  color: var(--fg-faint);
+}
+
+#watchers {
+  color: var(--fg-bright);
+  font-weight: 600;
+}
+
+#watchers .more {
+  color: var(--fg-mute);
+  font-weight: normal;
+}
+
+#chips {
+  color: var(--fg);
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.chip-sep {
+  color: var(--fg-faint);
+  margin: 0 4px;
+}
+
+.chip-n {
+  color: var(--fg-mute);
+  font-size: 11px;
+}
+
+#footer-chips {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: baseline;
+}
+
+#footer-chips .chip-sep {
+  color: var(--fg-faint);
+  margin: 0;
+}
+
+.ok { color: var(--ok); }
+.warn { color: var(--warn); }
+.bad { color: var(--bad); }
+
+#scoper-card {
+  margin-top: 14px;
+  border-top: 2px solid var(--line);
+  padding-top: 12px;
+}
+
+#scoper-site {
+  color: var(--fg-bright);
+}
+
+#scoper-impact {
+  color: var(--fg-mute);
+  font-size: 11px;
+  margin: 4px 0 12px;
+}
+
+#scoper-impact.unwired {
+  color: var(--fg-faint);
+  font-style: italic;
+}
+
+#scoper-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.btn {
+  padding: 5px 12px;
+  border: 1px solid var(--fg);
+  color: var(--fg-bright);
+  background: transparent;
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.btn:hover {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.btn:disabled {
+  border-color: var(--line);
+  color: var(--fg-faint);
+  cursor: not-allowed;
+}
+
+.btn:disabled:hover {
+  background: transparent;
+  color: var(--fg-faint);
+}
+
+.btn-primary {
+  background: var(--fg);
+  color: var(--bg);
+}
+
+.btn-primary:hover {
+  background: var(--fg-bright);
+}
+
+#scoper-status {
+  color: var(--fg-mute);
+  font-size: 11px;
+  margin-top: 6px;
+  min-height: 1.4em;
+}
+
+#scoper-status.ok { color: var(--ok); }
+#scoper-status.warn { color: var(--warn); }
+#scoper-status.gated { color: var(--warn); }
+
+#scoper-counters {
+  color: var(--fg-mute);
+  font-size: 10px;
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  text-align: center;
+}
+
+#full-report {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--fg-mute);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+#full-report:hover {
+  color: var(--fg-bright);
+  border-color: var(--fg-bright);
+}
+

@@ -1,0 +1,94 @@
+{
+  "manifest_version": 3,
+  "name": "wearehere",
+  "version": "4.0.0",
+  "description": "Privacy that acts back: full scan + cookie scoper. Cookies, trackers, fingerprinting, dark patterns, terms, network traffic, form leaks — surfaced in one popup, scoped automatically by tab close.",
+  "permissions": ["cookies", "webRequest", "alarms", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "wearehere@hamr0.github",
+      "strict_min_version": "128.0"
+    }
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "scripts": [
+      "tos-scanner.js",
+      "network-domains.js",
+      "cookie-database.js",
+      "visits.js",
+      "snapshots.js",
+      "scoper/scoper.js",
+      "background.js"
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-watched.js"],
+      "run_at": "document_start",
+      "world": "ISOLATED",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-cooked.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-played.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-leaked.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-linked.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["tos-scanner.js", "detect-tosed.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": ["<all_urls>"],
+      "js": ["detect-silent.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "web_accessible_resources": [{
+    "resources": ["inject.js", "report.html", "icons/*.png"],
+    "matches": ["<all_urls>"]
+  }]
+}
