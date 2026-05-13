@@ -1205,8 +1205,16 @@ function updateBadge(tabId) {
 
   // Tab may have been removed between the message arriving and now;
   // setBadgeText/Color reject in MV3 when the tabId no longer exists.
-  chrome.action.setBadgeText({ tabId, text: String(score) }).catch(() => {});
-  chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => {});
+  // Swallow only that known race — surface anything else (Firefox can
+  // reject for different reasons on about:/moz-extension:/ tabs, and
+  // we don't want those silenced during AMO testing).
+  const swallowGoneTab = (label) => (e) => {
+    const msg = (e && e.message) || String(e || '');
+    if (/no tab/i.test(msg)) return;
+    console.warn(`[badge] ${label} failed for tab ${tabId}:`, msg);
+  };
+  chrome.action.setBadgeText({ tabId, text: String(score) }).catch(swallowGoneTab('setBadgeText'));
+  chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(swallowGoneTab('setBadgeBackgroundColor'));
 }
 
 // =============================================================================
@@ -1233,6 +1241,22 @@ function persistPendingVisit(tabId, tab) {
   }
 }
 
+// Coalesce snapshot recomputes inside a short burst (closing several
+// tabs at once) so we don't pay one full recompute per tab. Trailing
+// edge: the recompute fires ~250ms after the last visit appended in
+// the burst, so the dashboard's storage listener still sees the final
+// state. Worst case under SW termination: a single visit's snapshot
+// waits for the hourly alarm.
+const SNAPSHOT_DEBOUNCE_MS = 250;
+let snapshotDebounceTimer = null;
+function snapshotsRecomputeDebounced() {
+  if (snapshotDebounceTimer) clearTimeout(snapshotDebounceTimer);
+  snapshotDebounceTimer = setTimeout(() => {
+    snapshotDebounceTimer = null;
+    self.snapshotsRecompute().catch((e) => console.warn('[snapshots] recompute failed', e));
+  }, SNAPSHOT_DEBOUNCE_MS);
+}
+
 function snapshotAndEvict(tabId) {
   console.log('[visits] onRemoved tab', tabId);
   const data = tabData[tabId];
@@ -1245,11 +1269,10 @@ function snapshotAndEvict(tabId) {
     self.visitsAppend(report)
       .then(() => {
         console.log('[visits] persisted', report.site);
-        // Force recompute on every append. The stale gate was hiding
-        // visits 2..N inside a 5-min burst (closing several tabs) — the
-        // dashboard's storage listener only fires when windowSnapshots
-        // actually changes, so the hero counts stayed stuck.
-        return self.snapshotsRecompute();
+        // Coalesce recomputes across a burst — closing 10 tabs at once
+        // now pays 1 recompute, not 10. The dashboard storage listener
+        // still fires on the trailing-edge write.
+        snapshotsRecomputeDebounced();
       })
       .catch((e) => console.warn('[visits] persist failed', e));
   };

@@ -2,6 +2,50 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [4.1.0] — 2026-05-13
+
+Post-v4.0.0 hardening + the Firefox mirror. No new user-facing features; everything in this release is bug fixes, race-condition cleanup, the Phase 7 FF port (firefox-extension/ now actually matches the v4.0.0 design instead of carrying a v3.x payload under a v4 label), and store-submission housekeeping.
+
+### Phase 7 — Firefox mirror (shipped)
+
+- **`firefox-extension/` is now the v4 codebase.** The previous v3.x-era contents are archived as `firefox-extension-v3/` for reference. Every file the Chrome bundle ships now exists in the Firefox bundle (scoper, visits, snapshots, v4 popup/dashboard, onboarding, impact line, brand assets, icons).
+- **Manifest dialect** — MV3 with Firefox-specific shape:
+  - `background.scripts` array (FF stable MV3 uses event pages, not service workers) with dependency-ordered load.
+  - `browser_specific_settings.gecko`: id `wearehere@extension` (matches the AMO listing — mismatch would have orphaned the update path), `strict_min_version: 142.0`, `data_collection_permissions: { required: ["none"], optional: ["technicalAndInteraction"] }` (AMO-required metadata).
+  - `world: "MAIN"` content script supported at FF 128+; pinned floor covers it.
+- **`importScripts` guard** — `background.js` wraps the dep-load in `typeof importScripts === 'function'` so the same source runs cleanly under Chrome's service-worker model **and** Firefox's event-page model. Drift between the two bundles is now exactly two files: `background.js` (the guard) and `manifest.json` (dialect). Verified with `diff -rq`.
+
+### Fixed
+
+- **Dashboard window selector visual stuck on "week"** — `renderWindowSelector` painted `.active` once at panel mount and never updated. Selector now re-paints on click, and a synchronous-throw `try/catch` rolls the active state back if `onChange` fails so the UI never lies about which window is rendered.
+- **Hero counts lagging on tab close** — `snapshotAndEvict` was calling `snapshotsRecomputeIfStale()` after every visit append, but the 5-min freshness gate hid visits 2..N within a rapid tab-close burst. Switched to `snapshotsRecomputeDebounced()` (250ms trailing-edge coalesce) — bursts now pay one recompute instead of N, and the dashboard `windowSnapshots` storage listener still fires on the trailing write.
+- **Watchers/Terms site selectors clobbered each other** — `populateSiteSelectors` only preserved `watcherSel.value`, then wrote that into both selectors. Each `<select>` now tracks its own current value; the function also skips the `innerHTML` swap when the markup is identical, so refreshes during user interaction no longer close the open dropdown under the user's click.
+- **Selectors orphaned + selection lost on tab close** — when the selected tab closed, the dead tabId was written into `<select>.value`; no `<option>` matched, dropdown rendered blank, and the detail blocks kept showing the closed tab's cached report. Fix: fall back to a valid tabId (dashboard source if open, else first available), dispatch synthetic `change` so the detail block re-renders, drop the closed tab from `tabReportCache`. Removed the `mousedown`/`focus` refresh listeners that were racing the user's click — `chrome.tabs.{onCreated,onRemoved,onUpdated}` + `visibilitychange` cover every legit refresh case.
+- **`chrome.action.setBadge*` `.catch(() => {})` silenced real errors** — the global swallow could mask legitimate FF-only failures on `about:` / `moz-extension://` tabs during AMO testing. Now matches the known "No tab with id" race specifically and surfaces anything else via `console.warn`.
+
+### Hardening (defensive, no observable bug today)
+
+- **`wireSiteSelectors` idempotency guard** — wiring chrome.tabs listeners is now once-per-dashboard-lifetime, gated by a `siteSelectorsWired` flag. Today `renderWatchers` only fires at init so the bug is latent; a future "reload dashboard" path would leak duplicate listeners without this guard.
+
+### Store submission artifacts
+
+- **`store-assets/` cleaned + refreshed.**
+  - Removed stale brainstorm + v1/v3 per-tab screenshot files: `EXTENSION_IDEAS.md`, `eye-recognition.png`, `linkedin.txt`, `next-project-ideas.md`, and the `screenshots/` directory of retired-tab icons (baked / cooked / leaking / linked / played / silent / tosed / watched).
+  - Added `store-screenshots/` — five 1280×800 24-bit no-alpha PNGs (popup, watchers, dig-deeper, overview, scoper) ready for both CWS and AMO. Smaller source images padded onto a matching cream `#F0EADC` background without stretching.
+  - Regenerated `store-icon-128.png` on the cream background as 24-bit no-alpha.
+  - Rebuilt `wearehere-chrome.zip` and `wearehere-firefox.zip` from current HEAD (the previous round was caught by code review shipping a stale `report.js`).
+- **Manifest description shortened** — `4.0.0` description was 195 chars; CWS rejects anything over 132. Both bundles now ship a 126-char description carrying the same value proposition: *"Privacy that acts back: full scan + cookie scoper. Cookies, trackers, fingerprinting, dark patterns, terms — all in one popup."*
+
+### Bundle parity
+
+- `diff -rq chrome-extension/ firefox-extension/` reports exactly two divergent files (`background.js`, `manifest.json`) — both the intentional dialect drift documented above. All other source files are byte-identical between the two bundles.
+
+### Version sync
+
+- `chrome-extension/manifest.json` · `firefox-extension/manifest.json` · root `package.json` all bumped 4.0.0 → 4.1.0 in lockstep.
+
+[4.1.0]: https://github.com/hamr0/wearehere/compare/c2217b3...main
+
 ## [4.0.0] — 2026-05-13
 
 First active-intervention release. v3.x detected; v4.0.0 detects **and acts back** — the Cookie scoper rewrites tracker-cookie expirations and kills third-party cookies on tab close. Full popup + dashboard rewrite, cross-session visit history, and Tokyo Night dark theme. The v3.x line is archived at `origin/v1`.

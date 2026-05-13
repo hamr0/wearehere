@@ -643,10 +643,14 @@ After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage + Phase 6 
 | Score trend prior-window comparison footer | low | `report.js:renderScoreTrend` | Footer shows "avg N · range X→Y" but not "avg this month vs last month". PRD spec: `average this month: 47 · last month: 51 · ↓ 4 (better)`. Needs a second snapshot read for the prior-window avg. |
 | Cookie scoper "Inspect all N cookies" expander | low | `report.js`, scoper tab | PRD spec: collapsed-by-default expander revealing the full per-cookie table (vendor · category · expiry · domain · scoper-action). Today the block ends after Top owners. |
 
+### Shipped post-4.0.0 (closing remaining 4.x gates)
+
+- **Phase 7 — Firefox mirror** — shipped in 4.1.0. `firefox-extension/` now mirrors the Chrome bundle byte-for-byte except `background.js` (the `importScripts` guard) and `manifest.json` (MV3 dialect + AMO fields). Drift verified via `diff -rq`. AMO re-submission unblocked.
+- **Race-condition cleanup** — four fixes landed in 4.1.0: window selector re-paint, snapshot recompute debounce, watchers/terms selector independence, closed-tab selector orphan + cache invalidation. See `CHANGELOG.md [4.1.0]` for the full list.
+
 ### Scope explicitly punted
 
-- **Phase 7 — Firefox mirror.** `firefox-extension/` is currently labeled v4.0.0 but the actual code is still on the v3.x feature set (manifest_version 2, no `alarms`/`storage` permissions, missing `visits.js`, `snapshots.js`, `scoper/`, no v4 popup/dashboard rewrite). The version label is misleading until the port lands. This is the only **blocking** gap for AMO re-submission.
-- **8-step manual smoke test** — the integration path in `PLAN.md` / `test/SMOKE.md` is still a human-in-the-loop checklist. The unit suite (`npm test`, 18/18 passing) covers the data pipeline; the UI-surface smoke can't be automated without a Chrome harness.
+- **8-step manual smoke test** — the integration path in `PLAN.md` / `test/SMOKE.md` is still a human-in-the-loop checklist. The unit suite (`npm test`, 18/18 passing) covers the data pipeline; the UI-surface smoke can't be automated without a Chrome harness. Run both Chrome and Firefox bundles through it after each store-submission cycle.
 
 ### Non-goal — no active request blocking (decided 2026-05-13)
 

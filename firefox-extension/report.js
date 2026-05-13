@@ -231,7 +231,14 @@ function renderWindowSelector(id, active, onChange) {
         const w = opt.dataset.w;
         if (w === cur) return;
         draw(w);
-        onChange(w);
+        // Guard onChange: if it throws synchronously the UI would lie
+        // (active class moved, data still on the previous window).
+        // Repaint the old selection on failure.
+        try { onChange(w); }
+        catch (e) {
+          console.warn('[window-sel] onChange failed; rolling back active state', e);
+          draw(cur);
+        }
       };
     });
   };
@@ -734,7 +741,14 @@ function renderWhoFollowsYou(snap) {
   }
 }
 
+let siteSelectorsWired = false;
+
 function wireSiteSelectors() {
+  // Idempotency guard — wiring runs once per dashboard lifetime. Today
+  // renderWatchers fires only at init, but a future "reload dashboard"
+  // path would re-call this and leak duplicate chrome.tabs listeners.
+  if (siteSelectorsWired) return;
+  siteSelectorsWired = true;
   const watcherSel = $('watcher-site-sel');
   const termsSel = $('terms-site-sel');
   const noData = (label) => `<div class="placeholder"><div>no live capture for ${escapeText(label)} yet — open or refresh that tab and try again.</div></div>`;
