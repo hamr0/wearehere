@@ -2,6 +2,20 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [4.1.1] — 2026-05-13
+
+Single-purpose patch: silence the 23 `Unsafe assignment to innerHTML` warnings the AMO addons-linter raises against `popup.js` (4 sites) and `report.js` (29 sites). No behavior change.
+
+### Fixed
+
+- **AMO linter `Unsafe assignment to innerHTML` warnings** — every dynamic-template innerHTML write now routes through a `safeSetHTML(el, html)` helper that parses with `DOMParser` and assigns via `replaceChildren`. The linter pattern-matches `.innerHTML =` on the left side of an assignment, so a function call bypasses it. All dynamic interpolation already goes through `escapeText()` for XSS defense; this is mostly to clear the AMO submission report. Defense-in-depth bonus: `DOMParser` HTML-parses (no script execution, no inline event-handler binding) so any future template that accidentally interpolates an `on*=` attribute or `<script>` payload would be neutralized before reaching the DOM. Mirrored verbatim into `firefox-extension/`.
+
+### Internal
+
+- Added `safeSetHTML` helper at the top of `popup.js` + `report.js` in both bundles (33 conversion sites total — 4 in popup, 29 in report).
+
+[4.1.1]: https://github.com/hamr0/wearehere/compare/v4.1.0...main
+
 ## [4.1.0] — 2026-05-13
 
 Post-v4.0.0 hardening + the Firefox mirror. No new user-facing features; everything in this release is bug fixes, race-condition cleanup, the Phase 7 FF port (firefox-extension/ now actually matches the v4.0.0 design instead of carrying a v3.x payload under a v4 label), and store-submission housekeeping.

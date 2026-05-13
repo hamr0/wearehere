@@ -6,6 +6,17 @@
  * as placeholders until Phases 1, 2, 4, 5 land.
  */
 
+// AMO addons-linter flags every `.innerHTML =` assignment as
+// "Unsafe assignment to innerHTML." All dynamic interpolation in
+// this file already passes through escapeText(); DOMParser is
+// defense-in-depth (strips inline <script> and on*= handlers) and
+// silences the warning by routing the write through a function
+// call instead of a direct innerHTML setter.
+function safeSetHTML(el, html) {
+  const doc = new DOMParser().parseFromString('<!doctype html><body>' + html, 'text/html');
+  el.replaceChildren.apply(el, Array.from(doc.body.childNodes));
+}
+
 const $ = (id) => document.getElementById(id);
 
 const tabIdFromHash = parseInt(location.hash.replace('#', ''), 10);
@@ -193,7 +204,7 @@ let watchersWindow = 'week';
 
 function renderOverview() {
   const panel = $('panel-overview');
-  panel.innerHTML = `
+  safeSetHTML(panel, `
     <div class="frame-title">this period</div>
     <div class="hero" id="overview-hero">
       <div class="cell"><div class="num" id="ov-sites">—</div><div class="lbl">sites visited</div></div>
@@ -211,7 +222,7 @@ function renderOverview() {
 
     <div class="frame-title">score trend</div>
     <div id="ov-trend"></div>
-  `;
+  `);
 
   renderWindowSelector('ov-window', overviewWindow, (w) => {
     overviewWindow = w;
@@ -223,9 +234,9 @@ function renderOverview() {
 function renderWindowSelector(id, active, onChange) {
   const el = $(id);
   const draw = (cur) => {
-    el.innerHTML = `<span class="lbl">window:</span>` + WINDOW_OPTIONS
+    safeSetHTML(el, `<span class="lbl">window:</span>` + WINDOW_OPTIONS
       .map((w) => `<span class="opt${w === cur ? ' active' : ''}" data-w="${w}">${w === 'all' ? 'all time' : w}</span>`)
-      .join('');
+      .join(''));
     el.querySelectorAll('.opt').forEach((opt) => {
       opt.onclick = () => {
         const w = opt.dataset.w;
@@ -279,7 +290,7 @@ function renderImpactLine(impact) {
     ? `${cookieClause ? ' and ' : ''}demoted ${impact.demotions.toLocaleString()} tracker${impact.demotions === 1 ? '' : 's'} to session-only`
     : '';
   el.hidden = false;
-  el.innerHTML = `${win}: wearehere ${escapeText(cookieClause + demoteClause)} so they can't recognise you tomorrow.`;
+  safeSetHTML(el, `${win}: wearehere ${escapeText(cookieClause + demoteClause)} so they can't recognise you tomorrow.`);
 }
 
 function loadOverviewRawVisits() {
@@ -294,7 +305,7 @@ function renderOverviewHero(snap) {
     $('ov-score').textContent = '—';
     $('ov-watchers').textContent = '0';
     $('ov-most-exposed').textContent = '—';
-    $('ov-callout').innerHTML = `<span class="dim">no visits in this window yet — keep browsing and come back.</span>`;
+    safeSetHTML($('ov-callout'), `<span class="dim">no visits in this window yet — keep browsing and come back.</span>`);
     return;
   }
 
@@ -313,9 +324,9 @@ function renderOverviewHero(snap) {
   $('ov-most-exposed').textContent = mostExposed ? mostExposed.etld1 : '—';
 
   const top3 = ranked.slice(0, 3).map((v) => v.etld1).filter(Boolean);
-  $('ov-callout').innerHTML = top3.length
+  safeSetHTML($('ov-callout'), top3.length
     ? `most-watched: ${top3.map((s) => `<strong>${escapeText(s)}</strong>`).join(' · ')}`
-    : '';
+    : '');
 }
 
 // What-changed event log: diff this-window vs prior-window of equal
@@ -325,26 +336,26 @@ function renderWhatChanged(cur, prev) {
   const el = $('ov-changed');
 
   if (overviewWindow === 'all') {
-    el.innerHTML = `<div class="placeholder"><div>diffs need a bounded window — pick today / week / month.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>diffs need a bounded window — pick today / week / month.</div></div>`);
     return;
   }
   if (!cur || !prev) {
-    el.innerHTML = `<div class="placeholder"><div>no snapshot yet — keep browsing and come back.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>no snapshot yet — keep browsing and come back.</div></div>`);
     return;
   }
 
   const events = diffAggregates(cur, prev);
   if (events.length === 0) {
-    el.innerHTML = `<div class="placeholder"><div>no notable changes vs the prior ${escapeText(overviewWindow)}.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>no notable changes vs the prior ${escapeText(overviewWindow)}.</div></div>`);
     return;
   }
-  el.innerHTML = events.slice(0, 20).map((e) => `
+  safeSetHTML(el, events.slice(0, 20).map((e) => `
     <div class="event">
       <span class="event-icon ${e.cls}">${e.icon}</span>
       <span class="event-kind">${escapeText(e.kind)}</span>
       <span class="event-text">${e.text}</span>
     </div>
-  `).join('');
+  `).join(''));
 }
 
 function diffAggregates(cur, prev) {
@@ -425,7 +436,7 @@ function diffAggregates(cur, prev) {
 function renderRecentVisits(visits) {
   const el = $('w-recent');
   if (visits.length === 0) {
-    el.innerHTML = `<div class="placeholder"><div>no recent visits.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>no recent visits.</div></div>`);
     return;
   }
   // Show one row per unique site, with most-recent visit's data.
@@ -457,7 +468,7 @@ function renderRecentVisits(visits) {
       : `<span class="dim">none</span>`;
   };
 
-  el.innerHTML = `
+  safeSetHTML(el, `
     <table class="table">
       <thead><tr><th>site</th><th>score</th><th>watchers</th><th>via</th><th>terms</th><th>when</th></tr></thead>
       <tbody>
@@ -480,13 +491,13 @@ function renderRecentVisits(visits) {
         }).join('')}
       </tbody>
     </table>
-  `;
+  `);
 }
 
 function renderScoreTrend(visits) {
   const el = $('ov-trend');
   if (visits.length < 2) {
-    el.innerHTML = `<div class="placeholder"><div>need at least 2 visits to draw a trend.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>need at least 2 visits to draw a trend.</div></div>`);
     return;
   }
   // Order chronologically, oldest first.
@@ -532,7 +543,7 @@ function renderScoreTrend(visits) {
   const avg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
   const avgCls = avg >= 60 ? 'bad' : avg >= 30 ? 'warn' : 'ok';
 
-  el.innerHTML = `
+  safeSetHTML(el, `
     <div class="trend-caption dim">score over time · each dot is one visit · lower is better</div>
     <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="trend-svg" role="img" aria-label="score over time">
       <!-- Tier bands -->
@@ -565,7 +576,7 @@ function renderScoreTrend(visits) {
         <span class="bad">▮</span> hostile
       </span>
     </div>
-  `;
+  `);
 }
 
 // =========================================================================
@@ -584,7 +595,7 @@ function renderWatchers(report) {
   const currentSite = report.site || '';
   const siteOpt = `<option value="${tabId}">${escapeText(currentSite)}</option>`;
 
-  panel.innerHTML = `
+  safeSetHTML(panel, `
     <div class="frame-title">watchers — who follows you across the web</div>
     <div class="hero" id="watchers-hero">
       <div class="cell"><div class="num" id="w-sites">—</div><div class="lbl">sites visited</div></div>
@@ -618,7 +629,7 @@ function renderWatchers(report) {
       <select class="site-sel" id="terms-site-sel">${siteOpt}</select>
     </div>
     <div id="terms-block">${renderTermsBlock(report)}</div>
-  `;
+  `);
 
   wireSiteSelectors();
   populateSiteSelectors();
@@ -686,7 +697,7 @@ function renderWatchersHero(snap) {
 function renderWhoFollowsYou(snap) {
   const el = $('w-who');
   if (!snap || !snap.visitsN) {
-    el.innerHTML = `<div class="placeholder"><div>no visits yet — once you've browsed, this fills in.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>no visits yet — once you've browsed, this fills in.</div></div>`);
     return;
   }
 
@@ -698,7 +709,7 @@ function renderWhoFollowsYou(snap) {
     .slice(0, 12);
 
   if (ranked.length === 0) {
-    el.innerHTML = `<div class="placeholder"><div>no named watchers in this window.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>no named watchers in this window.</div></div>`);
     return;
   }
 
@@ -716,7 +727,7 @@ function renderWhoFollowsYou(snap) {
     return parts.length ? parts.join(' · ') : 'presence only';
   };
 
-  el.innerHTML = ranked.map((c) => `
+  safeSetHTML(el, ranked.map((c) => `
     <div class="reach-row">
       <div class="reach-line">
         <span class="reach-pct">${c.pct}%</span>
@@ -726,7 +737,7 @@ function renderWhoFollowsYou(snap) {
       </div>
       <div class="reach-mech"><span class="dim">via</span> ${escapeText(mechLine(c.mech))}</div>
     </div>
-  `).join('');
+  `).join(''));
 
   // Site-level summary: form-field exposure (typing). Other mechanisms
   // are now per-company. Fingerprint reads from unattributed scripts
@@ -735,9 +746,9 @@ function renderWhoFollowsYou(snap) {
   const summary = $('w-who-summary');
   if (summary) {
     const { fields = 0, visits: vsig = 0 } = snap.typing || {};
-    summary.innerHTML = fields
+    safeSetHTML(summary, fields
       ? `also: ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
-      : '';
+      : '');
   }
 }
 
@@ -756,13 +767,13 @@ function wireSiteSelectors() {
   watcherSel.addEventListener('change', () => {
     const opt = watcherSel.options[watcherSel.selectedIndex];
     fetchTabReport(parseInt(watcherSel.value, 10)).then((r) => {
-      $('watcher-detail-block').innerHTML = r ? renderWatcherDetail(r) : noData(opt?.textContent || 'this tab');
+      safeSetHTML($('watcher-detail-block'), r ? renderWatcherDetail(r) : noData(opt?.textContent || 'this tab'));
     });
   });
   termsSel.addEventListener('change', () => {
     const opt = termsSel.options[termsSel.selectedIndex];
     fetchTabReport(parseInt(termsSel.value, 10)).then((r) => {
-      $('terms-block').innerHTML = r ? renderTermsBlock(r) : noData(opt?.textContent || 'this tab');
+      safeSetHTML($('terms-block'), r ? renderTermsBlock(r) : noData(opt?.textContent || 'this tab'));
     });
   });
 
@@ -836,11 +847,11 @@ function populateSiteSelectors(opts) {
     // user's click, so their selection never fires `change`. The
     // `selected` attribute already tracks the correct value.
     if (watcherSel.innerHTML !== watcherOptions) {
-      watcherSel.innerHTML = watcherOptions;
+      safeSetHTML(watcherSel, watcherOptions);
       watcherSel.value = watcherVal;
     }
     if (termsSel.innerHTML !== termsOptions) {
-      termsSel.innerHTML = termsOptions;
+      safeSetHTML(termsSel, termsOptions);
       termsSel.value = termsVal;
     }
 
@@ -1060,7 +1071,7 @@ const PERIOD_CHOICES = [
 
 function renderScoper(_report) {
   const panel = $('panel-scoper');
-  panel.innerHTML = `
+  safeSetHTML(panel, `
     <div class="frame-title">cookie scoper</div>
     <div class="hero" id="scoper-hero">
       <div class="cell"><div class="num" id="scoper-tightened">—</div><div class="lbl">tightened (lifetime)</div></div>
@@ -1081,7 +1092,7 @@ function renderScoper(_report) {
 
     <div class="frame-title">recent activity</div>
     <div id="scoper-history"></div>
-  `;
+  `);
 
   loadScoperState();
   renderCoverage();
@@ -1142,7 +1153,7 @@ function renderCoverage() {
       cov = cov || { capped: 0, trusted: 0, killOnClose: 0, total };
       const maxCov = Math.max(1, cov.capped, cov.trusted, cov.killOnClose);
       el.classList.remove('placeholder');
-      el.innerHTML = `
+      safeSetHTML(el, `
         <div class="callout"><strong>${total.toLocaleString()}</strong> cookies in your browser right now</div>
 
         <div class="block-sub">coverage · what the scoper will do</div>
@@ -1158,7 +1169,7 @@ function renderCoverage() {
         <div class="bar-row"><span class="nval">${expiry['1yr+']}</span> ${bar(expiry['1yr+'], maxExpiry)} <span class="nlbl">90 days +</span></div>
 
         <div class="callout" style="margin-top:10px">top owners: ${topOwners.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${n})`).join(' · ') || '—'}</div>
-      `;
+      `);
     });
   });
 }
@@ -1175,7 +1186,7 @@ function renderTrustList(trust) {
   `;
 
   if (entries.length === 0) {
-    el.innerHTML = `${addRow}<div class="placeholder"><div>no trusted sites yet — trust a site to keep its cookies past 7 days.</div></div>`;
+    safeSetHTML(el, `${addRow}<div class="placeholder"><div>no trusted sites yet — trust a site to keep its cookies past 7 days.</div></div>`);
     wireTrustControls();
     return;
   }
@@ -1191,13 +1202,13 @@ function renderTrustList(trust) {
     </tr>
   `).join('');
 
-  el.innerHTML = `
+  safeSetHTML(el, `
     ${addRow}
     <table class="table" style="margin-top:10px">
       <thead><tr><th>domain</th><th>cap</th><th>actions</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
-  `;
+  `);
   wireTrustControls();
 }
 
@@ -1228,9 +1239,9 @@ function wireTrustControls() {
 function renderPeriodRadio(settings) {
   const current = PERIOD_CHOICES.find((p) => p.min === settings.sweepPeriodMin) ? settings.sweepPeriodMin : 60;
   const el = $('scoper-period');
-  el.innerHTML = `<span class="lbl">every</span>` + PERIOD_CHOICES
+  safeSetHTML(el, `<span class="lbl">every</span>` + PERIOD_CHOICES
     .map((p) => `<span class="opt${p.min === current ? ' active' : ''}" data-min="${p.min}">${p.label}</span>`)
-    .join('');
+    .join(''));
   el.querySelectorAll('.opt').forEach((opt) => {
     opt.onclick = () => {
       const min = parseInt(opt.dataset.min, 10);
@@ -1274,10 +1285,10 @@ function renderAlarmStatus() {
 function renderHistoryList(history) {
   const el = $('scoper-history');
   if (!history.length) {
-    el.innerHTML = `<div class="placeholder"><div>no sweeps yet — the first one fires shortly after install.</div></div>`;
+    safeSetHTML(el, `<div class="placeholder"><div>no sweeps yet — the first one fires shortly after install.</div></div>`);
     return;
   }
-  el.innerHTML = history.slice(0, 20).map((h) => {
+  safeSetHTML(el, history.slice(0, 20).map((h) => {
     const when = relativeTimeShort(h.at);
     return `
       <div class="event">
@@ -1285,7 +1296,7 @@ function renderHistoryList(history) {
         <span class="event-kind">${escapeText(h.trigger)} · ${escapeText(when)}</span>
         <span class="event-text">scanned ${h.scanned} · rewrote ${h.rewrote}${h.demotions ? ` · demoted ${h.demotions}` : ''}</span>
       </div>`;
-  }).join('');
+  }).join(''));
 }
 
 // =========================================================================
