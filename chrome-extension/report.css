@@ -647,7 +647,11 @@ input[type="text"].mono-input {
 }
 
 /* Onboarding — first-run overlay. Shown once per install via the
-   `dashboardOnboarded` flag in chrome.storage.local. */
+   `dashboardOnboarded` flag in chrome.storage.local. The HTML `hidden`
+   attribute on `.onboarding` would normally apply `display: none` from
+   the UA stylesheet, but our author rule below has higher specificity
+   and would override it — so we *also* hard-stop here when hidden. */
+.onboarding[hidden] { display: none; }
 .onboarding {
   position: fixed;
   inset: 0;
