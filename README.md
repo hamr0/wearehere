@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/github/package-json/v/hamr0/wearehere?label=version&color=2a4f8c" alt="version">
-  <img src="https://img.shields.io/badge/license-MIT-2a4f8c" alt="license: MIT">
+  <img src="https://img.shields.io/badge/license-Apache--2.0-2a4f8c" alt="license: Apache-2.0">
 </p>
 
 > Privacy that acts back.
@@ -54,6 +54,6 @@ Everything happens on your device. If you delete the extension, every trace goes
 
 ## Who builds this
 
-One developer. Open source, MIT licensed. The detection logic builds on a handful of well-known privacy projects — full credit in [NOTICE](./NOTICE).
+One developer. Open source, Apache-2.0 licensed. The detection logic builds on a handful of well-known privacy projects — full credit in [NOTICE](./NOTICE).
 
 If you want to follow the build or report something weird, the issue tracker is open: [github.com/hamr0/wearehere/issues](https://github.com/hamr0/wearehere/issues).
