@@ -1,67 +1,346 @@
 /**
- * popup.js — Simplified privacy scan popup with 8 sections.
- * Queries background.js for the current tab's report and renders casual-language results.
+ * popup.js — wearehere variant A · retro terminal
+ * Renders 3-block layout: Header / Who's watching / Footer chips / Cookie scoper card.
+ * Reads from background.js tabData via getReport message.
  */
 
 chrome.runtime.sendMessage({ type: 'getReport' }, render);
 
+const $ = (id) => document.getElementById(id);
+
+// Theme: binary, mirrored from chrome.storage.local. If never set,
+// derive from system. Updates live when the dashboard toggles.
+function applyPopupTheme(theme) {
+  const t = theme === 'light' ? 'light'
+          : theme === 'dark'  ? 'dark'
+          : (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  document.documentElement.setAttribute('data-theme', t);
+}
+chrome.storage.local.get('theme', ({ theme }) => applyPopupTheme(theme));
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.theme) applyPopupTheme(changes.theme.newValue);
+});
+
 function render(report) {
-  document.getElementById('loading').style.display = 'none';
+  $('loading').hidden = true;
 
   if (!report) {
-    document.getElementById('empty').style.display = 'flex';
+    $('empty').hidden = false;
     return;
   }
 
-  document.getElementById('report').style.display = 'block';
+  $('report').hidden = false;
 
-  // Header
-  document.getElementById('site-name').textContent = report.site;
-  const badge = document.getElementById('score-badge');
+  renderHeader(report);
+  renderWatchers(report);
+  renderFooterChips(report);
+  renderScoper(report);
+  wireDashboardButton();
+}
+
+// --- Header ---------------------------------------------------------------
+
+function renderHeader(report) {
   const v = report.verdict;
-  badge.textContent = `${v.score}/100 ${v.risk.toUpperCase()}`;
-  badge.className = `risk-${v.risk}`;
+  $('site').textContent = report.site;
+  const score = $('score');
+  score.textContent = `${v.score} / ${v.risk.toUpperCase()}`;
+  score.className = `risk-${v.risk}`;
+  $('verdict').textContent = (v.recommendation || '').toLowerCase();
+}
 
-  // Risk bar
-  const fill = document.getElementById('risk-fill');
-  fill.style.width = v.score + '%';
-  if (v.score <= 15) fill.style.background = '#2ecc71';
-  else if (v.score <= 40) fill.style.background = '#e67e22';
-  else fill.style.background = '#e74c3c';
+// --- Who's watching -------------------------------------------------------
 
-  // Summary
-  document.getElementById('summary').textContent = v.recommendation;
+function renderWatchers(report) {
+  const companies = extractCompanies(report);
+  const mechanisms = extractMechanisms(report);
 
-  // 8 Sections
-  const sections = document.getElementById('sections');
-  sections.innerHTML = '';
+  const watchers = $('watchers');
+  const chips = $('chips');
 
-  sections.appendChild(cookiesSection(report.cookies, report.site));
-  sections.appendChild(networkSection(report.network));
-  sections.appendChild(trackersSection(report.trackers));
-  sections.appendChild(pressureSection(report.pressure));
-  sections.appendChild(sellingDataSection(report.network));
-  sections.appendChild(profilingSection(report.fingerprinting));
-  sections.appendChild(localDataSection(report.localData));
-  sections.appendChild(formsSection(report.forms));
-  sections.appendChild(linkTrackingSection(report.linkTracking));
-  sections.appendChild(tosSection(report.tos));
+  if (companies.length === 0) {
+    watchers.textContent = 'no trackers detected ✓';
+    watchers.classList.add('ok');
+    chips.textContent = '';
+    return;
+  }
 
-  // Full Report button
-  const btn = document.createElement('button');
-  btn.id = 'full-report-btn';
-  btn.textContent = 'Full Report';
-  sections.after(btn);
-  btn.addEventListener('click', (e) => {
+  // Top 2 + +N more
+  const top = companies.slice(0, 2).map(escapeText).join(' · ');
+  const rest = companies.length - 2;
+  watchers.innerHTML = rest > 0
+    ? `${top} <span class="more">+${rest} more</span>`
+    : top;
+
+  // Mechanism chips — name + count, joined with explicit middots so each
+  // chip reads as a discrete signal rather than one run-on label.
+  chips.innerHTML = mechanisms
+    .map((m) => `<span class="chip">${m.name} <span class="chip-n">${m.n}</span></span>`)
+    .join('<span class="chip-sep">·</span>');
+}
+
+function extractCompanies(report) {
+  const names = new Set();
+  const out = [];
+  const add = (name) => {
+    const key = name.toLowerCase();
+    if (names.has(key)) return;
+    names.add(key);
+    out.push(name);
+  };
+
+  // From tracker network domains
+  ((report.trackers && report.trackers.companies) || []).forEach((c) => {
+    if (c && c.name) add(c.name);
+  });
+  // From OCD snoop cookie vendors
+  ((report.cookies && report.cookies.snoopVendors) || []).forEach((v) => {
+    if (v && v.name) add(v.name);
+  });
+
+  return out;
+}
+
+// Mechanism chips in the popup. Each entry is { name, n } where `n` is
+// the count surfaced inline so the user sees magnitude, not just presence.
+// Order is deliberate: cookies → pixels → device-id → typing → clicks,
+// matching the PRD's locked vocabulary. None is ranked higher than another;
+// they're a flat menu of *how* the site watches.
+function extractMechanisms(report) {
+  const out = [];
+  const cookies = report.cookies || {};
+  if ((cookies.snoops || 0) > 0) out.push({ name: 'cookies', n: cookies.snoops });
+
+  const trackers = report.trackers || {};
+  const pixelsN = (trackers.pixels || 0) + (trackers.beacons || 0) + (trackers.hiddenIframes || 0);
+  if (pixelsN > 0) out.push({ name: 'pixels', n: pixelsN });
+
+  const fp = report.fingerprinting || {};
+  if ((fp.techniques || 0) > 0) out.push({ name: 'device-id', n: fp.techniques });
+
+  const forms = report.forms || {};
+  if ((forms.fieldCount || 0) > 0) out.push({ name: 'typing', n: forms.fieldCount });
+
+  const links = report.linkTracking || {};
+  if ((links.tracked || 0) > 0) out.push({ name: 'clicks', n: links.tracked });
+
+  return out;
+}
+
+// --- Footer chips ---------------------------------------------------------
+
+function renderFooterChips(report) {
+  const chips = [];
+  const net = report.network || {};
+  const brokers = net.brokerCount || 0;
+  chips.push(
+    brokers === 0
+      ? { cls: 'ok', text: '✓ not sold' }
+      : { cls: 'warn', text: `[!] sold to ${brokers} broker${brokers === 1 ? '' : 's'}` }
+  );
+
+  const tos = report.tos || {};
+  if (tos.found && typeof tos.score === 'number') {
+    const s = tos.score;
+    chips.push(
+      s >= 60
+        ? { cls: 'bad',  text: '[!] toxic terms' }
+        : s >= 30
+        ? { cls: 'warn', text: '[!] strict terms' }
+        : { cls: 'ok',   text: '✓ fair terms' }
+    );
+  }
+
+  const pressure = (report.pressure && report.pressure.score) || 0;
+  chips.push(
+    pressure >= 60
+      ? { cls: 'bad',  text: '[!] aggressive pressure' }
+      : pressure > 0
+      ? { cls: 'warn', text: '[!] mild pressure' }
+      : { cls: 'ok',   text: '✓ no pressure' }
+  );
+
+  // Option B: always show every chip — predictable layout, and the green
+  // ✓s are themselves an affirmation that "this was checked, it's clean."
+  // No collapse to "all clear" — the user learns the row shape once.
+  $('footer-chips').innerHTML = chips
+    .map((c) => `<span class="${c.cls}">${c.text}</span>`)
+    .join('<span class="chip-sep">·</span>');
+}
+
+// --- Scoper card ----------------------------------------------------------
+
+function etld1FromHost(host) {
+  if (!host) return null;
+  const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  const labels = cleaned.toLowerCase().split('.').filter(Boolean);
+  if (labels.length < 2) return null;
+  return labels.slice(-2).join('.');
+}
+
+function relativeTime(ms) {
+  const diff = Math.max(0, Date.now() - ms);
+  if (diff < 60_000) return 'just now';
+  if (diff < 3_600_000) return Math.floor(diff / 60_000) + 'm ago';
+  if (diff < 86_400_000) return Math.floor(diff / 3_600_000) + 'h ago';
+  return Math.floor(diff / 86_400_000) + 'd ago';
+}
+
+let currentEtld1 = null;
+
+function renderScoper(report) {
+  chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
+    const trust = (state && state.cookieScopeTrust) || {};
+    const stats = (state && state.cookieScopeCounters) || null;
+    const etld1 = etld1FromHost(report.site);
+    currentEtld1 = etld1;
+    renderScoperCard(etld1, trust, stats);
+    renderScoperCounters(stats);
+  });
+  wireScoperButtons();
+}
+
+function renderScoperCard(etld1, trust, stats) {
+  const siteEl = $('scoper-site');
+  const impactEl = $('scoper-impact');
+  const trustBtn = $('trust-toggle');
+
+  impactEl.classList.remove('unwired');
+
+  if (!etld1) {
+    siteEl.textContent = '—';
+    impactEl.textContent = 'not a regular site — scoper inactive here';
+    impactEl.classList.add('warn');
+    trustBtn.disabled = true;
+    $('sweep-now').disabled = false;
+    return;
+  }
+
+  const trustEntry = trust[etld1];
+  const isTrusted = !!trustEntry;
+  const capDays = isTrusted ? trustEntry.capDays : 7;
+
+  siteEl.innerHTML =
+    `<span class="host">${escapeText(etld1)}</span> ` +
+    `<span class="cap${isTrusted ? ' trusted' : ''}">· ${isTrusted ? 'trusted · ' + capDays + 'd cap' : capDays + ' day cap'}</span>`;
+
+  if (isTrusted) {
+    trustBtn.textContent = '[ remove trust ]';
+    trustBtn.disabled = false;
+  } else {
+    trustBtn.textContent = '[ trust 30d ]';
+    trustBtn.disabled = false;
+  }
+  $('sweep-now').disabled = false;
+
+  renderScoperImpact(etld1, capDays, isTrusted, stats);
+}
+
+function renderScoperImpact(etld1, capDays, isTrusted, stats) {
+  const el = $('scoper-impact');
+  chrome.cookies.getAll({ domain: etld1 }, (cs) => {
+    const nowSec = Date.now() / 1000;
+    let maxSec = 0;
+    for (const c of cs || []) {
+      if (c.session || !c.expirationDate) continue;
+      const r = c.expirationDate - nowSec;
+      if (r > maxSec) maxSec = r;
+    }
+    const maxDays = Math.round(maxSec / 86400);
+    const bySite = (stats && stats.bySite && stats.bySite[etld1]) || null;
+    const rewrites = bySite ? bySite.tightened : 0;
+    const demotions = bySite ? bySite.demotions : 0;
+
+    el.classList.remove('ok', 'warn');
+    if (isTrusted && rewrites === 0) {
+      el.textContent = 'cookies passing through · 0 tightened';
+      el.classList.add('ok');
+    } else if (!isTrusted && rewrites === 0 && maxDays <= capDays) {
+      el.textContent = 'all cookies within cap ✓';
+      el.classList.add('ok');
+    } else if (rewrites === 0 && maxDays > capDays) {
+      el.textContent = `longest cookie ${maxDays}d → will trim to ${capDays}d`;
+      el.classList.add('warn');
+    } else {
+      el.textContent =
+        `longest ${maxDays}d → ${capDays}d · ${rewrites} tightened` +
+        (demotions > 0 ? `, ${demotions} killed` : '');
+    }
+  });
+}
+
+function renderScoperCounters(stats) {
+  const r = (stats && stats.tightened) || 0;
+  const d = (stats && stats.demotions) || 0;
+  const last = stats && stats.lastSweep ? `last sweep ${relativeTime(stats.lastSweep)}` : 'never swept';
+  $('scoper-counters').textContent = `${r.toLocaleString()} tightened · ${d.toLocaleString()} killed · ${last}`;
+}
+
+function wireScoperButtons() {
+  const sweepBtn = $('sweep-now');
+  const trustBtn = $('trust-toggle');
+  const status = $('scoper-status');
+
+  sweepBtn.onclick = () => {
+    sweepBtn.disabled = true;
+    sweepBtn.textContent = '[ sweeping… ]';
+    status.className = '';
+    status.textContent = '';
+    chrome.runtime.sendMessage({ type: 'scoper:sweep-now' }, (resp) => {
+      sweepBtn.disabled = false;
+      sweepBtn.textContent = '[ sweep now ]';
+      if (!resp || resp.error) {
+        status.className = 'warn';
+        status.textContent = resp && resp.error ? 'error: ' + resp.error : 'no response';
+      } else if (resp.gated) {
+        status.className = 'gated';
+        status.textContent = `gated — only ${resp.anchorSize} sites known (need ≥10)`;
+      } else {
+        status.className = 'ok';
+        status.textContent =
+          `scanned ${resp.scanned} · rewrote ${resp.rewrites} · demoted ${resp.demotions}` +
+          (resp.failures ? ` · ${resp.failures} failed` : '');
+      }
+      chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
+        const trust = (state && state.cookieScopeTrust) || {};
+        const stats = (state && state.cookieScopeCounters) || null;
+        renderScoperCard(currentEtld1, trust, stats);
+        renderScoperCounters(stats);
+      });
+    });
+  };
+
+  trustBtn.onclick = () => {
+    if (!currentEtld1) return;
+    chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
+      const trust = (state && state.cookieScopeTrust) || {};
+      const isTrusted = !!trust[currentEtld1];
+      const cap = isTrusted ? 0 : 30;
+      chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: currentEtld1, cap }, () => {
+        chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (s2) => {
+          renderScoperCard(currentEtld1, (s2 && s2.cookieScopeTrust) || {}, (s2 && s2.cookieScopeCounters) || null);
+          renderScoperCounters((s2 && s2.cookieScopeCounters) || null);
+        });
+      });
+    });
+  };
+}
+
+// --- Dashboard open -------------------------------------------------------
+
+function wireDashboardButton() {
+  $('full-report').addEventListener('click', (e) => {
     e.preventDefault();
     chrome.tabs.query({ active: true, currentWindow: true }, (activeTabs) => {
       const tabId = activeTabs[0] ? activeTabs[0].id : '';
       const reportUrl = chrome.runtime.getURL('report.html') + '#' + tabId;
-
-      // Ask background for existing dashboard tab ID
       chrome.runtime.sendMessage({ type: 'openDashboard', url: reportUrl }, (res) => {
         if (res && res.existingTabId) {
-          chrome.tabs.update(res.existingTabId, { url: reportUrl, active: true });
+          // Race: the dashboard tab may have been closed between the
+          // background check and this call. Fall back to a fresh tab if
+          // the update rejects.
+          chrome.tabs.update(res.existingTabId, { url: reportUrl, active: true })
+            .catch(() => chrome.tabs.create({ url: reportUrl }));
         } else {
           chrome.tabs.create({ url: reportUrl });
         }
@@ -70,200 +349,10 @@ function render(report) {
   });
 }
 
-// --- Section builders ---
+// --- utils ----------------------------------------------------------------
 
-function makeSection(iconSrc, label, value, valueClass, detailHTML) {
-  const div = document.createElement('div');
-  div.className = 'section';
-  div.innerHTML = `
-    <div class="section-header">
-      <img class="section-icon" src="${iconSrc}" alt="">
-      <span class="section-label">${label}</span>
-      <span class="section-value ${valueClass}">${value}</span>
-    </div>
-    <div class="section-detail">${detailHTML}</div>
-  `;
-  return div;
-}
-
-function cookiesSection(c, siteDomain) {
-  const snoops = c.snoops || 0;
-  const embeds = c.embeds || 0;
-  const val = `${c.total}`;
-  const cls = snoops > 5 ? 'val-bad'
-            : snoops > 0 || embeds > 10 ? 'val-warn'
-            : 'val-clean';
-
-  const parts = [];
-  if (snoops > 0) {
-    const vendors = (c.snoopVendors || [])
-      .map(v => v.name)
-      .filter(n => !siteDomain || !siteDomain.includes(n.toLowerCase()))
-      .slice(0, 3);
-    const noun = snoops === 1 ? 'snoop' : 'snoops';
-    parts.push(vendors.length ? `${snoops} ${noun} · ${vendors.join(', ')}` : `${snoops} ${noun}`);
-  }
-  if (snoops === 0 && c.thirdParty > 0) {
-    parts.push(`${c.firstParty} from this site · ${c.thirdParty} from outside`);
-  } else if (snoops === 0) {
-    parts.push('All from this site');
-  } else if (embeds > 0) {
-    parts.push(`${embeds} from outside`);
-  }
-  if (c.longestDays > 0) {
-    parts.push(`last ${c.longestDays > 365 ? Math.round(c.longestDays / 365) + ' year(s)' : c.longestDays + ' days'}`);
-  }
-  return makeSection('icons/cooked.png', 'Cookies', val, cls, parts.join(' · '));
-}
-
-function networkSection(n) {
-  if (!n) return makeSection('icons/baked.png', 'Network', '0', 'val-clean', 'No network data yet');
-  const val = n.trackerDomains > 0 ? `${n.trackerDomains}` : '0';
-  const cls = n.trackerDomains > 10 ? 'val-bad' : n.trackerDomains > 0 ? 'val-warn' : 'val-clean';
-  let detail = `${n.totalRequests} requests · reaches ${n.thirdPartyDomains} outside service${n.thirdPartyDomains !== 1 ? 's' : ''}`;
-  return makeSection('icons/baked.png', 'Network', val + ' trackers', cls, detail);
-}
-
-function trackersSection(t) {
-  const companies = t.companies || [];
-  const names = [...new Set(companies.map(c => c.name))];
-  const val = names.length > 0 ? `${names.length}` : 'None';
-  const cls = t.total > 10 ? 'val-bad' : t.total > 0 ? 'val-warn' : 'val-clean';
-
-  let detail = '';
-  if (names.length > 0) {
-    detail = names.slice(0, 4).map(n => escHtml(n)).join(' · ');
-    if (names.length > 4) detail += ` +${names.length - 4} more`;
-  } else {
-    detail = 'No hidden trackers found';
-  }
-  if (t.thirdPartyScripts > 0) {
-    detail += `<br><span class="highlight">${t.thirdPartyScripts} outside scripts loaded</span>`;
-  }
-
-  return makeSection('icons/cooked.png', 'Trackers', val, cls, detail);
-}
-
-function profilingSection(fp) {
-  const val = fp.techniques > 0 ? 'Active' : 'None';
-  const cls = fp.techniques >= 3 ? 'val-bad' : fp.techniques > 0 ? 'val-warn' : 'val-clean';
-
-  let detail = '';
-  if (fp.techniques > 0) {
-    const names = fp.methods.map(m => m.technique);
-    detail = `Reading your ${names.join(', ')} to build a device ID`;
-  } else {
-    detail = 'Not fingerprinting your device ✓';
-  }
-
-  return makeSection('icons/watched.png', 'Profiling', val, cls, detail);
-}
-
-function pressureSection(p) {
-  const val = p.score > 0 ? `${p.score}/100` : 'None';
-  const cls = p.score >= 60 ? 'val-bad' : p.score > 0 ? 'val-warn' : 'val-clean';
-
-  let detail = '';
-  if (p.tactics.length > 0) {
-    detail = p.tactics.map(t => {
-      let html = escHtml(t.tactic);
-      if (t.evidence.length) {
-        html += `<span class="evidence">"${escHtml(t.evidence[0])}"</span>`;
-      }
-      return html;
-    }).join('<br>');
-  } else {
-    detail = 'No tricks to rush or guilt you ✓';
-  }
-
-  return makeSection('icons/played.png', 'Pressure', val, cls, detail);
-}
-
-function sellingDataSection(n) {
-  if (!n) return makeSection('icons/baked.png', 'Selling data', 'None', 'val-clean', 'No data brokers detected');
-  const val = n.brokerCount > 0 ? `${n.brokerCount}` : 'None';
-  const cls = n.brokerCount > 5 ? 'val-bad' : n.brokerCount > 0 ? 'val-warn' : 'val-clean';
-  const detail = n.brokerCount > 0 ? `${n.brokerCount} data broker${n.brokerCount !== 1 ? 's' : ''} found in network traffic` : 'No data brokers detected';
-  return makeSection('icons/baked.png', 'Selling data', val, cls, detail);
-}
-
-function tosSection(tos) {
-  if (!tos || tos.loading) {
-    return makeSection('icons/tosed.png', 'Terms', '...', 'val-neutral', "Couldn't analyze — try visiting their privacy policy page directly, then come back here.");
-  }
-  if (!tos.found) {
-    return makeSection('icons/tosed.png', 'Terms', '???', 'val-neutral', "Couldn't find their terms page");
-  }
-
-  const val = `${tos.score}/100`;
-  const cls = tos.score >= 60 ? 'val-bad' : tos.score >= 30 ? 'val-warn' : 'val-clean';
-
-  let detail = '';
-  if (tos.flagged.length > 0) {
-    detail = tos.flagged.map(f => escHtml(f.label)).join(' · ');
-  } else {
-    detail = 'Terms look reasonable ✓';
-  }
-
-  return makeSection('icons/tosed.png', 'Terms', val, cls, detail);
-}
-
-function localDataSection(ld) {
-  const val = ld.suspicious > 0 ? `${ld.suspicious}` : ld.totalKeys > 0 ? `${ld.totalKeys}` : 'None';
-  const cls = ld.suspicious > 5 ? 'val-bad' : ld.suspicious > 0 ? 'val-warn' : 'val-clean';
-
-  let detail = '';
-  if (ld.suspicious > 0) {
-    const cats = ld.byCategory || {};
-    const catNames = Object.keys(cats).filter(c => cats[c]?.length > 0);
-    if (catNames.length) {
-      detail = catNames.map(c => escHtml(c)).join(' · ');
-    } else {
-      detail = `${ld.suspicious} tracking IDs found`;
-    }
-  } else if (ld.totalKeys > 0) {
-    detail = `${ld.totalKeys} items, nothing suspicious ✓`;
-  } else {
-    detail = 'Nothing stored ✓';
-  }
-
-  return makeSection('icons/leaking.png', 'Stored data', val, cls, detail);
-}
-
-function linkTrackingSection(lt) {
-  const val = lt.percentage > 0 ? `${lt.percentage}%` : 'None';
-  const cls = lt.percentage > 50 ? 'val-bad' : lt.percentage > 0 ? 'val-warn' : 'val-clean';
-
-  let detail = '';
-  if (lt.tracked > 0) {
-    detail = `${lt.tracked} of ${lt.total} links tag your clicks`;
-    if (lt.redirectWrappers > 0) detail += ` · ${lt.redirectWrappers} redirect wrapper${lt.redirectWrappers > 1 ? 's' : ''}`;
-  } else {
-    detail = lt.total > 0 ? 'Links are clean ✓' : 'No links found';
-  }
-
-  return makeSection('icons/linked.png', 'Clicks', val, cls, detail);
-}
-
-function formsSection(f) {
-  if (!f || f.fieldCount === 0) {
-    return makeSection('icons/silent.png', 'Watching', 'None', 'val-clean', 'No form fields on this page');
-  }
-
-  const watching = f.trackersWhileTyping || 0;
-  const val = watching > 0 ? `${watching}` : 'Clean';
-  const cls = watching > 3 ? 'val-bad' : watching > 0 ? 'val-warn' : 'val-clean';
-
-  let detail = `${f.fieldCount} field${f.fieldCount > 1 ? 's' : ''} on this page`;
-  if (watching > 0 && f.trackerNames.length > 0) {
-    detail += `. ${f.trackerNames.map(n => escHtml(n)).join(', ')} active while you type`;
-  } else if (watching === 0) {
-    detail += ' · not being watched ✓';
-  }
-
-  return makeSection('icons/silent.png', 'Watching', val, cls, detail);
-}
-
-function escHtml(str) {
-  return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+function escapeText(s) {
+  return String(s).replace(/[&<>"']/g, (c) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
 }

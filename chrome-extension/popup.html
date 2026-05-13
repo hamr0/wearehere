@@ -5,27 +5,50 @@
   <link rel="stylesheet" href="popup.css">
 </head>
 <body>
-  <div id="loading">Scanning...</div>
-  <div id="report" style="display:none">
-    <!-- Header -->
-    <div id="header">
-      <img id="popup-icon" src="icons/icon48.png" alt="" width="22" height="22">
-      <div id="site-name"></div>
-      <div id="score-badge"></div>
+  <div id="loading">scanning...</div>
+
+  <div id="report" hidden>
+    <div id="brand">
+      <svg id="brand-icon" viewBox="12 25 104 78" height="20" aria-hidden="true">
+        <path d="M 28 30 L 16 30 L 16 98 L 28 98" stroke="currentColor" stroke-width="10" fill="none" stroke-linejoin="miter" stroke-linecap="butt"/>
+        <path d="M 100 30 L 112 30 L 112 98 L 100 98" stroke="currentColor" stroke-width="10" fill="none" stroke-linejoin="miter" stroke-linecap="butt"/>
+        <text x="64" y="64" font-size="58" font-weight="800" text-anchor="middle" dominant-baseline="central" letter-spacing="-2"
+              font-family="'JetBrains Mono','IBM Plex Mono',ui-monospace,Menlo,'Courier New',monospace"
+              fill="currentColor">we</text>
+      </svg><span id="brand-name">arehere</span>
     </div>
-    <div id="risk-bar"><div id="risk-fill"></div></div>
-    <div id="summary"></div>
+    <header id="head">
+      <span id="site"></span>
+      <span id="score"></span>
+    </header>
+    <div id="verdict"></div>
 
-    <div class="divider"></div>
+    <section id="watchers-block">
+      <div class="block-title">who's watching</div>
+      <div id="watchers"></div>
+      <div id="chips"></div>
+    </section>
 
-    <!-- Sections -->
-    <div id="sections"></div>
+    <div id="footer-chips"></div>
 
+    <section id="scoper-card">
+      <div class="block-title">cookie scoper</div>
+      <div id="scoper-site"></div>
+      <div id="scoper-impact"></div>
+      <div id="scoper-actions">
+        <button class="btn btn-primary" id="sweep-now">[ sweep now ]</button>
+        <button class="btn" id="trust-toggle">[ trust 30d ]</button>
+      </div>
+      <div id="scoper-status"></div>
+      <div id="scoper-counters"></div>
+    </section>
+
+    <button id="full-report">[ open full dashboard ]</button>
   </div>
 
-  <div id="empty" style="display:none">
-    <div class="empty-title">No data yet</div>
-    <div class="empty-sub">Navigate to a website to scan it.</div>
+  <div id="empty" hidden>
+    <div class="empty-title">no data yet</div>
+    <div class="empty-sub">navigate to a website to scan it.</div>
   </div>
 
   <script src="popup.js"></script>
