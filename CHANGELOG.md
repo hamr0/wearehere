@@ -37,6 +37,8 @@ First active-intervention release. v3.x detected; v4.0.0 detects **and acts back
 - `popup.{html,css,js}` — 3-block layout + brand lockup + scoper card live; new color tokens for Tokyo Night.
 - `report.{html,css,js}` — Overview / Watchers / Cookie-scoper tabs only; brand lockup; theme button; mechanism words column; what-changed event log; cookies-in-your-browser coverage block.
 - `icon{16,48,128}.png` — re-rendered from filled-rectangle bracket art; 16px hand-tuned for pixel-aligned brackets.
+- **First-run onboarding modal** — single-pane overlay shown once when the dashboard opens; explains score / watchers / scoper in plain language. Dismiss via `[ got it ]` or Esc, persisted as `dashboardOnboarded: true` in `chrome.storage.local`.
+- **Overview impact line** — green-bordered callout under the most-watched line summarising the scoper's work in the active window: *"this week: wearehere shortened N cookies and demoted M trackers to session-only so they can't recognise you tomorrow."* Hidden when both counts are zero. Backed by a new `impact:get-window` handler that sums `cookieScopeHistory` entries inside the window.
 
 ### Fixed
 
@@ -44,11 +46,18 @@ First active-intervention release. v3.x detected; v4.0.0 detects **and acts back
 - **bgFetch SSRF gate** — `bgFetch` accepted arbitrary URLs from content-script messages; now rejects non-http(s), localhost, `.local` / `.internal`, IPv4 private ranges (10/8, 172.16/12, 192.168/16, 127/8, 169.254/16, 0/8, multicast, CGNAT), all IPv6 literals, and oversize URLs. Applied to both the entry URL and meta-refresh redirects.
 - **Verbose detect-tosed logs** gated behind `DEBUG = false` — 8 per-page diagnostics no longer noise the service-worker console on every navigation.
 - **16px icon stretched horizontally** — was being written 16×12 due to a non-square per-size SVG viewBox, then stretched by Chrome's toolbar slot. Re-rendered from a pixel-aligned 16×16 SVG.
+- **Pre-Firefox-mirror code review pass** — fixed dead `gated/anchorSize` UI branch, swapped `tabs.onRemoved` ordering so `markTabRemoved` runs before `snapshotAndEvict`, serialized `visitHistory` + trust-list writes against read-modify-write clobber, switched `bgFetch` to `redirect: 'manual'` with per-hop `isSafeBgFetchUrl` re-check (new `safeBgFetch` helper, max 5 hops), wired `report.js:init` to send `registerDashboard` so the single-tab reuse actually works, switched `fetchCookies` first/third-party partition from substring includes to eTLD+1 compare, lowercased `watcherMech` keys in snapshot rollup so case variants dedup correctly, dropped unused `activeTab` permission, escaped `${overviewWindow}` placeholder for defense-in-depth, and corrected the dashboard "kill on close" copy to "demoted to session" to match what the code actually does.
+- **Onboarding dismiss** — `[hidden]` attribute was being overridden by `.onboarding { display: flex }` author rule. Added `.onboarding[hidden] { display: none }` (higher specificity via class + attribute selector) so `overlay.hidden = true` now hides the modal as expected.
 
 ### Removed
 
 - `chrome-extension/graph.js` (1309 lines) — Network Map force-directed graph view, retired with the Network Map tab.
 - 8 retired-tab icons: `baked.png`, `cooked.png`, `played.png`, `linked.png`, `silent.png`, `tosed.png`, `watched.png`, `leaking.png` — none of these tabs ship in v4.x.
+- `activeTab` permission — declared but unused; host coverage via `<all_urls>` already includes everything `activeTab` would have granted.
+
+### Design decisions locked
+
+- **No active request blocking.** wearehere does not implement `declarativeNetRequest` / `webRequest` block rules. uBlock Origin already covers that surface with serious filter-rule maintenance; wearehere stays on the observer + light-intervention side (cookie scoping + dashboard transparency). Use the two together.
 
 ### Deferred (logged in PRD.md)
 

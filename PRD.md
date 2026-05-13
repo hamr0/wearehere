@@ -621,7 +621,12 @@ Small line chart, current window vs. prior. Y-axis is wearehere score (lower = b
 
 ## v4.x — deferred polish (audited 2026-05-13)
 
-After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage), these items remain unimplemented. None block the current user story; each is small, low-priority UX polish or scope explicitly punted for Firefox parity.
+After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage + Phase 6 cleanup + code-review hardening + onboarding + impact line), these items remain unimplemented. None block the current user story; each is small, low-priority UX polish or scope explicitly punted for Firefox parity.
+
+### Shipped post-Phase-5 (closing user-feedback gaps surfaced 2026-05-13)
+
+- **First-run onboarding modal** — single-pane dashboard overlay, shown once per install, three-line explanation of score / watchers / scoper. Persisted via `dashboardOnboarded: true` in `chrome.storage.local`. Esc or `[ got it ]` dismisses.
+- **Overview impact line** — green-bordered callout on Overview rendering the scoper's windowed work in plain language: *"this week: wearehere shortened N cookies and demoted M trackers to session-only so they can't recognise you tomorrow."* Hidden when both counts are zero.
 
 ### Deviations from PRD that are deliberate, not deferred
 
@@ -641,7 +646,7 @@ After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage), these it
 ### Scope explicitly punted
 
 - **Phase 7 — Firefox mirror.** `firefox-extension/` is currently labeled v4.0.0 but the actual code is still on the v3.x feature set (manifest_version 2, no `alarms`/`storage` permissions, missing `visits.js`, `snapshots.js`, `scoper/`, no v4 popup/dashboard rewrite). The version label is misleading until the port lands. This is the only **blocking** gap for AMO re-submission.
-- **Integration smoke test** — the 8-step end-to-end dogfood path in `PLAN.md` is still manual. Per AGENT_RULES, tests come after design stabilizes; v4.0.0 design is now stable, so this is the earliest reasonable point to write regression tests. Not blocking, but the longer it slides the more behavior locks in untested.
+- **8-step manual smoke test** — the integration path in `PLAN.md` / `test/SMOKE.md` is still a human-in-the-loop checklist. The unit suite (`npm test`, 18/18 passing) covers the data pipeline; the UI-surface smoke can't be automated without a Chrome harness.
 
 ### Non-goal — no active request blocking (decided 2026-05-13)
 
