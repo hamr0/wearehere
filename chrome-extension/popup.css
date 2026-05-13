@@ -3,16 +3,20 @@
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
+/* Dark = Tokyo Night (Night variant). Light = warm parchment.
+   --brand is the [we] amber; lives independently of --fg-bright so the
+   logo stays warm even on the cool TN palette. */
 :root {
-  --bg: #0d0c08;
-  --fg: #e6c478;
-  --fg-bright: #ffd680;
-  --fg-mute: #8a7a4a;
-  --fg-faint: #5a4e30;
-  --line: #3d3520;
-  --warn: #ff6b3d;
-  --ok: #6ec96e;
-  --bad: #ff4444;
+  --bg: #1a1b26;
+  --fg: #c0caf5;
+  --fg-bright: #ffffff;
+  --fg-mute: #9aa5ce;
+  --fg-faint: #565f89;
+  --line: #292e42;
+  --warn: #ff9e64;
+  --ok: #9ece6a;
+  --bad: #f7768e;
+  --brand: #e0af68;
 }
 
 @media (prefers-color-scheme: light) {
@@ -26,6 +30,7 @@
     --warn: #b53f1c;
     --ok: #2f6b3a;
     --bad: #a51919;
+    --brand: #8a6912;
   }
 }
 
@@ -41,18 +46,20 @@ html[data-theme="light"] {
   --warn: #b53f1c;
   --ok: #2f6b3a;
   --bad: #a51919;
+  --brand: #8a6912;
 }
 
 html[data-theme="dark"] {
-  --bg: #0d0c08;
-  --fg: #e6c478;
-  --fg-bright: #ffd680;
-  --fg-mute: #8a7a4a;
-  --fg-faint: #5a4e30;
-  --line: #3d3520;
-  --warn: #ff6b3d;
-  --ok: #6ec96e;
-  --bad: #ff4444;
+  --bg: #1a1b26;
+  --fg: #c0caf5;
+  --fg-bright: #ffffff;
+  --fg-mute: #9aa5ce;
+  --fg-faint: #565f89;
+  --line: #292e42;
+  --warn: #ff9e64;
+  --ok: #9ece6a;
+  --bad: #f7768e;
+  --brand: #e0af68;
 }
 
 body {
@@ -95,7 +102,7 @@ body {
   letter-spacing: 0.02em;
   margin-bottom: 8px;
 }
-#brand-icon { color: var(--fg-bright); display: block; }
+#brand-icon { color: var(--brand); display: block; }
 #brand-name { text-transform: lowercase; line-height: 1; }
 
 #head {
