@@ -222,12 +222,20 @@ function renderOverview() {
 
 function renderWindowSelector(id, active, onChange) {
   const el = $(id);
-  el.innerHTML = `<span class="lbl">window:</span>` + WINDOW_OPTIONS
-    .map((w) => `<span class="opt${w === active ? ' active' : ''}" data-w="${w}">${w === 'all' ? 'all time' : w}</span>`)
-    .join('');
-  el.querySelectorAll('.opt').forEach((opt) => {
-    opt.onclick = () => onChange(opt.dataset.w);
-  });
+  const draw = (cur) => {
+    el.innerHTML = `<span class="lbl">window:</span>` + WINDOW_OPTIONS
+      .map((w) => `<span class="opt${w === cur ? ' active' : ''}" data-w="${w}">${w === 'all' ? 'all time' : w}</span>`)
+      .join('');
+    el.querySelectorAll('.opt').forEach((opt) => {
+      opt.onclick = () => {
+        const w = opt.dataset.w;
+        if (w === cur) return;
+        draw(w);
+        onChange(w);
+      };
+    });
+  };
+  draw(active);
 }
 
 function loadOverview() {

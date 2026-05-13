@@ -1245,9 +1245,11 @@ function snapshotAndEvict(tabId) {
     self.visitsAppend(report)
       .then(() => {
         console.log('[visits] persisted', report.site);
-        // Recompute snapshots if the cache is stale (>5min). Dashboard
-        // reads from windowSnapshots and re-renders on its storage change.
-        return self.snapshotsRecomputeIfStale();
+        // Force recompute on every append. The stale gate was hiding
+        // visits 2..N inside a 5-min burst (closing several tabs) — the
+        // dashboard's storage listener only fires when windowSnapshots
+        // actually changes, so the hero counts stayed stuck.
+        return self.snapshotsRecompute();
       })
       .catch((e) => console.warn('[visits] persist failed', e));
   };
