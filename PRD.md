@@ -616,3 +616,34 @@ Small line chart, current window vs. prior. Y-axis is wearehere score (lower = b
 - Hero stats (visits, avg score, watchers spotted, most exposed) — implementable today, all derivable from existing per-tab attribution + visit history.
 - What-changed event log — requires a snapshot of prior-window state to diff against. Modest storage work, no new permissions.
 - Score trend — requires per-day or per-visit score logging. Ship after the other two blocks if storage isn't already shaped for it.
+
+---
+
+## v4.x — deferred polish (audited 2026-05-13)
+
+After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage), these items remain unimplemented. None block the current user story; each is small, low-priority UX polish or scope explicitly punted for Firefox parity.
+
+### Deviations from PRD that are deliberate, not deferred
+
+- **"All clear" chip collapse** when all three footer chips are ✓. Opted out in `popup.js:163-165` ("Option B: always show every chip — predictable layout, ✓s are themselves affirmation"). The user learns the row shape once and reads it consistently. **Keep as-is.**
+- **Score trend per-day bucketing via separate `scoreHistory` storage key.** Shipped version uses per-visit dots from `visitHistory` directly — same signal, no schema duplication. **Keep as-is.**
+
+### Polish — pick up when there's runway
+
+| Item | Severity | Where | Notes |
+|---|---|---|---|
+| Footer chip expand-on-click for ⚠ chips | low | `popup.js`, `popup.html` | PRD: "any ⚠ chip can expand on click into a full card with detail (escape hatch when the user wants the *why*)." Today chips are plain text. Add click handler that opens dashboard with the relevant tab/anchor. |
+| What-changed event log `[ Show all (N) ]` expander | low | `report.js:renderWhatChanged` | Currently caps at 20 entries with no expander. PRD spec: cap visible at 8, rest behind expander. |
+| What-changed ranking by **magnitude × visit-frequency** | low | `report.js:diffAggregates` | Today events are appended in detection order. PRD: rank by `magnitude × user-visit-frequency` so events on frequently-visited sites outrank one-off blips. Needs per-site visit-count from snapshot. |
+| Score trend prior-window comparison footer | low | `report.js:renderScoreTrend` | Footer shows "avg N · range X→Y" but not "avg this month vs last month". PRD spec: `average this month: 47 · last month: 51 · ↓ 4 (better)`. Needs a second snapshot read for the prior-window avg. |
+| Cookie scoper "Inspect all N cookies" expander | low | `report.js`, scoper tab | PRD spec: collapsed-by-default expander revealing the full per-cookie table (vendor · category · expiry · domain · scoper-action). Today the block ends after Top owners. |
+
+### Scope explicitly punted
+
+- **Phase 7 — Firefox mirror.** `firefox-extension/` is currently labeled v4.0.0 but the actual code is still on the v3.x feature set (manifest_version 2, no `alarms`/`storage` permissions, missing `visits.js`, `snapshots.js`, `scoper/`, no v4 popup/dashboard rewrite). The version label is misleading until the port lands. This is the only **blocking** gap for AMO re-submission.
+- **Integration smoke test** — the 8-step end-to-end dogfood path in `PLAN.md` is still manual. Per AGENT_RULES, tests come after design stabilizes; v4.0.0 design is now stable, so this is the earliest reasonable point to write regression tests. Not blocking, but the longer it slides the more behavior locks in untested.
+
+### Phase 6 cleanup — pending
+
+Audit + remove dead CSS classes, retired-tab images (`baked.png`, `cooked.png`, `played.png`, `linked.png`, `silent.png`, `tosed.png`, `watched.png`, `leaking.png`), and any manifest permissions no longer reachable from live code. Single contained commit. Pre-requisite before the Firefox mirror — porting dead code wastes effort.
+
