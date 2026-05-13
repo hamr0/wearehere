@@ -8,6 +8,9 @@ importScripts('tos-scanner.js');
 importScripts('network-domains.js');
 importScripts('cookie-database.js');
 importScripts('visits.js');
+// Window snapshots — rolled-up Overview aggregates. Loaded after visits.js
+// so it can read the visitHistory key the moment append fires.
+importScripts('snapshots.js');
 // Cookie scoper — loaded after cookie-database.js so classifyCookie is
 // available for tracker-demotion. Self-contained module: registers its
 // own alarm + onAlarm listener at load time.
@@ -658,7 +661,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === 'visits:clear') {
-    self.visitsClear().then(() => sendResponse({ ok: true }));
+    self.visitsClear()
+      .then(() => self.snapshotsRecompute())
+      .then(() => sendResponse({ ok: true }));
+    return true;
+  }
+
+  if (msg.type === 'snapshots:get') {
+    self.snapshotsGet().then((snap) => sendResponse(snap));
+    return true;
+  }
+
+  if (msg.type === 'snapshots:get-window') {
+    self.snapshotsGetWindow(msg.window).then((agg) => sendResponse(agg));
     return true;
   }
 
@@ -1168,7 +1183,12 @@ function snapshotAndEvict(tabId) {
     }
     console.log('[visits] snapshot tab', tabId, '·', report.site, '· score', report.verdict && report.verdict.score, '·', source);
     self.visitsAppend(report)
-      .then(() => console.log('[visits] persisted', report.site))
+      .then(() => {
+        console.log('[visits] persisted', report.site);
+        // Recompute snapshots if the cache is stale (>5min). Dashboard
+        // reads from windowSnapshots and re-renders on its storage change.
+        return self.snapshotsRecomputeIfStale();
+      })
       .catch((e) => console.warn('[visits] persist failed', e));
   };
 
@@ -1193,6 +1213,27 @@ function snapshotAndEvict(tabId) {
   });
   delete tabData[tabId];
 }
+
+// Hourly recompute keeps Overview aggregates fresh even when the user
+// isn't actively browsing — the dashboard's "today" cutoff slides every
+// hour, and stale snapshots would lag the visible Overview by up to a
+// day otherwise.
+const SNAPSHOT_PERIOD_MIN = 60;
+chrome.alarms.get(self.SNAPSHOT_ALARM, (existing) => {
+  if (!existing) {
+    chrome.alarms.create(self.SNAPSHOT_ALARM, {
+      delayInMinutes: 1,
+      periodInMinutes: SNAPSHOT_PERIOD_MIN,
+    });
+    console.log('[snapshots] alarm set · period=' + SNAPSHOT_PERIOD_MIN + 'min');
+  }
+});
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== self.SNAPSHOT_ALARM) return;
+  self.snapshotsRecompute()
+    .then(() => console.log('[snapshots] recomputed (alarm)'))
+    .catch((e) => console.warn('[snapshots] recompute failed', e));
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => { snapshotAndEvict(tabId); markTabRemoved(tabId); });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {

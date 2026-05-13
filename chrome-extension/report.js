@@ -71,16 +71,35 @@ function wireThemeSelect() {
 // Live-refresh overview + watchers cross-session blocks when a new visit
 // gets snapshotted (tab close, domain change). Same pattern as scoper.
 function watchVisitsStorage() {
+  // Overview + Watchers aggregates render from windowSnapshots now, which
+  // background recomputes hourly + post-append-when-stale. Listening on
+  // the snapshot key keeps re-renders to once-per-recompute instead of
+  // once-per-visit. visitHistory still drives renderRecentVisits + the
+  // score trend, but those listen separately below.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
+    // Snapshot-driven blocks (hero + what-changed + who-follows-you)
+    // re-render only when the snapshot key changes (~hourly + post-append
+    // when stale). visitHistory updates do not retrigger these.
+    if (changes[WINDOW_SNAPSHOTS_KEY]) {
+      loadOverviewAggregates();
+      loadWatchersAggregates();
+    }
+    // Per-visit detail (score trend dots, recent visits table) needs the
+    // raw history.
     if (changes[VISIT_HISTORY_STORAGE_KEY]) {
-      loadOverview();
-      loadCrossSiteWatchers();
+      refreshRawVisitConsumers();
     }
   });
 }
 
+function refreshRawVisitConsumers() {
+  loadOverviewRawVisits();
+  loadWatchersRawVisits();
+}
+
 const VISIT_HISTORY_STORAGE_KEY = 'visitHistory';
+const WINDOW_SNAPSHOTS_KEY = 'windowSnapshots';
 
 // Live-refresh the scoper tab whenever storage changes. Sweeps run from
 // the popup or the alarm write counters/history independently; the open
@@ -179,16 +198,26 @@ function renderWindowSelector(id, active, onChange) {
 }
 
 function loadOverview() {
-  chrome.runtime.sendMessage({ type: 'visits:get', window: overviewWindow }, (visits) => {
-    visits = Array.isArray(visits) ? visits : [];
-    renderOverviewHero(visits);
-    renderWhatChanged(visits);
-    renderScoreTrend(visits);
+  loadOverviewAggregates();
+  loadOverviewRawVisits();
+}
+
+function loadOverviewAggregates() {
+  chrome.runtime.sendMessage({ type: 'snapshots:get-window', window: overviewWindow }, (resp) => {
+    const { cur, prev } = resp || { cur: null, prev: null };
+    renderOverviewHero(cur);
+    renderWhatChanged(cur, prev);
   });
 }
 
-function renderOverviewHero(visits) {
-  if (visits.length === 0) {
+function loadOverviewRawVisits() {
+  chrome.runtime.sendMessage({ type: 'visits:get', window: overviewWindow }, (visits) => {
+    renderScoreTrend(Array.isArray(visits) ? visits : []);
+  });
+}
+
+function renderOverviewHero(snap) {
+  if (!snap || !snap.visitsN) {
     $('ov-sites').textContent = '0';
     $('ov-score').textContent = '—';
     $('ov-watchers').textContent = '0';
@@ -197,23 +226,18 @@ function renderOverviewHero(visits) {
     return;
   }
 
-  const sites = new Set(visits.map((v) => v.etld1).filter(Boolean));
-  const avg = Math.round(visits.reduce((s, v) => s + (v.score || 0), 0) / visits.length);
-  const allWatchers = new Set();
-  for (const v of visits) (v.watchers || []).forEach((w) => allWatchers.add(w.toLowerCase()));
-
-  // "Most exposed" = site with highest score (highest privacy risk)
-  const bySite = {};
-  for (const v of visits) {
-    const key = v.etld1 || '?';
-    if (!bySite[key] || v.score > bySite[key].score) bySite[key] = v;
-  }
-  const ranked = Object.values(bySite).sort((a, b) => (b.score || 0) - (a.score || 0));
+  // Most-exposed shifts from "site with highest single-visit score" to
+  // "site with highest average score across the window". Average is a
+  // truer read of consistent exposure; the previous max-score variant
+  // could be biased by a single outlier visit.
+  const ranked = Object.entries(snap.avgScoreBySite || {})
+    .map(([etld1, avg]) => ({ etld1, avg }))
+    .sort((a, b) => (b.avg || 0) - (a.avg || 0));
   const mostExposed = ranked[0];
 
-  $('ov-sites').textContent = sites.size.toLocaleString();
-  $('ov-score').textContent = avg;
-  $('ov-watchers').textContent = allWatchers.size.toLocaleString();
+  $('ov-sites').textContent = (snap.sites || []).length.toLocaleString();
+  $('ov-score').textContent = snap.avgScore;
+  $('ov-watchers').textContent = Object.keys(snap.watchers || {}).length.toLocaleString();
   $('ov-most-exposed').textContent = mostExposed ? mostExposed.etld1 : '—';
 
   const top3 = ranked.slice(0, 3).map((v) => v.etld1).filter(Boolean);
@@ -223,83 +247,54 @@ function renderOverviewHero(visits) {
 }
 
 // What-changed event log: diff this-window vs prior-window of equal
-// length. PRD lists 6 event types; we implement the four derivable
-// directly from visitHistory today. Cookie growth + sweep-impact entries
-// arrive once we persist per-site cookie counts on each visit.
-function renderWhatChanged(currentVisits) {
+// length. Aggregates come precomputed from windowSnapshots (background),
+// so this is now a pure transform: pair of Window objects → typed events.
+function renderWhatChanged(cur, prev) {
   const el = $('ov-changed');
 
-  const winMs = visitWindowMsClient(overviewWindow);
-  if (winMs == null) {
-    // 'all time' has no prior window to diff against.
+  if (overviewWindow === 'all') {
     el.innerHTML = `<div class="placeholder"><div>diffs need a bounded window — pick today / week / month.</div></div>`;
     return;
   }
+  if (!cur || !prev) {
+    el.innerHTML = `<div class="placeholder"><div>no snapshot yet — keep browsing and come back.</div></div>`;
+    return;
+  }
 
-  chrome.runtime.sendMessage({ type: 'visits:get', window: 'all' }, (all) => {
-    all = Array.isArray(all) ? all : [];
-    const now = Date.now();
-    const cutoff = now - winMs;
-    const priorCutoff = now - 2 * winMs;
-    const cur = all.filter((v) => v.at >= cutoff);
-    const prev = all.filter((v) => v.at >= priorCutoff && v.at < cutoff);
-
-    const events = diffWindows(cur, prev);
-    if (events.length === 0) {
-      el.innerHTML = `<div class="placeholder"><div>no notable changes vs the prior ${overviewWindow}.</div></div>`;
-      return;
-    }
-    el.innerHTML = events.slice(0, 20).map((e) => `
-      <div class="event">
-        <span class="event-icon ${e.cls}">${e.icon}</span>
-        <span class="event-kind">${escapeText(e.kind)}</span>
-        <span class="event-text">${e.text}</span>
-      </div>
-    `).join('');
-  });
+  const events = diffAggregates(cur, prev);
+  if (events.length === 0) {
+    el.innerHTML = `<div class="placeholder"><div>no notable changes vs the prior ${overviewWindow}.</div></div>`;
+    return;
+  }
+  el.innerHTML = events.slice(0, 20).map((e) => `
+    <div class="event">
+      <span class="event-icon ${e.cls}">${e.icon}</span>
+      <span class="event-kind">${escapeText(e.kind)}</span>
+      <span class="event-text">${e.text}</span>
+    </div>
+  `).join('');
 }
 
-function visitWindowMsClient(name) {
-  const DAY = 24 * 60 * 60 * 1000;
-  return name === 'today' ? DAY
-       : name === 'week'  ? 7 * DAY
-       : name === 'month' ? 30 * DAY
-       : null;
-}
-
-function diffWindows(cur, prev) {
+function diffAggregates(cur, prev) {
   const events = [];
 
-  const sitesCur  = new Set(cur.map((v) => v.etld1).filter(Boolean));
-  const sitesPrev = new Set(prev.map((v) => v.etld1).filter(Boolean));
-  for (const s of sitesCur) {
+  // --- new site · in cur, not in prev ---
+  const sitesPrev = new Set(prev.sites || []);
+  for (const s of (cur.sites || [])) {
     if (!sitesPrev.has(s)) events.push({ cls: 'warn', icon: '⊕', kind: 'new site', text: `first visit to <strong>${escapeText(s)}</strong>` });
   }
 
-  // Watcher reach (% of visits in window that include this watcher)
-  function reach(visits) {
-    const total = visits.length || 1;
-    const counts = {};
-    for (const v of visits) {
-      const seen = new Set();
-      for (const w of v.watchers || []) {
-        const k = w.toLowerCase();
-        if (seen.has(k)) continue;
-        seen.add(k);
-        counts[k] = (counts[k] || 0) + 1;
-      }
-    }
-    const reachPct = {};
-    for (const [k, n] of Object.entries(counts)) reachPct[k] = Math.round((n / total) * 100);
-    return reachPct;
-  }
-  const reachCur = reach(cur);
-  const reachPrev = reach(prev);
-  const all = new Set([...Object.keys(reachCur), ...Object.keys(reachPrev)]);
-  for (const w of all) {
+  // --- watcher reach changes (new / gone / grew / shrank) ---
+  const reachCur = cur.reachPct || {};
+  const reachPrev = prev.reachPct || {};
+  const watchersCur = cur.watchers || {};
+  const allW = new Set([...Object.keys(reachCur), ...Object.keys(reachPrev)]);
+  for (const w of allW) {
     const a = reachPrev[w] || 0;
     const b = reachCur[w] || 0;
-    if (a === 0 && b >= 1 && (cur.filter((v) => (v.watchers || []).some((x) => x.toLowerCase() === w)).length >= 2)) {
+    // "new watcher" requires ≥2 visits seeing it in cur, to suppress
+    // one-off noise. snap.watchers[w].hits == visits-seen for this watcher.
+    if (a === 0 && b >= 1 && (watchersCur[w] && watchersCur[w].hits >= 2)) {
       events.push({ cls: 'warn', icon: '↗', kind: 'new watcher', text: `<strong>${escapeText(w)}</strong> first seen this window` });
     } else if (b === 0 && a >= 1) {
       events.push({ cls: 'ok', icon: '↘', kind: 'watcher gone', text: `<strong>${escapeText(w)}</strong> not seen this window` });
@@ -310,19 +305,9 @@ function diffWindows(cur, prev) {
     }
   }
 
-  // Per-site avg score delta on sites visited in both windows.
-  function avgScoreBySite(visits) {
-    const sums = {}, counts = {};
-    for (const v of visits) {
-      if (!v.etld1) continue;
-      sums[v.etld1] = (sums[v.etld1] || 0) + (v.score || 0);
-      counts[v.etld1] = (counts[v.etld1] || 0) + 1;
-    }
-    const out = {};
-    for (const s of Object.keys(sums)) out[s] = Math.round(sums[s] / counts[s]);
-    return out;
-  }
-  const aCur = avgScoreBySite(cur), aPrev = avgScoreBySite(prev);
+  // --- per-site avg score deltas ---
+  const aCur = cur.avgScoreBySite || {};
+  const aPrev = prev.avgScoreBySite || {};
   for (const s of Object.keys(aCur)) {
     if (aPrev[s] != null) {
       const delta = aCur[s] - aPrev[s];
@@ -331,18 +316,9 @@ function diffWindows(cur, prev) {
     }
   }
 
-  // --- cookies grew · per-site raw cookie count delta (≥10) ---
-  // Use the most recent visit per site in each window — visits are
-  // already in newest-first order from getVisits().
-  function latestBySite(visits) {
-    const out = {};
-    for (const v of visits) {
-      if (!v.etld1 || out[v.etld1]) continue;
-      out[v.etld1] = v;
-    }
-    return out;
-  }
-  const latestCur = latestBySite(cur), latestPrev = latestBySite(prev);
+  // --- cookies grew/shrank · per-site third-party count delta (≥10) ---
+  const latestCur = cur.latestBySite || {};
+  const latestPrev = prev.latestBySite || {};
   for (const s of Object.keys(latestCur)) {
     const a = (latestPrev[s] && latestPrev[s].cookieCount) || 0;
     const b = latestCur[s].cookieCount || 0;
@@ -362,20 +338,12 @@ function diffWindows(cur, prev) {
     }
   }
 
-  // --- new broker · first appearance of a data broker on a site ---
-  // Mirror the new-watcher logic but on broker names. Require ≥2 hits
-  // in cur to suppress one-off noise from a single visit.
-  const brokerCur = {};
-  const brokerPrev = new Set();
-  for (const v of cur) for (const b of (v.brokers || [])) {
-    const k = b.toLowerCase();
-    if (!brokerCur[k]) brokerCur[k] = { name: b, hits: 0 };
-    brokerCur[k].hits++;
-  }
-  for (const v of prev) for (const b of (v.brokers || [])) brokerPrev.add(b.toLowerCase());
-  for (const k of Object.keys(brokerCur)) {
-    if (!brokerPrev.has(k) && brokerCur[k].hits >= 2) {
-      events.push({ cls: 'warn', icon: '⊕', kind: 'new broker', text: `<strong>${escapeText(brokerCur[k].name)}</strong> first seen this window` });
+  // --- new broker · ≥2 hits in cur, absent in prev ---
+  const brokersPrev = new Set(Object.keys(prev.brokers || {}));
+  for (const k of Object.keys(cur.brokers || {})) {
+    const b = cur.brokers[k];
+    if (!brokersPrev.has(k) && b.hits >= 2) {
+      events.push({ cls: 'warn', icon: '⊕', kind: 'new broker', text: `<strong>${escapeText(b.name)}</strong> first seen this window` });
     }
   }
 
@@ -609,68 +577,51 @@ function wireClearVisits() {
 }
 
 function loadCrossSiteWatchers() {
-  chrome.runtime.sendMessage({ type: 'visits:get', window: watchersWindow }, (visits) => {
-    visits = Array.isArray(visits) ? visits : [];
-    renderWatchersHero(visits);
-    renderWhoFollowsYou(visits);
-    renderRecentVisits(visits);
+  loadWatchersAggregates();
+  loadWatchersRawVisits();
+}
+
+function loadWatchersAggregates() {
+  chrome.runtime.sendMessage({ type: 'snapshots:get-window', window: watchersWindow }, (resp) => {
+    const { cur } = resp || { cur: null };
+    renderWatchersHero(cur);
+    renderWhoFollowsYou(cur);
   });
 }
 
-function renderWatchersHero(visits) {
-  const sites = new Set(visits.map((v) => v.etld1).filter(Boolean));
-
-  // "Hidden contacts" = sum of distinct watcher-firings across visits.
-  // Counted per-visit so heavy sites contribute proportionally.
-  let contacts = 0;
-  const unique = new Set();
-  for (const v of visits) {
-    const ws = v.watchers || [];
-    contacts += ws.length;
-    ws.forEach((w) => unique.add(w.toLowerCase()));
-  }
-
-  const amp = visits.length > 0 ? (contacts / visits.length).toFixed(1) : '—';
-
-  $('w-sites').textContent = sites.size.toLocaleString();
-  $('w-contacts').textContent = contacts.toLocaleString();
-  $('w-unique').textContent = unique.size.toLocaleString();
-  $('w-amp').textContent = visits.length > 0 ? `${amp}×` : '—';
+function loadWatchersRawVisits() {
+  chrome.runtime.sendMessage({ type: 'visits:get', window: watchersWindow }, (visits) => {
+    renderRecentVisits(Array.isArray(visits) ? visits : []);
+  });
 }
 
-function renderWhoFollowsYou(visits) {
+function renderWatchersHero(snap) {
+  if (!snap || !snap.visitsN) {
+    $('w-sites').textContent = '0';
+    $('w-contacts').textContent = '0';
+    $('w-unique').textContent = '0';
+    $('w-amp').textContent = '—';
+    return;
+  }
+  const unique = Object.keys(snap.watchers || {}).length;
+  const amp = (snap.contacts / snap.visitsN).toFixed(1);
+  $('w-sites').textContent = (snap.sites || []).length.toLocaleString();
+  $('w-contacts').textContent = snap.contacts.toLocaleString();
+  $('w-unique').textContent = unique.toLocaleString();
+  $('w-amp').textContent = `${amp}×`;
+}
+
+function renderWhoFollowsYou(snap) {
   const el = $('w-who');
-  if (visits.length === 0) {
+  if (!snap || !snap.visitsN) {
     el.innerHTML = `<div class="placeholder"><div>no visits yet — once you've browsed, this fills in.</div></div>`;
     return;
   }
 
-  // Aggregate per watcher: reach % and per-company mechanism counts.
-  // cookies + pixels + clicks + device-id are attributed per-company
-  // (via buildReport's trackerCompanies.viaCookies/viaPixels/viaClicks/
-  // viaDeviceId, serialized into visit.watcherMech). typing isn't
-  // attribution-able today and lives in the site-level summary below.
-  const byCompany = {};
-  for (const v of visits) {
-    const seen = new Set();
-    const wm = v.watcherMech || {};
-    for (const w of v.watchers || []) {
-      const k = w.toLowerCase();
-      if (seen.has(k)) continue;
-      seen.add(k);
-      if (!byCompany[k]) {
-        byCompany[k] = { name: w, hits: 0, mech: { cookies: 0, pixels: 0, clicks: 0, deviceId: 0 } };
-      }
-      byCompany[k].hits++;
-      const pc = wm[w] || {};
-      byCompany[k].mech.cookies  += pc.cookies  || 0;
-      byCompany[k].mech.pixels   += pc.pixels   || 0;
-      byCompany[k].mech.clicks   += pc.clicks   || 0;
-      byCompany[k].mech.deviceId += pc.deviceId || 0;
-    }
-  }
-  const ranked = Object.values(byCompany)
-    .map((c) => ({ ...c, pct: Math.round((c.hits / visits.length) * 100) }))
+  const watchers = snap.watchers || {};
+  const reach = snap.reachPct || {};
+  const ranked = Object.entries(watchers)
+    .map(([k, w]) => ({ ...w, pct: reach[k] || 0 }))
     .sort((a, b) => b.pct - a.pct)
     .slice(0, 12);
 
@@ -699,7 +650,7 @@ function renderWhoFollowsYou(visits) {
         <span class="reach-pct">${c.pct}%</span>
         <span class="bar" style="width:${Math.round((c.pct / maxPct) * 60)}%"></span>
         <span class="reach-name">${escapeText(c.name)}</span>
-        <span class="dim">seen on ${c.hits} of ${visits.length} visit${visits.length === 1 ? '' : 's'}</span>
+        <span class="dim">seen on ${c.hits} of ${snap.visitsN} visit${snap.visitsN === 1 ? '' : 's'}</span>
       </div>
       <div class="reach-mech"><span class="dim">via</span> ${escapeText(mechLine(c.mech))}</div>
     </div>
@@ -711,14 +662,9 @@ function renderWhoFollowsYou(visits) {
   // dropped — the site-level "typing" line is what's left to surface.
   const summary = $('w-who-summary');
   if (summary) {
-    let typing = 0;
-    let visitsWithSignal = 0;
-    for (const v of visits) {
-      const m = v.mechanisms || {};
-      if (m.typing) { typing += m.typing; visitsWithSignal++; }
-    }
-    summary.innerHTML = typing
-      ? `also: ${typing} form field${typing === 1 ? '' : 's'} exposed across ${visitsWithSignal} visit${visitsWithSignal === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
+    const { fields = 0, visits: vsig = 0 } = snap.typing || {};
+    summary.innerHTML = fields
+      ? `also: ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
       : '';
   }
 }
