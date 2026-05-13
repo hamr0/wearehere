@@ -752,14 +752,13 @@ function wireSiteSelectors() {
     });
   });
 
-  // Refresh the option list right before the user opens the dropdown,
-  // and again whenever the dashboard tab becomes visible. Cache the
-  // currently-selected value so the user's pick survives the refresh.
+  // Keep the option list fresh via lifecycle events only.
+  // mousedown/focus refresh races with the user's click: fetching
+  // getOpenTabs while the dropdown is open returns labels with newer
+  // watcher counts → innerHTML swap → dropdown closes mid-click →
+  // selection lost. chrome.tabs.{onCreated,onRemoved,onUpdated} below
+  // already cover all the cases the mousedown refresh was guarding.
   const refresh = () => populateSiteSelectors({ preserveSelection: true });
-  watcherSel.addEventListener('mousedown', refresh);
-  watcherSel.addEventListener('focus', refresh);
-  termsSel.addEventListener('mousedown', refresh);
-  termsSel.addEventListener('focus', refresh);
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible') refresh();
   });
@@ -768,7 +767,12 @@ function wireSiteSelectors() {
   // is in the foreground — every chrome.tabs lifecycle event in the
   // background SW triggers a tabData mutation we'd want reflected.
   chrome.tabs.onCreated.addListener(() => refresh());
-  chrome.tabs.onRemoved.addListener(() => refresh());
+  chrome.tabs.onRemoved.addListener((closedId) => {
+    // Drop the cached report so we don't keep showing data from a tab
+    // the user closed if their selection lands back on it later.
+    tabReportCache.delete(closedId);
+    refresh();
+  });
   chrome.tabs.onUpdated.addListener((_id, info) => {
     if (info.url || info.status === 'complete') refresh();
   });
@@ -780,12 +784,6 @@ function populateSiteSelectors(opts) {
     const watcherSel = $('watcher-site-sel');
     const termsSel = $('terms-site-sel');
     const preserve = opts && opts.preserveSelection;
-    // Each selector tracks its OWN selection. Reading watcherSel.value
-    // for both clobbered termsSel back to the watcher pick on every
-    // refresh (focus/mousedown/tab churn), which made the terms dropdown
-    // look broken — the user's pick was overwritten on the next refresh.
-    const watcherVal = preserve && watcherSel.value ? watcherSel.value : String(tabId);
-    const termsVal = preserve && termsSel.value ? termsSel.value : String(tabId);
 
     const labelFor = (t) => {
       if (!t.hasReport) return `${t.domain} · (no scan)`;
@@ -795,6 +793,23 @@ function populateSiteSelectors(opts) {
       return t.domain;
     };
     const sorted = tabs.filter((t) => t.domain).sort((a, b) => a.domain.localeCompare(b.domain));
+    const availableIds = new Set(sorted.map((t) => String(t.id)));
+    // If the previously-selected tab disappeared (closed or navigated
+    // away), fall back to the dashboard's source tab when it's still
+    // open, else the first available. Otherwise the dropdown would
+    // render blank — the value would be a tabId no <option> matches.
+    const fallback = availableIds.has(String(tabId))
+      ? String(tabId)
+      : (sorted[0] ? String(sorted[0].id) : '');
+    const resolveVal = (current) => (preserve && current && availableIds.has(current))
+      ? current
+      : fallback;
+
+    const watcherPrev = watcherSel.value;
+    const termsPrev = termsSel.value;
+    const watcherVal = resolveVal(watcherPrev);
+    const termsVal = resolveVal(termsPrev);
+
     const buildOptions = (selVal) => sorted
       .map((t) => `<option value="${t.id}"${String(t.id) === selVal ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
       .join('');
@@ -813,6 +828,18 @@ function populateSiteSelectors(opts) {
     if (termsSel.innerHTML !== termsOptions) {
       termsSel.innerHTML = termsOptions;
       termsSel.value = termsVal;
+    }
+
+    // If the user's selection was forcibly moved (their tab closed),
+    // re-render the detail block so we don't keep showing stale data
+    // from the closed tab. Synthetic `change` is the existing handler
+    // path — keeps fetchTabReport + cache + no-data fallback in one
+    // place.
+    if (watcherPrev && watcherPrev !== watcherVal) {
+      watcherSel.dispatchEvent(new Event('change'));
+    }
+    if (termsPrev && termsPrev !== termsVal) {
+      termsSel.dispatchEvent(new Event('change'));
     }
   });
 }
