@@ -52,10 +52,11 @@ function compactVisit(report) {
   const tos = report.tos || {};
   const local = report.localData || {};
 
-  // Watchers: names only for back-compat. watcherMech stores the two
-  // mechanisms we can actually attribute per-company today (cookies +
-  // pixels, from buildReport's trackerCompanies). The other three
-  // (device-id, typing, clicks) remain site-level — surfaced separately.
+  // Watchers: names only for back-compat. watcherMech stores the four
+  // mechanisms we can attribute per-company today (cookies + pixels +
+  // clicks + device-id, from buildReport's trackerCompanies). typing
+  // remains site-level — detect-silent.js measures form-field exposure,
+  // not per-script keystroke observation.
   const companyArr = Array.isArray(trackers.companies) ? trackers.companies.slice(0, 10) : [];
   const watchers = companyArr.map((c) => c.name).filter(Boolean);
   const watcherMech = {};
@@ -64,6 +65,8 @@ function compactVisit(report) {
     watcherMech[c.name] = {
       cookies: c.viaCookies || 0,
       pixels: c.viaPixels || 0,
+      clicks: c.viaClicks || 0,
+      deviceId: c.viaDeviceId || 0,
     };
   }
 

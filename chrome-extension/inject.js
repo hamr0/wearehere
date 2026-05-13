@@ -4,12 +4,37 @@
   // --- wearewatched: fingerprinting + permission wrappers ---
   var MSG_TYPE = "__wearewatched__";
 
+  // Walk the stack to find the first non-extension, non-self frame —
+  // that's the script that called the API. We pass its host up to
+  // detect-watched.js so background.js can resolve it to a company.
+  // Stack format (Chrome): "    at fn (url:line:col)"
+  // Inline scripts show as "(https://page.com/path:L:C)".
+  function callerHost() {
+    try {
+      var stack = new Error().stack;
+      if (!stack) return null;
+      var lines = stack.split("\n");
+      for (var i = 0; i < lines.length; i++) {
+        var m = /\(?((?:https?|file|blob):[^)\s]+)\)?$/.exec(lines[i]);
+        if (!m) continue;
+        var url = m[1];
+        if (url.indexOf("chrome-extension://") === 0) continue;
+        try {
+          var h = new URL(url).hostname;
+          if (h) return h;
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return null;
+  }
+
   function notify(api, category) {
     try {
       window.postMessage({
         type: MSG_TYPE,
         api: api,
         category: category,
+        script: callerHost(),
         timestamp: Date.now()
       }, "*");
     } catch (e) {}

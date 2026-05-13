@@ -132,6 +132,24 @@ function analyzeLink(href) {
 
   if (trackingParams.length === 0 && !wrapper) return null;
 
+  // Resolve a single company per tracked link so background.js can
+  // bucket clicks per watcher. Priority: redirect-wrapper origin first
+  // (it's the active intermediary), else the first matching tracking
+  // param's provider. Shorteners surface as the shortener host since
+  // we can't see past the redirect.
+  var provider = null;
+  if (wrapper && wrapper.name && wrapper.name.indexOf("(") === -1) {
+    provider = wrapper.name;
+  } else if (trackingParams.length > 0) {
+    for (var p = 0; p < trackingParams.length; p++) {
+      var info = TRACKING_PROVIDERS[trackingParams[p]];
+      if (info && info.provider && info.provider !== "Referral") {
+        provider = info.provider;
+        break;
+      }
+    }
+  }
+
   return {
     href: href,
     cleanHref: wrapper && wrapper.unwrappedUrl ? cleanUrl(wrapper.unwrappedUrl) : cleanUrl(href),
@@ -140,6 +158,7 @@ function analyzeLink(href) {
     isRedirectWrapper: !!wrapper,
     wrapperName: wrapper ? wrapper.name : null,
     unwrappedUrl: wrapper ? wrapper.unwrappedUrl : null,
+    provider: provider,
   };
 }
 

@@ -3,6 +3,10 @@
 (function () {
   var MSG_TYPE = "__wearewatched__";
   var counts = {};
+  // byScript: { 'google-analytics.com': { fingerprint: 4, permission: 0 }, ... }
+  // Populated from inject.js's stack-walked caller host so background.js
+  // can resolve scripts to companies and surface per-watcher device-id.
+  var byScript = {};
   var debounceTimer = null;
   var DEBOUNCE_MS = 500;
 
@@ -19,11 +23,17 @@
 
     var api = event.data.api;
     var category = event.data.category;
+    var script = event.data.script;
 
     if (!counts[api]) {
       counts[api] = { category: category, count: 0 };
     }
     counts[api].count++;
+
+    if (script) {
+      if (!byScript[script]) byScript[script] = { fingerprint: 0, permission: 0 };
+      byScript[script][category] = (byScript[script][category] || 0) + 1;
+    }
 
     scheduleSend();
   });
@@ -58,6 +68,7 @@
         data: {
           domain: location.hostname,
           items: items,
+          byScript: byScript,
           totals: {
             fingerprint: uniqueFingerprint,
             permission: uniquePermission,

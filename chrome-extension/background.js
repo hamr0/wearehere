@@ -816,7 +816,9 @@ function buildReport(data) {
     trackerCompanies[sv.name].count += sv.count;
     trackerCompanies[sv.name].viaCookies += sv.count;
   }
-  const companies = Object.values(trackerCompanies).sort((a, b) => b.count - a.count).slice(0, 20);
+  // `companies` is computed AFTER the link-rollup folds clicks into
+  // trackerCompanies — see the linked block below. Until then,
+  // trackerCompanies only carries cookie + pixel contributions.
   const trackerTotal = (cooked.totals?.pixels || 0) + (cooked.totals?.beacons || 0) + (cooked.totals?.iframes || 0);
 
   // --- Dark patterns (from played module) ---
@@ -856,6 +858,56 @@ function buildReport(data) {
   const allLinksCount = linked.totals?.allLinks || linked.totals?.total || 0;
   const trackedCount = linked.totals?.tracked || 0;
   const linkPct = allLinksCount > 0 ? Math.round((trackedCount / allLinksCount) * 100) : 0;
+
+  // Per-company click bucketing. detect-linked.js attaches a `provider`
+  // per item (Google / Meta / Mailchimp / ...). Fold those into the
+  // tracker-company map so watcherMech can carry click attribution
+  // alongside cookies + pixels. Click-only watchers (provider present
+  // but not seen via cookies/pixels) get added as legit watchers — they
+  // ARE tracking the user, just via outbound URL params.
+  for (const item of (linked.items || [])) {
+    const name = item.provider;
+    if (!name) continue;
+    if (!trackerCompanies[name]) {
+      trackerCompanies[name] = { name, purpose: 'Click tracking', count: 0, viaPixels: 0, viaCookies: 0, viaClicks: 0 };
+    }
+    if (trackerCompanies[name].viaClicks == null) trackerCompanies[name].viaClicks = 0;
+    trackerCompanies[name].viaClicks++;
+    trackerCompanies[name].count++;
+  }
+
+  // Per-company device-id (fingerprinting) attribution. inject.js
+  // stack-walks the caller frame on each wrapped API hit and passes its
+  // host up via watched.byScript: { 'hotjar.com': { fingerprint: 4 }}.
+  // Resolve script host → company via the cooked-items map (which
+  // already pairs script domains with company names from detect-cooked.
+  // js's COMPANY_MAP). Scripts whose host doesn't appear in any cooked
+  // item stay unattributed — they'll fall back to the site-level
+  // "device-id reads" summary.
+  const hostToCompany = {};
+  for (const item of cookedItems) {
+    if (item.domain && item.company) hostToCompany[item.domain] = item.company;
+  }
+  for (const [scriptHost, cats] of Object.entries(watched.byScript || {})) {
+    const fp = cats.fingerprint || 0;
+    if (!fp) continue;
+    let name = hostToCompany[scriptHost];
+    if (!name) {
+      const root = scriptHost.split('.').slice(-2).join('.');
+      name = hostToCompany[root];
+    }
+    if (!name) continue;
+    if (!trackerCompanies[name]) {
+      trackerCompanies[name] = { name, purpose: 'Fingerprinting', count: 0, viaPixels: 0, viaCookies: 0, viaClicks: 0, viaDeviceId: 0 };
+    }
+    if (trackerCompanies[name].viaDeviceId == null) trackerCompanies[name].viaDeviceId = 0;
+    trackerCompanies[name].viaDeviceId += fp;
+    trackerCompanies[name].count += fp;
+  }
+
+  // Build the final ranked companies list after cookie/pixel, click,
+  // and device-id contributions have been folded in.
+  const companies = Object.values(trackerCompanies).sort((a, b) => b.count - a.count).slice(0, 20);
 
   // --- Terms (from tosed module) ---
   const tosed = m.tosed || null;

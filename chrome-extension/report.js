@@ -646,10 +646,10 @@ function renderWhoFollowsYou(visits) {
   }
 
   // Aggregate per watcher: reach % and per-company mechanism counts.
-  // cookies + pixels are attributed per-company (from buildReport's
-  // trackerCompanies.viaCookies / viaPixels via visit.watcherMech).
-  // device-id / typing / clicks aren't attributed per-company today —
-  // they remain a separate site-level summary (rendered below the list).
+  // cookies + pixels + clicks + device-id are attributed per-company
+  // (via buildReport's trackerCompanies.viaCookies/viaPixels/viaClicks/
+  // viaDeviceId, serialized into visit.watcherMech). typing isn't
+  // attribution-able today and lives in the site-level summary below.
   const byCompany = {};
   for (const v of visits) {
     const seen = new Set();
@@ -659,12 +659,14 @@ function renderWhoFollowsYou(visits) {
       if (seen.has(k)) continue;
       seen.add(k);
       if (!byCompany[k]) {
-        byCompany[k] = { name: w, hits: 0, mech: { cookies: 0, pixels: 0 } };
+        byCompany[k] = { name: w, hits: 0, mech: { cookies: 0, pixels: 0, clicks: 0, deviceId: 0 } };
       }
       byCompany[k].hits++;
       const pc = wm[w] || {};
-      byCompany[k].mech.cookies += pc.cookies || 0;
-      byCompany[k].mech.pixels  += pc.pixels  || 0;
+      byCompany[k].mech.cookies  += pc.cookies  || 0;
+      byCompany[k].mech.pixels   += pc.pixels   || 0;
+      byCompany[k].mech.clicks   += pc.clicks   || 0;
+      byCompany[k].mech.deviceId += pc.deviceId || 0;
     }
   }
   const ranked = Object.values(byCompany)
@@ -679,9 +681,13 @@ function renderWhoFollowsYou(visits) {
 
   const maxPct = Math.max(1, ranked[0].pct);
 
-  // Per-company mechanisms we can actually attribute: cookies, pixels.
-  const MECH_ORDER = ['cookies', 'pixels'];
-  const MECH_LABEL = { cookies: 'cookies', pixels: 'pixels' };
+  // Per-company mechanisms we can attribute: cookies, pixels, clicks,
+  // device-id. (device-id resolved via inject.js stack-walk → caller
+  // host → company via cooked-items map; typing remains site-level
+  // because detect-silent.js measures form-field exposure, not
+  // per-script keystroke listeners.)
+  const MECH_ORDER = ['cookies', 'pixels', 'clicks', 'deviceId'];
+  const MECH_LABEL = { cookies: 'cookies', pixels: 'pixels', clicks: 'clicks', deviceId: 'device-id' };
   const mechLine = (m) => {
     const parts = MECH_ORDER.filter((k) => (m[k] || 0) > 0).map((k) => MECH_LABEL[k]);
     return parts.length ? parts.join(' · ') : 'presence only';
@@ -699,27 +705,20 @@ function renderWhoFollowsYou(visits) {
     </div>
   `).join('');
 
-  // Site-level mechanism summary: the three mechanisms (device-id, typing,
-  // clicks) we can't yet attribute per-company. Surface them as a
-  // collective signal so the data still shows up — just labeled honestly.
+  // Site-level summary: form-field exposure (typing). Other mechanisms
+  // are now per-company. Fingerprint reads from unattributed scripts
+  // (caller host not in the cooked-items company map) are silently
+  // dropped — the site-level "typing" line is what's left to surface.
   const summary = $('w-who-summary');
   if (summary) {
-    const totals = { deviceId: 0, typing: 0, clicks: 0 };
+    let typing = 0;
     let visitsWithSignal = 0;
     for (const v of visits) {
       const m = v.mechanisms || {};
-      let any = false;
-      if (m.deviceId) { totals.deviceId += m.deviceId; any = true; }
-      if (m.typing)   { totals.typing   += m.typing;   any = true; }
-      if (m.clicks)   { totals.clicks   += m.clicks;   any = true; }
-      if (any) visitsWithSignal++;
+      if (m.typing) { typing += m.typing; visitsWithSignal++; }
     }
-    const parts = [];
-    if (totals.deviceId) parts.push(`${totals.deviceId} device-id reads`);
-    if (totals.typing)   parts.push(`${totals.typing} typing taps`);
-    if (totals.clicks)   parts.push(`${totals.clicks} tracked clicks`);
-    summary.innerHTML = parts.length
-      ? `also seen across ${visitsWithSignal} visit${visitsWithSignal === 1 ? '' : 's'}: ${parts.join(' · ')} <span title="device-id / typing / clicks aren't attributed to a single company yet — shown as a site-level total">[?]</span>`
+    summary.innerHTML = typing
+      ? `also: ${typing} form field${typing === 1 ? '' : 's'} exposed across ${visitsWithSignal} visit${visitsWithSignal === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
       : '';
   }
 }
