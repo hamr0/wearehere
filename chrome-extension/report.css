@@ -311,6 +311,12 @@ body {
   margin: 8px 0 4px;
 }
 .callout strong { color: var(--fg-bright); font-weight: 600; }
+.callout.impact {
+  color: var(--ok);
+  border-left: 2px solid var(--ok);
+  padding-left: 8px;
+  margin-top: 4px;
+}
 
 /* Window selector */
 .window-sel {
@@ -638,4 +644,59 @@ input[type="text"].mono-input {
   .hero { grid-template-columns: 1fr; }
   .hero .cell { border-bottom: 1px dashed var(--line); padding-bottom: 10px; }
   .hero .cell:last-child { border-bottom: 0; padding-bottom: 0; }
+}
+
+/* Onboarding — first-run overlay. Shown once per install via the
+   `dashboardOnboarded` flag in chrome.storage.local. */
+.onboarding {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 24px;
+}
+.onboarding-pane {
+  width: 100%;
+  max-width: 480px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  padding: 22px 24px 20px;
+  font-family: 'JetBrains Mono','IBM Plex Mono',ui-monospace,Menlo,'Courier New',monospace;
+}
+.onboarding-title {
+  font-size: 14px;
+  color: var(--fg-bright);
+  font-weight: 600;
+  margin-bottom: 18px;
+}
+.onboarding-title .brand-inline {
+  color: var(--brand);
+  font-weight: 800;
+  letter-spacing: -1px;
+}
+.onboarding-body { display: flex; flex-direction: column; gap: 14px; }
+.onb-row { display: grid; grid-template-columns: 80px 1fr; gap: 12px; align-items: baseline; }
+.onb-key {
+  color: var(--brand);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+.onb-val { color: var(--fg); font-size: 12px; line-height: 1.5; }
+.onboarding-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--line);
+  font-size: 11px;
+}
+@media (max-width: 480px) {
+  .onb-row { grid-template-columns: 1fr; gap: 4px; }
+  .onb-key { font-size: 11px; }
 }

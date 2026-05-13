@@ -61,6 +61,32 @@ function init(report) {
   renderScoper(safeReport);
   watchScoperStorage();
   watchVisitsStorage();
+  maybeShowOnboarding();
+}
+
+// First-run overlay — shown once per install. Flag persists in
+// chrome.storage.local so re-opening the dashboard later doesn't
+// re-trigger it. No "show again" surface ships in v4.0.0.
+function maybeShowOnboarding() {
+  chrome.storage.local.get('dashboardOnboarded', ({ dashboardOnboarded }) => {
+    if (dashboardOnboarded) return;
+    const overlay = document.getElementById('onboarding');
+    if (!overlay) return;
+    overlay.hidden = false;
+    const dismiss = document.getElementById('onb-dismiss');
+    const done = () => {
+      overlay.hidden = true;
+      chrome.storage.local.set({ dashboardOnboarded: true });
+    };
+    dismiss.addEventListener('click', done, { once: true });
+    // Esc also dismisses, mirroring native modal expectations.
+    document.addEventListener('keydown', function escDismiss(e) {
+      if (e.key === 'Escape') {
+        document.removeEventListener('keydown', escDismiss);
+        done();
+      }
+    });
+  });
 }
 
 function wireThemeSelect() {
@@ -176,6 +202,7 @@ function renderOverview() {
       <div class="cell"><div class="num" id="ov-most-exposed">—</div><div class="lbl">most exposed</div></div>
     </div>
     <div class="callout" id="ov-callout"></div>
+    <div class="callout impact" id="ov-impact" hidden></div>
 
     <div class="window-sel" id="ov-window" style="margin-top:14px"></div>
 
@@ -214,6 +241,30 @@ function loadOverviewAggregates() {
     renderOverviewHero(cur);
     renderWhatChanged(cur, prev);
   });
+  chrome.runtime.sendMessage({ type: 'impact:get-window', window: overviewWindow }, (impact) => {
+    renderImpactLine(impact);
+  });
+}
+
+function renderImpactLine(impact) {
+  const el = $('ov-impact');
+  if (!el) return;
+  if (!impact || (impact.tightened === 0 && impact.demotions === 0)) {
+    el.hidden = true;
+    el.textContent = '';
+    return;
+  }
+  // Tell the story, not the mechanics: "this <window>, wearehere did X".
+  // Hide demotion count when zero (sites with only first-party caps).
+  const win = overviewWindow === 'all' ? 'all time' : `this ${overviewWindow}`;
+  const cookieClause = impact.tightened
+    ? `shortened ${impact.tightened.toLocaleString()} cookie${impact.tightened === 1 ? '' : 's'}`
+    : '';
+  const demoteClause = impact.demotions
+    ? `${cookieClause ? ' and ' : ''}demoted ${impact.demotions.toLocaleString()} tracker${impact.demotions === 1 ? '' : 's'} to session-only`
+    : '';
+  el.hidden = false;
+  el.innerHTML = `${win}: wearehere ${escapeText(cookieClause + demoteClause)} so they can't recognise you tomorrow.`;
 }
 
 function loadOverviewRawVisits() {

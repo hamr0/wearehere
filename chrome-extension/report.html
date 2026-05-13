@@ -45,6 +45,30 @@
     <div class="empty-sub">visit a few sites first, then come back here.</div>
   </div>
 
+  <div id="onboarding" class="onboarding" hidden role="dialog" aria-modal="true" aria-labelledby="onb-title">
+    <div class="onboarding-pane">
+      <div class="onboarding-title" id="onb-title">welcome to <span class="brand-inline">[we]arehere</span></div>
+      <div class="onboarding-body">
+        <div class="onb-row">
+          <div class="onb-key">score</div>
+          <div class="onb-val">a number 0–100 per site. lower is better. it summarises the tracking pressure on the page you're looking at.</div>
+        </div>
+        <div class="onb-row">
+          <div class="onb-key">watchers</div>
+          <div class="onb-val">the companies following you across sites. the dashboard ranks them by how often they show up in your visits.</div>
+        </div>
+        <div class="onb-row">
+          <div class="onb-key">scoper</div>
+          <div class="onb-val">runs quietly in the background. shortens tracker cookies so they can't recognise you tomorrow. trust any site from its popup to keep its cookies.</div>
+        </div>
+      </div>
+      <div class="onboarding-footer">
+        <span class="dim">no accounts. nothing leaves your browser.</span>
+        <button id="onb-dismiss" type="button" class="btn-mini">[ got it ]</button>
+      </div>
+    </div>
+  </div>
+
   <script src="report.js"></script>
 </body>
 </html>

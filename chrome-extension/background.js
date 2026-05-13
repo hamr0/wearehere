@@ -81,6 +81,14 @@ function isSafeBgFetchUrl(url) {
 // Without this, a server-side 30x to a private IP would be followed
 // silently after the initial URL passed the public-facing check.
 const MAX_BG_REDIRECTS = 5;
+
+const _DAY_MS = 24 * 60 * 60 * 1000;
+function windowMs(name) {
+  return name === 'today' ? _DAY_MS
+       : name === 'week'  ? 7  * _DAY_MS
+       : name === 'month' ? 30 * _DAY_MS
+       : null;
+}
 async function safeBgFetch(url, hops) {
   let next = url;
   for (let i = 0; i <= hops; i++) {
@@ -697,6 +705,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'snapshots:get-window') {
     self.snapshotsGetWindow(msg.window).then((agg) => sendResponse(agg));
+    return true;
+  }
+
+  // Windowed scoper impact — sums cookieScopeHistory in the window so
+  // Overview can render a story-line ("this week wearehere shortened N
+  // cookies and demoted M trackers…"). Per-sweep entries already carry
+  // `rewrote` (tightened cookies) + `demotions` (tracker demotions).
+  if (msg.type === 'impact:get-window') {
+    chrome.storage.local.get('cookieScopeHistory', ({ cookieScopeHistory }) => {
+      const arr = Array.isArray(cookieScopeHistory) ? cookieScopeHistory : [];
+      const ms = windowMs(msg.window);
+      const cutoff = ms == null ? 0 : Date.now() - ms;
+      let tightened = 0, demotions = 0, sweeps = 0;
+      for (const h of arr) {
+        if (h.at < cutoff) continue;
+        tightened += h.rewrote || 0;
+        demotions += h.demotions || 0;
+        sweeps++;
+      }
+      sendResponse({ tightened, demotions, sweeps, window: msg.window });
+    });
     return true;
   }
 

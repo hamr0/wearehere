@@ -643,6 +643,17 @@ After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage), these it
 - **Phase 7 — Firefox mirror.** `firefox-extension/` is currently labeled v4.0.0 but the actual code is still on the v3.x feature set (manifest_version 2, no `alarms`/`storage` permissions, missing `visits.js`, `snapshots.js`, `scoper/`, no v4 popup/dashboard rewrite). The version label is misleading until the port lands. This is the only **blocking** gap for AMO re-submission.
 - **Integration smoke test** — the 8-step end-to-end dogfood path in `PLAN.md` is still manual. Per AGENT_RULES, tests come after design stabilizes; v4.0.0 design is now stable, so this is the earliest reasonable point to write regression tests. Not blocking, but the longer it slides the more behavior locks in untested.
 
+### Non-goal — no active request blocking (decided 2026-05-13)
+
+wearehere **does not** block tracker requests at the network layer (`declarativeNetRequest` / `webRequest` block rules). uBlock Origin already solves request-blocking with curated lists and a serious engineering investment in filter rules + site-breakage management. Re-implementing that surface would invite the same maintenance burden without the same depth — wearehere's value would diverge into "another blocker, less mature" instead of the niche it actually fills.
+
+**Posture stays: honest observer + light intervention.** The scoper rewrites tracker cookies to short caps + session expiry, so trackers can't recognise you tomorrow. The dashboard names every watcher and shows the mechanisms they use. That's the differentiated story.
+
+Implications:
+- Pair with uBlock (or any blocker) for actual request prevention. wearehere is complementary, not competitive.
+- Branding stays "privacy that acts back" — the act *is* cookie scoping + dashboard transparency. Active blocking is not implied.
+- No `declarativeNetRequest` permission. No rule-set bundling. Keeps the AMO / Chrome Web Store review surface minimal.
+
 ### Phase 6 cleanup — pending
 
 Audit + remove dead CSS classes, retired-tab images (`baked.png`, `cooked.png`, `played.png`, `linked.png`, `silent.png`, `tosed.png`, `watched.png`, `leaking.png`), and any manifest permissions no longer reachable from live code. Single contained commit. Pre-requisite before the Firefox mirror — porting dead code wastes effort.
