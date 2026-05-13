@@ -30,7 +30,48 @@ const MAX_FINAL_REDIRECTS = 100;
 // =============================================================================
 // Per-tab data structure
 // =============================================================================
+// Tab IDs Chrome has already torn down. Late-arriving content-script messages
+// would otherwise resurrect tabData for a dead tab; subsequent badge writes
+// then reject with "No tab with id: …". We drop those messages instead.
+const removedTabs = new Set();
+const REMOVED_TABS_CAP = 500;
+function markTabRemoved(tabId) {
+  removedTabs.add(tabId);
+  if (removedTabs.size > REMOVED_TABS_CAP) {
+    const it = removedTabs.values();
+    for (let i = 0; i < removedTabs.size - REMOVED_TABS_CAP; i++) removedTabs.delete(it.next().value);
+  }
+}
+// Best-effort SSRF guard for bgFetch. Reject non-http(s) and reject hostnames
+// that look local/private. Browser DNS may still resolve a public name to a
+// private IP, but the response never reaches the page so the worst an
+// attacker page can do is induce a fetch — they cannot read it.
+const PRIVATE_HOST_RE = /^(?:localhost|.+\.local|.+\.internal|.+\.localhost)$/i;
+const IPV4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+function isSafeBgFetchUrl(url) {
+  if (typeof url !== 'string' || url.length > 2048) return false;
+  let u;
+  try { u = new URL(url); } catch { return false; }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return false;
+  const host = u.hostname.toLowerCase();
+  if (!host) return false;
+  if (PRIVATE_HOST_RE.test(host)) return false;
+  // Bare IPv6 literal (`[::1]`, `[fc00::]/7`, etc.) — disallow all IPv6
+  // literals; policy/terms pages never live at one.
+  if (host.includes(':') || (host.startsWith('[') && host.endsWith(']'))) return false;
+  const m = host.match(IPV4_RE);
+  if (m) {
+    const a = +m[1], b = +m[2];
+    if (a === 0 || a === 10 || a === 127 || a === 169 || a >= 224) return false;
+    if (a === 172 && b >= 16 && b <= 31) return false;
+    if (a === 192 && b === 168) return false;
+    if (a === 100 && b >= 64 && b <= 127) return false; // CGNAT
+  }
+  return true;
+}
+
 function ensureTab(tabId) {
+  if (removedTabs.has(tabId)) return null;
   if (!tabData[tabId]) {
     tabData[tabId] = {
       url: '',
@@ -59,7 +100,11 @@ chrome.webRequest.onBeforeRequest.addListener(
     if (details.tabId < 0) return;
 
     if (details.type === 'main_frame') {
+      // A fresh navigation in this tab id — clear any prior removed-tab mark
+      // (Chrome reuses ids after a tab is closed).
+      removedTabs.delete(details.tabId);
       const tab = ensureTab(details.tabId);
+      if (!tab) return;
       try {
         const mainUrl = new URL(details.url);
         tab.domain = mainUrl.hostname;
@@ -200,6 +245,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'detection' && sender.tab) {
     const tabId = sender.tab.id;
     const tab = ensureTab(tabId);
+    if (!tab) return;
     const mod = msg.module;
     const data = msg.data;
 
@@ -264,8 +310,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // Full cache — set tab data
       const tabId = sender.tab.id;
       const tab = ensureTab(tabId);
-      tab.modules.tosed = buildTosModuleData(domain, cached.privacy, cached.terms);
-      updateBadge(tabId);
+      if (tab) {
+        tab.modules.tosed = buildTosModuleData(domain, cached.privacy, cached.terms);
+        updateBadge(tabId);
+      }
     }
     sendResponse(cached);
     return true;
@@ -274,6 +322,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // --- ToS: bgFetch from detect-tosed.js ---
   if (msg.type === 'bgFetch') {
     const url = msg.url;
+    // bgFetch runs in the extension context — it can hit URLs the page
+    // itself can't (no CORS, no same-origin). Guard against being abused
+    // as an SSRF probe: reject non-http(s) and reject hostnames that
+    // resolve to local/private space syntactically (IP literals, .local,
+    // .internal, localhost). Browser DNS resolution still applies to
+    // names, so this is best-effort; the bigger reason it's safe is
+    // that the response is never echoed back to the page.
+    if (!isSafeBgFetchUrl(url)) {
+      sendResponse(null);
+      return true;
+    }
     fetch(url, { redirect: 'follow' })
       .then(resp => {
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
@@ -282,7 +341,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       .then(html => {
         const metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
         if (metaRedirect && html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().length < 500) {
-          return fetch(metaRedirect[1], { redirect: 'follow' })
+          const redirectUrl = (() => {
+            try { return new URL(metaRedirect[1], url).href; } catch { return null; }
+          })();
+          if (!redirectUrl || !isSafeBgFetchUrl(redirectUrl)) throw new Error('Unsafe meta redirect');
+          return fetch(redirectUrl, { redirect: 'follow' })
             .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); });
         }
         return html;
@@ -1065,8 +1128,10 @@ function updateBadge(tabId) {
   else if (score <= 40) color = '#e67e22';
   else color = '#e74c3c';
 
-  chrome.action.setBadgeText({ tabId, text: String(score) });
-  chrome.action.setBadgeBackgroundColor({ tabId, color });
+  // Tab may have been removed between the message arriving and now;
+  // setBadgeText/Color reject in MV3 when the tabId no longer exists.
+  chrome.action.setBadgeText({ tabId, text: String(score) }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ tabId, color }).catch(() => {});
 }
 
 // =============================================================================
@@ -1129,7 +1194,7 @@ function snapshotAndEvict(tabId) {
   delete tabData[tabId];
 }
 
-chrome.tabs.onRemoved.addListener((tabId) => { snapshotAndEvict(tabId); });
+chrome.tabs.onRemoved.addListener((tabId) => { snapshotAndEvict(tabId); markTabRemoved(tabId); });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     const oldDomain = tabData[tabId]?.domain;

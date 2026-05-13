@@ -1,6 +1,9 @@
 "use strict";
 
 (function () {
+  var DEBUG = false;
+  var dlog = DEBUG ? console.log.bind(console) : function () {};
+
   // --- Is this a policy/terms page? ---
   function getPageType() {
     var host = location.hostname.toLowerCase();
@@ -109,7 +112,7 @@
     if (index >= urls.length) { callback(null); return; }
 
     var url = urls[index].url;
-    console.log("[wearetosed] fetching:", url);
+    dlog("[wearetosed] fetching:", url);
 
     fetch(url, { credentials: "include", redirect: "follow" })
       .then(function (resp) {
@@ -120,7 +123,7 @@
         // Follow meta refresh redirects (Google pattern)
         var metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
         if (metaRedirect && htmlToText(html).length < 500) {
-          console.log("[wearetosed] following meta redirect:", metaRedirect[1]);
+          dlog("[wearetosed] following meta redirect:", metaRedirect[1]);
           return fetch(metaRedirect[1], { credentials: "include", redirect: "follow" })
             .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); });
         }
@@ -130,14 +133,14 @@
         var text = htmlToText(html);
         if (text.length < 200) throw new Error("Too short");
         var result = scanText(text);
-        console.log("[wearetosed] fetched:", url, "score:", result.score);
+        dlog("[wearetosed] fetched:", url, "score:", result.score);
         callback(result);
       })
       .catch(function (err) {
-        console.log("[wearetosed] content fetch failed:", url, err.message, "— trying background");
+        dlog("[wearetosed] content fetch failed:", url, err.message, "— trying background");
         chrome.runtime.sendMessage({ type: "bgFetch", url: url }, function (result) {
           if (result && result.score !== undefined) {
-            console.log("[wearetosed] bg fetched:", url, "score:", result.score);
+            dlog("[wearetosed] bg fetched:", url, "score:", result.score);
             callback(result);
           } else {
             fetchAndScan(urls, index + 1, callback);
@@ -169,7 +172,7 @@
     var text = getPolicyText();
     var result = scanText(text);
 
-    console.log("[wearetosed] direct scan (" + pageType + ") — score:", result.score, result.items);
+    dlog("[wearetosed] direct scan (" + pageType + ") — score:", result.score, result.items);
     sendDirectScan(pageType, result);
 
     // SPA retry — content may load after document_idle
@@ -182,7 +185,7 @@
         var newResult = scanText(newText);
         if (newResult.total > 0) {
           observer.disconnect();
-          console.log("[wearetosed] SPA rescan (" + pageType + ") — score:", newResult.score);
+          dlog("[wearetosed] SPA rescan (" + pageType + ") — score:", newResult.score);
           sendDirectScan(pageType, newResult);
         }
       });
@@ -273,7 +276,7 @@
     setTimeout(function () {
       var text = getPolicyText();
       var spaResult = scanText(text);
-      console.log("[wearetosed] SPA nav (" + newType + ") — score:", spaResult.score);
+      dlog("[wearetosed] SPA nav (" + newType + ") — score:", spaResult.score);
       sendDirectScan(newType, spaResult);
       if (spaResult.total === 0) {
         var spaRetries = 0;
