@@ -779,15 +779,14 @@ function populateSiteSelectors(opts) {
     if (!Array.isArray(tabs) || tabs.length === 0) return;
     const watcherSel = $('watcher-site-sel');
     const termsSel = $('terms-site-sel');
-    // Preserve whatever the user has picked when refreshing — only
-    // fall back to the hash tabId on first populate.
-    const currentVal = (opts && opts.preserveSelection && watcherSel.value)
-      ? watcherSel.value
-      : String(tabId);
+    const preserve = opts && opts.preserveSelection;
+    // Each selector tracks its OWN selection. Reading watcherSel.value
+    // for both clobbered termsSel back to the watcher pick on every
+    // refresh (focus/mousedown/tab churn), which made the terms dropdown
+    // look broken — the user's pick was overwritten on the next refresh.
+    const watcherVal = preserve && watcherSel.value ? watcherSel.value : String(tabId);
+    const termsVal = preserve && termsSel.value ? termsSel.value : String(tabId);
 
-    // Label each option with watcher count when we have it, or "no scan
-    // yet" for tabs we haven't observed. Lets the user pick from open
-    // tabs without guessing which one has live data.
     const labelFor = (t) => {
       if (!t.hasReport) return `${t.domain} · (no scan)`;
       if (typeof t.watcherCount === 'number') {
@@ -795,17 +794,25 @@ function populateSiteSelectors(opts) {
       }
       return t.domain;
     };
-    const options = tabs
-      .filter((t) => t.domain)
-      .sort((a, b) => a.domain.localeCompare(b.domain))
-      .map((t) => `<option value="${t.id}"${String(t.id) === currentVal ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
+    const sorted = tabs.filter((t) => t.domain).sort((a, b) => a.domain.localeCompare(b.domain));
+    const buildOptions = (selVal) => sorted
+      .map((t) => `<option value="${t.id}"${String(t.id) === selVal ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
       .join('');
 
-    if (options) {
-      watcherSel.innerHTML = options;
-      termsSel.innerHTML = options;
-      watcherSel.value = currentVal;
-      termsSel.value = currentVal;
+    const watcherOptions = buildOptions(watcherVal);
+    const termsOptions = buildOptions(termsVal);
+
+    // Skip the innerHTML swap when the markup is unchanged. Replacing
+    // options while the dropdown is open closes the menu under the
+    // user's click, so their selection never fires `change`. The
+    // `selected` attribute already tracks the correct value.
+    if (watcherSel.innerHTML !== watcherOptions) {
+      watcherSel.innerHTML = watcherOptions;
+      watcherSel.value = watcherVal;
+    }
+    if (termsSel.innerHTML !== termsOptions) {
+      termsSel.innerHTML = termsOptions;
+      termsSel.value = termsVal;
     }
   });
 }
