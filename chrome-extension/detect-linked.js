@@ -193,6 +193,10 @@ function scanElement(el) {
 }
 
 function sendResults() {
+  if (!chrome.runtime || !chrome.runtime.id) {
+    if (observer) observer.disconnect();
+    return;
+  }
   totalAnchors = document.querySelectorAll("a[href]").length;
   var wrappers = 0;
   var tracked = 0;
@@ -201,17 +205,21 @@ function sendResults() {
     if (items[i].trackingParams.length > 0) tracked++;
   }
 
-  chrome.runtime.sendMessage({
-    type: "detection",
-    module: "linked",
-    data: {
-      domain: location.hostname,
-      url: location.href,
-      timestamp: Date.now(),
-      items: items,
-      totals: { wrappers: wrappers, tracked: tracked, total: items.length, allLinks: totalAnchors },
-    }
-  });
+  try {
+    chrome.runtime.sendMessage({
+      type: "detection",
+      module: "linked",
+      data: {
+        domain: location.hostname,
+        url: location.href,
+        timestamp: Date.now(),
+        items: items,
+        totals: { wrappers: wrappers, tracked: tracked, total: items.length, allLinks: totalAnchors },
+      }
+    });
+  } catch (e) {
+    if (observer) observer.disconnect();
+  }
 }
 
 // ── Init ──

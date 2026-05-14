@@ -2,6 +2,21 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [4.1.4] — 2026-05-14
+
+Two reliability fixes surfaced by live use on long-lived tabs: content scripts now exit cleanly when the extension reloads under them, and the popup no longer goes blank after the service worker recycles.
+
+### Fixed
+
+- **`Extension context invalidated` flood from content scripts after extension reload/update.** When the extension was reloaded while a page was still open, orphaned content scripts kept firing their `MutationObserver` / `setInterval` against an invalidated `chrome.runtime`, throwing on every event. On dynamic pages (Reddit, news feeds) this produced a steady stream of console errors. `detect-linked.js` now gates `sendResults` on `chrome.runtime?.id`, wraps the `sendMessage` in try/catch, and disconnects its observer on failure. `detect-tosed.js` (the worst offender: `setInterval` + 5 separate send sites) routes all sends through a `safeSend` helper and clears its SPA-nav interval when context is gone. The other detect scripts already had equivalent guards.
+- **Popup empty after switching back from a long-idle tab.** `getReport` only read in-memory `tabData`, which the service worker drops on recycle — so returning to a backgrounded tab and opening the popup showed the empty state until the user manually reloaded. `persistPendingVisit` already mirrors the built report to `chrome.storage.session` on every detection write; `getReport` now falls back to that record when memory is empty, so the popup serves the last-known state instead of nothing.
+
+### Internal
+
+- FF mirror updated; bundle drift remains exactly two files.
+
+[4.1.4]: https://github.com/hamr0/wearehere/compare/v4.1.3...main
+
 ## [4.1.3] — 2026-05-14
 
 Two follow-ups from live use of v4.1.2: the scoper now resists active cookie re-issue, and Firefox's post-update "Permission needed" state is surfaced as actionable copy instead of a misleading empty popup.

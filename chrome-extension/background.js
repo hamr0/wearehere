@@ -407,9 +407,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getReport') {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (!tabs[0]) return sendResponse(null);
-      const data = tabData[tabs[0].id];
-      if (!data) return sendResponse(null);
-      sendResponse(buildReport(data));
+      const tabId = tabs[0].id;
+      const data = tabData[tabId];
+      if (data) return sendResponse(buildReport(data));
+      // Memory empty (SW recycled while tab sat in the background). The
+      // latest detection-built report is still in session storage from
+      // persistPendingVisit; serve that so the popup isn't blank until
+      // the user reloads the tab.
+      chrome.storage.session.get(PENDING_VISIT_KEY(tabId), (s) => {
+        const pending = s && s[PENDING_VISIT_KEY(tabId)];
+        sendResponse(pending || null);
+      });
     });
     return true;
   }

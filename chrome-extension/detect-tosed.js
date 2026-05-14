@@ -4,6 +4,15 @@
   var DEBUG = false;
   var dlog = DEBUG ? console.log.bind(console) : function () {};
 
+  function safeSend(msg, cb) {
+    if (!chrome.runtime || !chrome.runtime.id) return false;
+    try {
+      if (cb) chrome.runtime.sendMessage(msg, cb);
+      else chrome.runtime.sendMessage(msg);
+      return true;
+    } catch (e) { return false; }
+  }
+
   // --- Is this a policy/terms page? ---
   function getPageType() {
     var host = location.hostname.toLowerCase();
@@ -138,7 +147,7 @@
       })
       .catch(function (err) {
         dlog("[wearetosed] content fetch failed:", url, err.message, "— trying background");
-        chrome.runtime.sendMessage({ type: "bgFetch", url: url }, function (result) {
+        safeSend({ type: "bgFetch", url: url }, function (result) {
           if (result && result.score !== undefined) {
             dlog("[wearetosed] bg fetched:", url, "score:", result.score);
             callback(result);
@@ -153,7 +162,7 @@
   var pageType = getPageType();
 
   function sendDirectScan(type, scanResult) {
-    chrome.runtime.sendMessage({
+    safeSend({
       type: "detection",
       module: "tosed",
       data: {
@@ -194,7 +203,7 @@
     }
   } else {
     // Check cache first via background
-    chrome.runtime.sendMessage({ type: "checkCache", domain: location.hostname }, function (cached) {
+    safeSend({ type: "checkCache", domain: location.hostname }, function (cached) {
       if (cached && cached.privacy && cached.terms) {
         return;
       }
@@ -230,7 +239,7 @@
       function finish() {
         done++;
         if (done < pending) return;
-        chrome.runtime.sendMessage({
+        safeSend({
           type: "detection",
           module: "tosed",
           data: {
@@ -252,7 +261,7 @@
       }
 
       if (pending === 0) {
-        chrome.runtime.sendMessage({
+        safeSend({
           type: "detection",
           module: "tosed",
           data: {
@@ -268,7 +277,8 @@
 
   // SPA navigation detection — overlays/pushState (Etsy pattern)
   var lastHref = location.href;
-  setInterval(function () {
+  var spaInterval = setInterval(function () {
+    if (!chrome.runtime || !chrome.runtime.id) { clearInterval(spaInterval); return; }
     if (location.href === lastHref) return;
     lastHref = location.href;
     var newType = getPageType();

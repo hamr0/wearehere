@@ -647,6 +647,7 @@ After v4.0.0 shipped (Phases 1–5 complete + window-snapshot storage + Phase 6 
 
 - **Phase 7 — Firefox mirror** — shipped in 4.1.0. `firefox-extension/` now mirrors the Chrome bundle byte-for-byte except `background.js` (the `importScripts` guard) and `manifest.json` (MV3 dialect + AMO fields). Drift verified via `diff -rq`. AMO re-submission unblocked.
 - **Race-condition cleanup** — four fixes landed in 4.1.0: window selector re-paint, snapshot recompute debounce, watchers/terms selector independence, closed-tab selector orphan + cache invalidation. See `CHANGELOG.md [4.1.0]` for the full list.
+- **Content-script lifecycle hardening (4.1.4)** — content scripts that ran past an extension reload (most visible on Reddit, where `MutationObserver` fires constantly) now exit cleanly instead of flooding the console with `Extension context invalidated`. `getReport` falls back to the `pendingVisit` session-storage record so the popup serves last-known state after SW recycle instead of going blank until the user reloads the tab.
 
 ### Scope explicitly punted
 

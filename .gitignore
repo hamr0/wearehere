@@ -1,6 +1,7 @@
 node_modules/
 .idea/
 *.kate-swp
+dist/
 
 # Claude Code session artifacts (transient)
 .claude/
