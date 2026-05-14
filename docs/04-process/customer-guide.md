@@ -29,8 +29,6 @@ The wearehere icon will appear in your browser toolbar.
 
 The wearehere icon will appear in your browser toolbar.
 
-**Note:** Firefox treats this as a temporary add-on. It will be removed when you close the browser, and you will need to load it again next time.
-
 ---
 
 ## Using the Popup

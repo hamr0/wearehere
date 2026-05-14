@@ -76,8 +76,6 @@ Delete the extension and every trace goes with it.
 3. Click **Load Temporary Add-on** and pick any file in the `firefox-extension` folder.
 4. Click the wearehere icon. That's it.
 
-> Firefox's "temporary add-on" resets when you close the browser — just re-load next session. A permanent listing is in the works.
-
 ## License
 
 Open source, Apache-2.0. Detection logic builds on a handful of well-known privacy projects — full credit in [NOTICE](./NOTICE).
