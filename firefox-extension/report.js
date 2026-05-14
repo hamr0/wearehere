@@ -28,7 +28,8 @@ function applyTheme(theme) {
   const t = theme === 'light' ? 'light' : 'dark';
   document.documentElement.setAttribute('data-theme', t);
   const btn = $('theme-toggle');
-  if (btn) btn.textContent = `[ ${t} ]`;
+  // Label shows what clicking will switch TO, not the current theme.
+  if (btn) btn.textContent = `[ ${t === 'light' ? 'dark' : 'light'} ]`;
 }
 chrome.storage.local.get('theme', ({ theme }) => {
   const initial = (theme === 'light' || theme === 'dark')
@@ -67,6 +68,7 @@ function init(report) {
 
   wireTabs();
   wireThemeSelect();
+  renderVersionTag();
   renderOverview();
   renderWatchers(safeReport);
   renderScoper(safeReport);
@@ -98,6 +100,13 @@ function maybeShowOnboarding() {
       }
     });
   });
+}
+
+function renderVersionTag() {
+  const el = $('brand-version');
+  if (!el) return;
+  const v = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '';
+  el.textContent = v ? `v${v}` : '';
 }
 
 function wireThemeSelect() {

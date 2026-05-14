@@ -307,7 +307,7 @@ function wireScoperButtons() {
         status.className = 'ok';
         status.textContent =
           `scanned ${resp.scanned} · rewrote ${resp.rewrites} · demoted ${resp.demotions}` +
-          (resp.failures ? ` · ${resp.failures} failed` : '');
+          (resp.failed ? ` · ${resp.failed} untrimmable` : '');
       }
       chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
         const trust = (state && state.cookieScopeTrust) || {};

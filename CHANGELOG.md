@@ -2,6 +2,25 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [4.1.2] — 2026-05-14
+
+Live-feedback patch: theme-toggle label semantics, dashboard version badge, and a popup sweep-result bug that hid untrimmable cookies.
+
+### Fixed
+
+- **Theme toggle showed the active theme instead of the target.** Clicking `[ dark ]` while in dark mode is confusing — the label now shows what clicking will switch **to** (`[ light ]` while dark, `[ dark ]` while light).
+- **Popup sweep result silently hid untrimmable cookies.** Sweep returns `failed` (cookies the browser refuses to rewrite, typically `sameSite=None && !Secure`), but the popup status line read `resp.failures`, so the count never rendered. The "longest cookie Xd" reading then appeared to lie after a sweep when in reality some cookies couldn't be touched. Now reports `· N untrimmable` so the persistent longest-cookie reading is accounted for.
+
+### Added
+
+- **Dashboard version badge** in the header (`v4.1.2`), populated from `chrome.runtime.getManifest().version` so future bumps surface automatically without touching markup.
+
+### Internal
+
+- FF mirror updated; bundle drift remains exactly two files (`background.js` importScripts guard, `manifest.json` dialect).
+
+[4.1.2]: https://github.com/hamr0/wearehere/compare/v4.1.1...main
+
 ## [4.1.1] — 2026-05-13
 
 Single-purpose patch: silence the 23 `Unsafe assignment to innerHTML` warnings the AMO addons-linter raises against `popup.js` (4 sites) and `report.js` (29 sites). No behavior change.
