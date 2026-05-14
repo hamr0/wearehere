@@ -7,19 +7,51 @@
 
 > Privacy that acts back.
 
-Every site you visit is watching. Some count your clicks. Some recognise your device. Some sell what they learn. Most do all three quietly, before you ever read a privacy policy.
+wearehere is a browser extension that shows you who's watching you on every site you visit — and quietly cleans up after them. It lives in your toolbar. One click opens the popup for the page you're on. From there you can open the full dashboard.
 
-**wearehere** shows you what's actually happening — and then does something about it.
+Nothing leaves your browser. No accounts, no cloud, no AI calls.
 
-## What it does for you
+## The popup — one site, right now
 
-**Sees what's happening.** Open the popup on any page and you get a plain-English picture: who's watching this site, how they're doing it, and whether the fine print is fair or hostile.
+Click the wearehere icon on any page. You get:
 
-**Cleans up after every site.** When you close a tab, wearehere quietly tightens the cookies that site left behind so trackers can't keep recognising you tomorrow. You don't have to think about it. Sites you actually trust can be kept — one click.
+- **A score, 0–100.** Lower is better. It summarises how much tracking pressure this page is putting on you.
+- **A verdict in plain English.** What this site is doing and whether the terms are fair or hostile.
+- **Who's watching.** The companies seeing you on this page, and how they're doing it — cookies, pixels, clicks, device-id, form fields.
+- **Cookie scoper card.** What the scoper is doing for this site, with two buttons: **sweep now** (clean its cookies right away) and **trust 30d** (keep this site's cookies if it's one you actually use).
+- **Open full dashboard.** Sends you to the longer view.
 
-**Remembers who follows you.** Over time, wearehere builds a private picture of who's been watching you across the web — not just on one site, but everywhere. The same companies keep showing up. Now you can see them.
+## The dashboard — three tabs
 
-**Reads the terms so you don't have to.** Privacy policies and terms of service get scanned for the worst clauses — selling your data, no right to delete, forced arbitration. You get a fairness score, not a wall of legalese.
+Open it from the popup. Three tabs along the top.
+
+### overview
+
+Your browsing at a glance, for a window you pick (day, week, month, all time).
+
+- **sites visited · avg score · unique watchers · most exposed** — the four numbers up top.
+- **What changed.** Sites getting worse or better since the previous window.
+- **Score trend.** A line showing how your average tracking pressure moved over time.
+- **An impact line.** "This week, wearehere shortened 1,240 cookies and demoted 38 trackers to session-only so they can't recognise you tomorrow."
+
+### watchers
+
+Who keeps showing up across your visits — not just on one site, everywhere.
+
+- **sites visited · hidden contacts · unique watchers · avg per visit** — the four numbers up top.
+- **Who follows you.** A ranked list of companies, with how often they appear and the mechanisms they use (cookies, pixels, clicks, device-id).
+- **Recent visits.** A scrollable log of the sites you've been on and what each one tried. Clearable with one button.
+- **Dig deeper · per site.** Pick any open tab from a dropdown to see its watchers in detail, and a fairness read of its terms and privacy policy.
+
+### cookie scoper
+
+The background cleaner. It tightens the cookies sites leave behind so trackers can't keep recognising you tomorrow.
+
+- **tightened · trackers killed · sweeps run · last sweep** — lifetime counters.
+- **Cookies in your browser.** How many cookies are sitting in your browser right now, broken down by what the scoper will do with them (capped, trusted, demoted to session) and by how long they'd otherwise live (session, < 7 days, < 30 days, < 90 days, 90 days +). Top owners listed.
+- **Trusted sites.** Sites you've told wearehere to leave alone. Add a domain, extend it to 90 days, or remove it.
+- **Sweep period.** How often the scoper runs in the background. Pick the interval.
+- **Recent activity.** A log of recent sweeps and what they touched.
 
 ## What it doesn't do
 
@@ -28,7 +60,7 @@ Every site you visit is watching. Some count your clicks. Some recognise your de
 - **No AI.** No prompts sent anywhere.
 - **No tracking us tracking them.** We don't even know you installed it.
 
-Everything happens on your device. If you delete the extension, every trace goes with it.
+Delete the extension and every trace goes with it.
 
 ## Install
 
@@ -44,16 +76,10 @@ Everything happens on your device. If you delete the extension, every trace goes
 3. Click **Load Temporary Add-on** and pick any file in the `firefox-extension` folder.
 4. Click the wearehere icon. That's it.
 
-> Firefox's "temporary add-on" resets when you close the browser — just re-load next session. We're working on a permanent listing.
+> Firefox's "temporary add-on" resets when you close the browser — just re-load next session. A permanent listing is in the works.
 
-## Two views
+## License
 
-**The popup** — one click, the whole picture for the site you're on. Watchers, mechanisms, scoper status, fair-or-not on terms.
+Open source, Apache-2.0. Detection logic builds on a handful of well-known privacy projects — full credit in [NOTICE](./NOTICE).
 
-**The dashboard** — your privacy story over time. Who's been watching you this week, which sites are getting worse, how many cookies the scoper cleaned up. Open it from the popup.
-
-## Who builds this
-
-One developer. Open source, Apache-2.0 licensed. The detection logic builds on a handful of well-known privacy projects — full credit in [NOTICE](./NOTICE).
-
-If you want to follow the build or report something weird, the issue tracker is open: [github.com/hamr0/wearehere/issues](https://github.com/hamr0/wearehere/issues).
+Issues and feedback: [github.com/hamr0/wearehere/issues](https://github.com/hamr0/wearehere/issues).

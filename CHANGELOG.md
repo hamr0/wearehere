@@ -2,6 +2,12 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [Unreleased]
+
+### Docs
+
+- **README rewrite.** Restructured around the current UI: popup section plus the three dashboard tabs (overview, watchers, cookie scoper), each documented with the metrics, controls, and panels it actually contains. Dropped origin/history copy and replaced abstract framing with the in-product vocabulary (score, hidden contacts, most exposed, sweep, trust 30d, capped, demoted to session). Install steps for Chrome/Firefox kept verbatim.
+
 ## [4.1.4] — 2026-05-14
 
 Two reliability fixes surfaced by live use on long-lived tabs: content scripts now exit cleanly when the extension reloads under them, and the popup no longer goes blank after the service worker recycles.
