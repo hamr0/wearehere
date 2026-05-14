@@ -156,6 +156,11 @@ async function sweep(trigger) {
 }
 
 async function mergeCounters(deltaTightened, deltaDemotions, perSite) {
+  return mergeCountersInternal(deltaTightened, deltaDemotions, perSite, { isSweep: true });
+}
+
+async function mergeCountersInternal(deltaTightened, deltaDemotions, perSite, opts) {
+  const isSweep = !!(opts && opts.isSweep);
   const { cookieScopeCounters } = await chrome.storage.local.get('cookieScopeCounters');
   const prev = cookieScopeCounters || { tightened: 0, demotions: 0, sweeps: 0, lastSweep: 0, bySite: {} };
   const prevBySite = prev.bySite || {};
@@ -170,8 +175,8 @@ async function mergeCounters(deltaTightened, deltaDemotions, perSite) {
     cookieScopeCounters: {
       tightened: prev.tightened + deltaTightened,
       demotions: prev.demotions + deltaDemotions,
-      sweeps: prev.sweeps + 1,
-      lastSweep: Date.now(),
+      sweeps: prev.sweeps + (isSweep ? 1 : 0),
+      lastSweep: isSweep ? Date.now() : (prev.lastSweep || 0),
       bySite: prevBySite,
     },
   });
@@ -205,6 +210,99 @@ chrome.runtime.onStartup.addListener(() => { ensureAlarm(); });
 // covers the case where onInstalled/onStartup already fired before this
 // script loaded.
 ensureAlarm();
+
+// =============================================================================
+// Auto-retrim: cookies.onChanged listener
+//
+// Periodic sweep is the safety net; this is the realtime arm. Sites like
+// Google re-issue auth cookies on virtually every API request with multi-
+// hundred-day expirations. Without this listener the cookie sits at 400d
+// between sweep alarms, and if the browser closes during that window the
+// full lifetime is persisted. The listener re-trims as fast as the site
+// re-sets, so the steady-state cookie lifetime is the cap, not whatever
+// the site wants.
+//
+// Ping-pong protection: our own cookies.set fires onChanged with
+// cause='explicit'. The at-or-below-cap gate exits early on those events
+// so we never re-trim our own write.
+//
+// Throughput: per-event work is one map lookup + one date compare + an
+// early exit for already-trimmed cookies. Real writes only happen when a
+// site genuinely re-issues above the cap. Counter increments accumulate
+// in memory and flush to storage at most once every 5s to keep storage
+// I/O bounded on busy sites.
+// =============================================================================
+
+let trustCache = null;
+async function getTrustCached() {
+  if (trustCache !== null) return trustCache;
+  const { cookieScopeTrust } = await chrome.storage.local.get('cookieScopeTrust');
+  trustCache = cookieScopeTrust || {};
+  return trustCache;
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.cookieScopeTrust) {
+    trustCache = changes.cookieScopeTrust.newValue || {};
+  }
+});
+
+let pendingRetrim = { tightened: 0, demotions: 0, bySite: {} };
+let pendingFlushTimer = null;
+const RETRIM_FLUSH_MS = 5000;
+
+function queueRetrim(etld1, isDemote) {
+  pendingRetrim.tightened++;
+  if (isDemote) pendingRetrim.demotions++;
+  const b = pendingRetrim.bySite[etld1] || { tightened: 0, demotions: 0 };
+  b.tightened++;
+  if (isDemote) b.demotions++;
+  pendingRetrim.bySite[etld1] = b;
+  if (pendingFlushTimer) return;
+  pendingFlushTimer = setTimeout(flushPendingRetrim, RETRIM_FLUSH_MS);
+}
+
+async function flushPendingRetrim() {
+  pendingFlushTimer = null;
+  const delta = pendingRetrim;
+  pendingRetrim = { tightened: 0, demotions: 0, bySite: {} };
+  if (!delta.tightened && !delta.demotions) return;
+  await mergeCountersInternal(delta.tightened, delta.demotions, delta.bySite, { isSweep: false });
+}
+
+chrome.cookies.onChanged.addListener(async (info) => {
+  // Removals (expired, evicted, overwrite-of-old, explicit-delete) are not
+  // our concern — we only re-tighten cookies the site has just *set*.
+  if (info.removed) return;
+  // cause='explicit' covers both site-set and our own cookies.set. Other
+  // causes (evicted, expired, overwrite) only fire with removed=true above.
+  if (info.cause !== 'explicit') return;
+  const c = info.cookie;
+  if (c.session) return;
+  if (!c.expirationDate) return;
+  const etld1 = etld1Of(c.domain);
+  if (!etld1) return;
+
+  const trust = await getTrustCached();
+  const decision = decideCap(c, etld1, trust);
+  const nowSec = Date.now() / 1000;
+
+  if (decision.cap !== null) {
+    const remainingDays = (c.expirationDate - nowSec) / SEC_PER_DAY;
+    // 0.1d (~2.4h) tolerance absorbs float drift and rounded site values
+    // so we don't bounce-rewrite a cookie we just trimmed.
+    if (remainingDays <= decision.cap + 0.1) return;
+  }
+  // decision.cap === null = tracker-demote. Always re-trim non-session
+  // trackers; their existence above session-lifetime is the whole problem.
+
+  const details = buildSetDetails(c, decision.cap);
+  if (!details) return;
+  const r = await setCookieAsync(details);
+  if (!r.ok) return;
+
+  queueRetrim(etld1, decision.reason === 'tracker-demote');
+});
 
 self.scoperSweep = sweep;
 self.scoperEnsureAlarm = ensureAlarm;

@@ -2,6 +2,23 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [4.1.3] — 2026-05-14
+
+Two follow-ups from live use of v4.1.2: the scoper now resists active cookie re-issue, and Firefox's post-update "Permission needed" state is surfaced as actionable copy instead of a misleading empty popup.
+
+### Added
+
+- **`chrome.cookies.onChanged` auto-retrim.** The 15/60/240/720-minute sweep alarm is the safety net; this is the realtime arm. Sites like Google re-issue auth cookies (SID, HSID, `__Secure-3PSID`, etc.) on virtually every background API request with multi-hundred-day expirations. Without this, cookies sat at 400d between sweep alarms, and a browser close inside that window persisted the full lifetime. The listener re-trims as fast as the site re-sets, so steady-state cookie lifetime is the cap, not whatever the site wants. Steady-state popup reads now match what the scoper did. Ping-pong prevented by an at-or-below-cap (+0.1d tolerance) gate so our own writes don't re-fire. Counter increments accumulate in memory and flush to storage at most every 5s so per-event I/O stays bounded on busy sites.
+- **Popup "site access needed" banner.** When the popup opens on a page where `permissions.contains({ origins: [tabOrigin] })` returns false (typical Firefox state after an update where host permissions get flagged for re-confirmation), the popup replaces the generic "no data yet" empty state with `[ reload tab ]` + `[ open extension settings ]` actions. Chrome installs reach this branch only on `chrome://`/`about:` pages, where the active URL fails the http(s) gate and the banner doesn't show.
+
+### Internal
+
+- `mergeCounters` split into a sweep-aware wrapper + a generic internal that the auto-retrim path uses with `isSweep: false` (so the realtime arm doesn't pollute lifetime "sweeps run" / "last sweep" stats).
+- In-memory trust cache in `scoper/scoper.js` (invalidated via `chrome.storage.onChanged`) so per-event retrim doesn't hit storage to read trust state.
+- FF mirror updated; bundle drift remains exactly two files.
+
+[4.1.3]: https://github.com/hamr0/wearehere/compare/v4.1.2...main
+
 ## [4.1.2] — 2026-05-14
 
 Live-feedback patch: theme-toggle label semantics, dashboard version badge, and a popup sweep-result bug that hid untrimmable cookies.

@@ -32,11 +32,63 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.theme) applyPopupTheme(changes.theme.newValue);
 });
 
+function checkHostPermission(cb) {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    const url = tabs && tabs[0] && tabs[0].url;
+    if (!url || !/^https?:\/\//.test(url)) {
+      cb(true, null);
+      return;
+    }
+    try {
+      const origin = new URL(url).origin + '/*';
+      chrome.permissions.contains({ origins: [origin] }, (granted) => {
+        cb(!!granted, url);
+      });
+    } catch (_e) {
+      cb(true, url);
+    }
+  });
+}
+
+function showNeedsPermission() {
+  $('needs-permission').hidden = false;
+  const reload = $('reload-tab');
+  const settings = $('open-settings');
+  if (reload) reload.onclick = () => {
+    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+      if (tabs && tabs[0] && tabs[0].id) chrome.tabs.reload(tabs[0].id);
+      window.close();
+    });
+  };
+  if (settings) settings.onclick = () => {
+    // FF: about:addons. Chrome: chrome://extensions/?id=…
+    const isFirefox = typeof browser !== 'undefined' && browser.runtime && browser.runtime.getBrowserInfo;
+    const url = isFirefox
+      ? 'about:addons'
+      : 'chrome://extensions/?id=' + chrome.runtime.id;
+    chrome.tabs.create({ url });
+    window.close();
+  };
+}
+
 function render(report) {
   $('loading').hidden = true;
 
   if (!report) {
-    $('empty').hidden = false;
+    // FF-specific: an update can leave host_permissions in a "Permission
+    // needed" state where content scripts haven't injected yet on the
+    // active tab. Detect and show an actionable banner instead of the
+    // generic "no data yet" empty state. Chrome reaches this branch on
+    // genuine empty tabs (chrome://, new tab page) — those have no host
+    // to grant against, so permissions.contains stays true and we fall
+    // through to the normal empty state.
+    checkHostPermission((hasPermission, activeUrl) => {
+      if (!hasPermission && activeUrl) {
+        showNeedsPermission();
+      } else {
+        $('empty').hidden = false;
+      }
+    });
     return;
   }
 

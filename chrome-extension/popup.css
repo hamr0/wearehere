@@ -82,11 +82,28 @@ body {
 }
 
 #loading,
-#empty {
+#empty,
+#needs-permission {
   padding: 32px 8px;
   text-align: center;
   color: var(--fg-mute);
 }
+
+#needs-permission .empty-sub { margin-bottom: 12px; }
+#needs-permission .btn-mini { margin: 0 4px; }
+
+.btn-mini {
+  padding: 4px 8px;
+  border: 1px solid var(--fg);
+  color: var(--fg-bright);
+  background: transparent;
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.btn-mini:hover { background: var(--fg); color: var(--bg); }
 
 .empty-title { color: var(--fg-bright); font-weight: 700; margin-bottom: 4px; }
 .empty-sub { font-size: 11px; }
