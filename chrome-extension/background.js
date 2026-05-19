@@ -46,10 +46,11 @@ chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); });
 chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); });
 bootstrapFarblerSecret();
 
-// Lifetime blur-call counter. Reads on init, increments in memory on
-// each `watched` detection delta, persists via debounced write to keep
-// chrome.storage churn low. SW recycle reloads from storage. Popup
-// reads chrome.storage.local.farblerCounters directly for display.
+// Lifetime surfaces-blurred counter. Reads on init, increments in
+// memory on each `watched` detection delta (unique APIs, not call
+// sums), persists via debounced write to keep chrome.storage churn
+// low. SW recycle reloads from storage. Popup reads
+// chrome.storage.local.farblerCounters directly for display.
 let _farblerCountersMem = { totalCalls: 0 };
 let _farblerCountersPersistTimer = null;
 (async function loadFarblerCounters() {
@@ -349,21 +350,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // Route to per-module storage
     if (mod === 'watched') {
-      // Lifetime blur-call counter: each `watched` message carries the
-      // tab-cumulative count of FP-wrapper invocations. Compute the delta
-      // vs the prior message for this tab and increment the persistent
-      // counter. On navigation, detect-watched.js resets its in-script
+      // Lifetime surfaces-blurred counter. Each `watched` item is one
+      // unique fingerprinting API; counting items (not call sums) keeps
+      // the lifetime number consistent with the per-site "N surfaces"
+      // display and avoids Performance.now()-style polling inflating the
+      // total. On navigation, detect-watched.js resets its in-script
       // counters — delta goes negative; treat that as "current value is
       // the contribution since the navigation."
       try {
         const prevItems = (tab.modules.watched && tab.modules.watched.items) || [];
-        const sumFp = (items) => items.reduce(
-          (sum, it) => sum + (it.category === 'fingerprint' ? (it.count || 0) : 0),
+        const countFp = (items) => items.reduce(
+          (n, it) => n + (it.category === 'fingerprint' ? 1 : 0),
           0
         );
-        const prevFpCalls = sumFp(prevItems);
-        const curFpCalls = sumFp(data.items || []);
-        const delta = curFpCalls >= prevFpCalls ? curFpCalls - prevFpCalls : curFpCalls;
+        const prevFp = countFp(prevItems);
+        const curFp = countFp(data.items || []);
+        const delta = curFp >= prevFp ? curFp - prevFp : curFp;
         if (delta > 0) incrementFarblerCounter(delta);
       } catch {}
       tab.modules.watched = data;
