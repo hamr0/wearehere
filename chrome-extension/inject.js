@@ -617,12 +617,24 @@
   //     timing-attack precision floor. Native is ~5µs since Chrome's
   //     post-Spectre mitigation; we coarsen further.
 
+  // navigator.platform — notify-only, NO lie.
+  //
+  // We initially spoofed to "Win32" but reverted: creepjs reads platform
+  // from THREE surfaces — main-thread navigator.platform, UA client hints
+  // (navigator.userAgentData.platform), and Worker scope. We can only
+  // patch the first from a content-script extension; UAch and Worker
+  // globals are unreachable. So a "Win32" lie on navigator.platform
+  // disagrees with "Linux" returned by UAch + Worker, which a
+  // fingerprinter detects as "user runs an extension" — making us
+  // MORE identifiable, not less. Brave hit the same conclusion in 2020
+  // and stopped spoofing platform for the same reason. Notify is kept
+  // so the dashboard still surfaces platform reads, but we return
+  // native unmodified.
   var origPlatform = Object.getOwnPropertyDescriptor(Navigator.prototype, "platform");
   if (origPlatform && origPlatform.get) {
     Object.defineProperty(Navigator.prototype, "platform", {
       get: function () {
         notify("Navigator.platform", "fingerprint");
-        if (farbleState() !== "off") return "Win32";
         return origPlatform.get.call(this);
       },
       configurable: true,
