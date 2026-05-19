@@ -71,6 +71,80 @@ function incrementFarblerCounter(delta) {
   }, 2000);
 }
 
+// Lifetime per-company surfaces-blurred counter. Populated at visit
+// append (visits.js → recordBlurredByCompany) so we credit each
+// observed company with that visit's unique-API count. Lives in
+// chrome.storage.local under farblerBlurredByCompany; the Watchers
+// tab joins by lowercased company name.
+async function recordBlurredByCompany(perCompany) {
+  if (!perCompany) return;
+  try {
+    const { farblerBlurredByCompany } = await chrome.storage.local.get('farblerBlurredByCompany');
+    const next = (farblerBlurredByCompany && typeof farblerBlurredByCompany === 'object')
+      ? Object.assign({}, farblerBlurredByCompany) : {};
+    for (const [name, n] of Object.entries(perCompany)) {
+      if (!name || !n || n < 0) continue;
+      const k = name.toLowerCase();
+      const cur = next[k] || { name, count: 0 };
+      cur.name = name;
+      cur.count = (cur.count || 0) + n;
+      next[k] = cur;
+    }
+    await chrome.storage.local.set({ farblerBlurredByCompany: next });
+  } catch {}
+}
+self.recordBlurredByCompany = recordBlurredByCompany;
+
+// Persisted cookie-domain → company map. detect-cooked.js does the
+// authoritative domain→company classification per page; we harvest its
+// items into chrome.storage.local so the scoper (running in SW context
+// at sweep time) can attribute trimmed-per-company without duplicating
+// COMPANY_MAP. Keyed by eTLD+1 of the cookie domain (last two labels)
+// to match the scoper's bySite convention. Cookies whose domain hasn't
+// been observed via cooked yet stay unattributed; map fills in as the
+// user browses.
+function harvestEtld1(host) {
+  if (!host) return null;
+  const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  const labels = cleaned.toLowerCase().split('.').filter(Boolean);
+  if (labels.length < 2) return null;
+  return labels.slice(-2).join('.');
+}
+let _domainCompanyDirty = false;
+let _domainCompanyPersistTimer = null;
+let _domainCompanyMem = null;
+async function loadDomainCompanyMap() {
+  if (_domainCompanyMem) return _domainCompanyMem;
+  try {
+    const { cookieDomainCompanyMap } = await chrome.storage.local.get('cookieDomainCompanyMap');
+    _domainCompanyMem = (cookieDomainCompanyMap && typeof cookieDomainCompanyMap === 'object')
+      ? Object.assign({}, cookieDomainCompanyMap) : {};
+  } catch { _domainCompanyMem = {}; }
+  return _domainCompanyMem;
+}
+loadDomainCompanyMap();
+async function harvestCookieDomainCompanyMap(data) {
+  const items = data && data.items;
+  if (!Array.isArray(items) || !items.length) return;
+  const map = await loadDomainCompanyMap();
+  for (const it of items) {
+    const company = it && it.company;
+    const domain  = it && it.domain;
+    if (!company || !domain) continue;
+    const e = harvestEtld1(domain);
+    if (!e) continue;
+    if (map[e] !== company) { map[e] = company; _domainCompanyDirty = true; }
+  }
+  if (_domainCompanyDirty && !_domainCompanyPersistTimer) {
+    _domainCompanyPersistTimer = setTimeout(() => {
+      _domainCompanyPersistTimer = null;
+      if (!_domainCompanyDirty) return;
+      _domainCompanyDirty = false;
+      try { chrome.storage.local.set({ cookieDomainCompanyMap: map }); } catch {}
+    }, 2000);
+  }
+}
+
 // --- Per-tab state ---
 const tabData = {};
 const domainTosCache = {};
@@ -371,6 +445,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       tab.modules.watched = data;
     } else if (mod === 'cooked') {
       tab.modules.cooked = data;
+      try { harvestCookieDomainCompanyMap(data); } catch {}
     } else if (mod === 'played') {
       tab.modules.played = data;
     } else if (mod === 'leaked') {

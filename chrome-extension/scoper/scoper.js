@@ -115,9 +115,11 @@ function decideCap(cookie, etld1, trust) {
 async function sweep(trigger) {
   const cookies = await chrome.cookies.getAll({});
   const trust = await loadTrust();
+  const domainCompany = await loadDomainCompanyMapForScoper();
   const nowSec = Date.now() / 1000;
   let scanned = 0, rewrote = 0, demotions = 0, failed = 0;
   const perSite = {};
+  const perCompany = {};
 
   for (const c of cookies) {
     scanned++;
@@ -145,9 +147,15 @@ async function sweep(trigger) {
       demotions++;
       perSite[etld1].demotions++;
     }
+    const company = domainCompany[etld1];
+    if (company) {
+      const k = company.toLowerCase();
+      if (!perCompany[k]) perCompany[k] = { name: company, tightened: 0 };
+      perCompany[k].tightened++;
+    }
   }
 
-  await mergeCounters(rewrote, demotions, perSite);
+  await mergeCounters(rewrote, demotions, perSite, perCompany);
   await appendHistory({ at: Date.now(), trigger, scanned, rewrote, demotions });
 
   const stats = { scanned, rewrote, demotions, failed, rewrites: rewrote };
@@ -155,20 +163,28 @@ async function sweep(trigger) {
   return stats;
 }
 
-async function mergeCounters(deltaTightened, deltaDemotions, perSite) {
-  return mergeCountersInternal(deltaTightened, deltaDemotions, perSite, { isSweep: true });
+async function mergeCounters(deltaTightened, deltaDemotions, perSite, perCompany) {
+  return mergeCountersInternal(deltaTightened, deltaDemotions, perSite, perCompany, { isSweep: true });
 }
 
-async function mergeCountersInternal(deltaTightened, deltaDemotions, perSite, opts) {
+async function mergeCountersInternal(deltaTightened, deltaDemotions, perSite, perCompany, opts) {
   const isSweep = !!(opts && opts.isSweep);
   const { cookieScopeCounters } = await chrome.storage.local.get('cookieScopeCounters');
-  const prev = cookieScopeCounters || { tightened: 0, demotions: 0, sweeps: 0, lastSweep: 0, bySite: {} };
+  const prev = cookieScopeCounters || { tightened: 0, demotions: 0, sweeps: 0, lastSweep: 0, bySite: {}, byCompany: {} };
   const prevBySite = prev.bySite || {};
   for (const [etld1, delta] of Object.entries(perSite || {})) {
     const old = prevBySite[etld1] || { tightened: 0, demotions: 0 };
     prevBySite[etld1] = {
       tightened: old.tightened + delta.tightened,
       demotions: old.demotions + delta.demotions,
+    };
+  }
+  const prevByCompany = prev.byCompany || {};
+  for (const [k, delta] of Object.entries(perCompany || {})) {
+    const old = prevByCompany[k] || { name: delta.name, tightened: 0 };
+    prevByCompany[k] = {
+      name: delta.name || old.name,
+      tightened: (old.tightened || 0) + (delta.tightened || 0),
     };
   }
   await chrome.storage.local.set({
@@ -178,9 +194,34 @@ async function mergeCountersInternal(deltaTightened, deltaDemotions, perSite, op
       sweeps: prev.sweeps + (isSweep ? 1 : 0),
       lastSweep: isSweep ? Date.now() : (prev.lastSweep || 0),
       bySite: prevBySite,
+      byCompany: prevByCompany,
     },
   });
 }
+
+// Cached cookie-domain → company map. Populated by background.js's
+// harvest from detect-cooked items (keyed by eTLD+1). We read it once
+// per sweep and cache it for the realtime onChanged path; storage
+// listener below refreshes the cache when background writes a new
+// version. Cookies whose domain hasn't been observed via cooked stay
+// unattributed in byCompany — the lifetime total in `tightened` is
+// still complete.
+let domainCompanyCache = null;
+async function loadDomainCompanyMapForScoper() {
+  if (domainCompanyCache) return domainCompanyCache;
+  try {
+    const { cookieDomainCompanyMap } = await chrome.storage.local.get('cookieDomainCompanyMap');
+    domainCompanyCache = (cookieDomainCompanyMap && typeof cookieDomainCompanyMap === 'object')
+      ? cookieDomainCompanyMap : {};
+  } catch { domainCompanyCache = {}; }
+  return domainCompanyCache;
+}
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes.cookieDomainCompanyMap) {
+    domainCompanyCache = changes.cookieDomainCompanyMap.newValue || {};
+  }
+});
 
 async function appendHistory(entry) {
   const { cookieScopeHistory } = await chrome.storage.local.get('cookieScopeHistory');
@@ -247,7 +288,7 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-let pendingRetrim = { tightened: 0, demotions: 0, bySite: {} };
+let pendingRetrim = { tightened: 0, demotions: 0, bySite: {}, byCompany: {} };
 let pendingFlushTimer = null;
 const RETRIM_FLUSH_MS = 5000;
 
@@ -258,6 +299,16 @@ function queueRetrim(etld1, isDemote) {
   b.tightened++;
   if (isDemote) b.demotions++;
   pendingRetrim.bySite[etld1] = b;
+  // Cached map is populated by background.js's cooked harvest; first
+  // few real-time retrims after a fresh install may not resolve a
+  // company yet, which is fine — they accrue to bySite, just not to
+  // byCompany. Cache is refreshed via the storage listener above.
+  const company = domainCompanyCache && domainCompanyCache[etld1];
+  if (company) {
+    const k = company.toLowerCase();
+    if (!pendingRetrim.byCompany[k]) pendingRetrim.byCompany[k] = { name: company, tightened: 0 };
+    pendingRetrim.byCompany[k].tightened++;
+  }
   if (pendingFlushTimer) return;
   pendingFlushTimer = setTimeout(flushPendingRetrim, RETRIM_FLUSH_MS);
 }
@@ -265,9 +316,9 @@ function queueRetrim(etld1, isDemote) {
 async function flushPendingRetrim() {
   pendingFlushTimer = null;
   const delta = pendingRetrim;
-  pendingRetrim = { tightened: 0, demotions: 0, bySite: {} };
+  pendingRetrim = { tightened: 0, demotions: 0, bySite: {}, byCompany: {} };
   if (!delta.tightened && !delta.demotions) return;
-  await mergeCountersInternal(delta.tightened, delta.demotions, delta.bySite, { isSweep: false });
+  await mergeCountersInternal(delta.tightened, delta.demotions, delta.bySite, delta.byCompany, { isSweep: false });
 }
 
 chrome.cookies.onChanged.addListener(async (info) => {

@@ -707,58 +707,85 @@ function renderWhoFollowsYou(snap) {
   const el = $('w-who');
   if (!snap || !snap.visitsN) {
     safeSetHTML(el, `<div class="placeholder"><div>no visits yet — once you've browsed, this fills in.</div></div>`);
+    renderWhoFollowsYouSummary(snap);
     return;
   }
 
   const watchers = snap.watchers || {};
   const reach = snap.reachPct || {};
   const ranked = Object.entries(watchers)
-    .map(([k, w]) => ({ ...w, pct: reach[k] || 0 }))
+    .map(([k, w]) => ({ ...w, key: k, pct: reach[k] || 0 }))
     .sort((a, b) => b.pct - a.pct)
     .slice(0, 12);
 
   if (ranked.length === 0) {
     safeSetHTML(el, `<div class="placeholder"><div>no named watchers in this window.</div></div>`);
+    renderWhoFollowsYouSummary(snap);
     return;
   }
 
-  const maxPct = Math.max(1, ranked[0].pct);
+  // Lifetime per-company protection counts. cookieScopeCounters.byCompany
+  // is written by the scoper at sweep + realtime retrim; farblerBlurred-
+  // ByCompany is written at visit append from watcherMech.deviceId. Both
+  // are "lifetime regardless of window" — the Reach column above respects
+  // the window selector, these don't.
+  chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany'], (s) => {
+    const byCompanyTrimmed = (s.cookieScopeCounters && s.cookieScopeCounters.byCompany) || {};
+    const byCompanyBlurred = s.farblerBlurredByCompany || {};
 
-  // Per-company mechanisms we can attribute: cookies, pixels, clicks,
-  // device-id. (device-id resolved via inject.js stack-walk → caller
-  // host → company via cooked-items map; typing remains site-level
-  // because detect-silent.js measures form-field exposure, not
-  // per-script keystroke listeners.)
-  const MECH_ORDER = ['cookies', 'pixels', 'clicks', 'deviceId'];
-  const MECH_LABEL = { cookies: 'cookies', pixels: 'pixels', clicks: 'clicks', deviceId: 'device-id' };
-  const mechLine = (m) => {
-    const parts = MECH_ORDER.filter((k) => (m[k] || 0) > 0).map((k) => MECH_LABEL[k]);
-    return parts.length ? parts.join(' · ') : 'presence only';
-  };
+    // Compact mech chips for the Mech column. PRD vocabulary lock:
+    //   C  = cookies, P = pixels, ID = device ID.
+    // Clicks/link-tracking exists but is dropped from the column to
+    // keep notation short — the PRD-locked example uses C·P·ID only.
+    const mechChips = (m) => {
+      const parts = [];
+      if ((m.cookies  || 0) > 0) parts.push('C');
+      if ((m.pixels   || 0) > 0) parts.push('P');
+      if ((m.deviceId || 0) > 0) parts.push('ID');
+      return parts.length ? parts.join('·') : '—';
+    };
 
-  safeSetHTML(el, ranked.map((c) => `
-    <div class="reach-row">
-      <div class="reach-line">
-        <span class="reach-pct">${c.pct}%</span>
-        <span class="bar" style="width:${Math.round((c.pct / maxPct) * 60)}%"></span>
-        <span class="reach-name">${escapeText(c.name)}</span>
-        <span class="dim">seen on ${c.hits} of ${snap.visitsN} visit${snap.visitsN === 1 ? '' : 's'}</span>
-      </div>
-      <div class="reach-mech"><span class="dim">via</span> ${escapeText(mechLine(c.mech))}</div>
-    </div>
-  `).join(''));
+    const rowsHtml = ranked.map((c) => {
+      const trimmed = (byCompanyTrimmed[c.key] && byCompanyTrimmed[c.key].tightened) || 0;
+      const blurred = (byCompanyBlurred[c.key] && byCompanyBlurred[c.key].count) || 0;
+      return `
+        <div class="watcher-row">
+          <span class="wt-name">${escapeText(c.name)}</span>
+          <span class="wt-reach">${c.pct}% <span class="dim">(${c.hits}/${snap.visitsN})</span></span>
+          <span class="wt-num">${trimmed.toLocaleString()}</span>
+          <span class="wt-num">${blurred.toLocaleString()}</span>
+          <span class="wt-mech">${mechChips(c.mech || {})}</span>
+        </div>`;
+    }).join('');
 
-  // Site-level summary: form-field exposure (typing). Other mechanisms
-  // are now per-company. Fingerprint reads from unattributed scripts
-  // (caller host not in the cooked-items company map) are silently
-  // dropped — the site-level "typing" line is what's left to surface.
+    safeSetHTML(el, `
+      <div class="watcher-table">
+        <div class="watcher-header">
+          <span class="wt-name">company</span>
+          <span class="wt-reach">reach</span>
+          <span class="wt-num">trimmed</span>
+          <span class="wt-num">blurred</span>
+          <span class="wt-mech" title="C = cookies · P = pixels · ID = device ID">mech</span>
+        </div>
+        ${rowsHtml}
+      </div>`);
+
+    renderWhoFollowsYouSummary(snap);
+  });
+}
+
+function renderWhoFollowsYouSummary(snap) {
+  // Site-level summary: form-field exposure (typing). Per-company
+  // mechanisms now live in the table above; fingerprint reads from
+  // unattributed scripts (caller host not in the cooked-items company
+  // map) are silently dropped — the site-level "typing" line is what's
+  // left to surface here.
   const summary = $('w-who-summary');
-  if (summary) {
-    const { fields = 0, visits: vsig = 0 } = snap.typing || {};
-    safeSetHTML(summary, fields
-      ? `also: ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
-      : '');
-  }
+  if (!summary) return;
+  const { fields = 0, visits: vsig = 0 } = (snap && snap.typing) || {};
+  safeSetHTML(summary, fields
+    ? `also: ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
+    : '');
 }
 
 let siteSelectorsWired = false;

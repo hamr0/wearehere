@@ -8,9 +8,12 @@
 
   var MSG_TYPE = "__wearewatched__";
   var counts = {};
-  // byScript: { 'google-analytics.com': { fingerprint: 4, permission: 0 }, ... }
-  // Populated from inject.js's stack-walked caller host so background.js
-  // can resolve scripts to companies and surface per-watcher device-id.
+  // byScript: { 'google-analytics.com': { fingerprintApis: {api: true},
+  //                                       permissionApis: {api: true} }, ... }
+  // Track unique APIs per caller-script (not call counts) so background
+  // can attribute *surfaces* per company, matching the per-site display.
+  // Counting calls let Performance.now()-style polling dominate the
+  // per-watcher Blurred column with noise instead of breadth.
   var byScript = {};
   var debounceTimer = null;
   var DEBOUNCE_MS = 500;
@@ -164,8 +167,11 @@
     counts[api].count++;
 
     if (script) {
-      if (!byScript[script]) byScript[script] = { fingerprint: 0, permission: 0 };
-      byScript[script][category] = (byScript[script][category] || 0) + 1;
+      if (!byScript[script]) byScript[script] = { fingerprintApis: {}, permissionApis: {} };
+      var bucket = category === "fingerprint" ? byScript[script].fingerprintApis
+                 : category === "permission"  ? byScript[script].permissionApis
+                 : null;
+      if (bucket) bucket[api] = true;
     }
 
     scheduleSend();
@@ -194,6 +200,16 @@
       if (entry.category === "permission") uniquePermission++;
     }
 
+    var byScriptFlat = {};
+    var scripts = Object.keys(byScript);
+    for (var s = 0; s < scripts.length; s++) {
+      var sh = scripts[s];
+      byScriptFlat[sh] = {
+        fingerprint: Object.keys(byScript[sh].fingerprintApis).length,
+        permission:  Object.keys(byScript[sh].permissionApis).length
+      };
+    }
+
     try {
       chrome.runtime.sendMessage({
         type: "detection",
@@ -201,7 +217,7 @@
         data: {
           domain: location.hostname,
           items: items,
-          byScript: byScript,
+          byScript: byScriptFlat,
           totals: {
             fingerprint: uniqueFingerprint,
             permission: uniquePermission,

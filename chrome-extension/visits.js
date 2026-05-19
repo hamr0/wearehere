@@ -119,6 +119,21 @@ async function appendVisit(report) {
       record.scoperTightened = (here && here.tightened) || 0;
     } catch (e) { record.scoperTightened = 0; }
 
+    // Credit per-company lifetime "Blurred" surfaces. After detect-
+    // watched's unique-API fix, watcherMech[name].deviceId is the count
+    // of distinct fingerprint APIs the company's scripts touched on this
+    // visit. Summing it into the lifetime counter at visit boundaries
+    // matches the Watchers tab's "lifetime regardless of window" rule.
+    try {
+      if (self.recordBlurredByCompany) {
+        const perCompany = {};
+        for (const [name, m] of Object.entries(record.watcherMech || {})) {
+          if (m && m.deviceId > 0) perCompany[name] = m.deviceId;
+        }
+        if (Object.keys(perCompany).length) await self.recordBlurredByCompany(perCompany);
+      }
+    } catch (e) { /* best-effort */ }
+
     const { visitHistory } = await chrome.storage.local.get(VISIT_HISTORY_KEY);
     const arr = Array.isArray(visitHistory) ? visitHistory.slice() : [];
     arr.unshift(record);
