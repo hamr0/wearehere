@@ -115,16 +115,25 @@ Current popup carries 10 cards (Cookies, Network, Trackers, Pressure, Selling, P
 └────────────────────────────────────────
   ✓ Not sold   ✓ Terms OK   ⚠ Mild pressure
 
-┌─ Cookie scoper ────────────────────────
-│  nytimes.com · 7 day cap
-│  longest cookie 400d → 7d · 19 tightened, 3 killed
+┌─ Privacy guard ─────────────────────────
+│  nytimes.com
 │
-│  [ Sweep now ]   [ Trust 30d ]
+│  ✓ Cookies expire in 7 days   ·  19 trimmed
+│  ✓ Tracking blurred           ·  10 surfaces
 │
-│  ──────────────────────────────────────
-│  113 tightened · 31 killed · last sweep just now
+│  [ Trust 30d ]   [ Manage blur → ]
+│
+│  ────────────────────────────────────────
+│  113 trimmed today · 38k blurred surfaces this month
 └────────────────────────────────────────
 ```
+
+**Merged card decision (2026-05-19).** The original "Cookie scoper" card absorbed the fingerprint farbling status alongside cookie capping under a new title — "Privacy guard." Rationale:
+
+- Cookie scoper sweeps in real-time (no manual trigger needed), so the `[Sweep now]` button was dropped — it implied user-driven work where there's actually background work. Moved to the dashboard tab as a power-user escape hatch.
+- Fingerprint farbling (Phase 2) needed popup surface, but doesn't deserve its own card (already 3 sections including header). Folding it under "Privacy guard" gives both mechanisms parallel visual treatment without adding a 4th block.
+- Vocabulary: "Tracking blurred" (action verb, accurate without overpromising — we make ID harder, don't eliminate it) and "blurred surfaces" cumulative count parallel to "trimmed" cookies count.
+- The `[Manage blur →]` button opens the per-site blur settings in the dashboard tab (Slice 3a target).
 
 ### Vocabulary
 
@@ -159,23 +168,31 @@ Collapses *Selling*, *Terms*, *Pressure* into a one-line chip strip. Only render
 
 If all three are `✓`, collapse to a single `✓ All clear` chip. If any is `⚠`, that chip can expand on click into a full card with detail (escape hatch when the user wants the *why*).
 
-### Cookie scoper card — state matrix
+### Privacy guard card — state matrix
 
-| State | Site line | Impact line |
-|---|---|---|
-| Untouched (pre-sweep) | `nytimes.com · 7 day cap` | `longest cookie 400d → will trim to 7d` |
-| After sweep | `nytimes.com · 7 day cap` | `longest cookie 400d → 7d · 19 tightened, 3 killed` |
-| Clean site (all ≤ 7d already) | `example.com · 7 day cap` | `all cookies within cap ✓` |
-| Trusted | `nytimes.com · trusted 27d left` | `cookies passing through · 0 tightened` |
+Lines render conditionally — only the mechanisms that fired show. If neither cookies nor blur fired for the current origin, the card collapses to a `No protection active ✓` single line.
 
-Action row rules:
+| Cookies state | Cookies line |
+|---|---|
+| Trimming (default) | `✓ Cookies expire in 7 days   ·  19 trimmed` (count omitted if 0) |
+| Clean (all ≤ 7d already) | `✓ Cookies already short` |
+| Trusted | `• Cookies passing through    ·  trusted 27d left` |
+| Killed only (no tighten) | `✓ Cookies expire in 7 days   ·  3 killed` |
 
-- `[ Sweep now ]` is always present.
-- `[ Trust 30d ]` shows when the site is **not** trusted.
-- `[ Remove trust ]` replaces `[ Trust 30d ]` while a trust window is active.
-- `Trust 90d` does **not** ship in the popup — the per-site whitelist tab carries longer-duration trust tiers.
+| Blur state | Blur line |
+|---|---|
+| per-tab (default) | `✓ Tracking blurred           ·  10 surfaces` |
+| stable | `✓ Tracking blurred           ·  stable seed` |
+| off (allowlisted) | `• Blur off                   ·  allowlisted` |
 
-Per-site counts (`19 tightened, 3 killed`) only show numbers when non-zero (`, 3 killed` is omitted on tighten-only sites). Footer carries global counters (`113 tightened · 31 killed · last sweep <relative time>`).
+Action row:
+
+- `[ Trust 30d ]` shows when the site is **not** trusted; replaced by `[ Remove trust ]` during a trust window.
+- `[ Manage blur → ]` always present, opens the dashboard tab anchored to the current origin's blur settings.
+- `[ Sweep now ]` removed — moved to dashboard tab as a power-user escape hatch.
+- `Trust 90d` does **not** ship in the popup — the dashboard tab carries longer-duration trust tiers.
+
+Per-site counts (`19 trimmed, 3 killed`) only show numbers when non-zero (`, 3 killed` omitted on tighten-only sites). Footer carries global counters (`113 trimmed today · 38k blurred surfaces this month · last sweep <relative time>`).
 
 ### What the popup deliberately does *not* show (lives in dashboard tabs)
 
