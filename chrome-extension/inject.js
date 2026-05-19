@@ -88,19 +88,29 @@
     return area >= FARBLE_MIN_PIXELS && area <= FARBLE_MAX_PIXELS;
   }
 
-  // Deterministic perturbation pattern: use seed for starting pixel offset,
-  // then unconditionally flip R, G, B at every ~100th pixel. Guarantees
-  // ~100 perturbations per call regardless of seed bits. Same origin →
-  // same offset → same byte changes (deterministic per-origin).
+  // Deterministic perturbation pattern: xorshift32 chain seeded from the
+  // per-origin farble seed produces 100 pseudo-random pixel positions.
+  // Same seed → same sequence → same positions (A/B determinism holds).
+  // Anti-averaging hardening vs the prior fixed-stride form: positions are
+  // unpredictable to a fingerprinter, so averaging multiple readbacks
+  // can't filter out our XOR perturbations (every reading is identical
+  // anyway — deterministic per origin — so the "median" is the perturbed
+  // value, not the truth). Same flipped count + same byte op preserves
+  // the visual-identity guarantee.
+  var PERTURB_COUNT = 100;
   function applyFarble(data, seed) {
-    var stride = 400; // 4 bytes/px × 100 = every 100th pixel
-    var offset = ((seed >>> 0) % 100) * 4; // origin-dependent start pixel
+    var s = (seed >>> 0) || 1; // xorshift32 requires non-zero state
+    var len = data.length >>> 2; // pixel count
     var flipped = 0;
-    for (var i = offset; i + 2 < data.length; i += stride) {
-      data[i]     = data[i]     ^ 1;
-      data[i + 1] = data[i + 1] ^ 1;
-      data[i + 2] = data[i + 2] ^ 1;
-      flipped++;
+    for (var i = 0; i < PERTURB_COUNT; i++) {
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+      var byteOffset = ((s >>> 0) % len) * 4;
+      if (byteOffset + 2 < data.length) {
+        data[byteOffset]     = data[byteOffset]     ^ 1;
+        data[byteOffset + 1] = data[byteOffset + 1] ^ 1;
+        data[byteOffset + 2] = data[byteOffset + 2] ^ 1;
+        flipped++;
+      }
     }
     return flipped;
   }
@@ -232,10 +242,11 @@
   // use this path. We perturb the buffer in place after the original fills
   // it, same applyFarble pattern used for ImageData.
   //
-  // Constraints: applyFarble's stride assumes 4 bytes per pixel (RGBA +
-  // UNSIGNED_BYTE). Other formats (RGB = 3 bytes/px, FLOAT = 16 bytes/px,
-  // HALF_FLOAT, INT) need different strides — skip them rather than
-  // mis-perturb (corrupting a FLOAT depth buffer breaks games).
+  // Constraints: applyFarble assumes 4 bytes per pixel (RGBA +
+  // UNSIGNED_BYTE) for its pixel-count math. Other formats (RGB = 3 bytes/px,
+  // FLOAT = 16 bytes/px, HALF_FLOAT, INT) would index past valid pixels
+  // or split mid-channel — skip them rather than mis-perturb (corrupting
+  // a FLOAT depth buffer breaks games).
   // WebGL2 PIXEL_PACK_BUFFER variant (7th arg = GLintptr offset, not a
   // buffer) writes to GPU memory we can't touch from JS — also skip.
   var GL_RGBA = 0x1908;
