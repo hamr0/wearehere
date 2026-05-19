@@ -16,6 +16,36 @@ importScripts('snapshots.js');
 // own alarm + onAlarm listener at load time.
 importScripts('scoper/scoper.js');
 
+// =============================================================================
+// Farbler secret bootstrap (Phase 2 Slice 2 module 8)
+// =============================================================================
+// Generates the 64-byte HMAC key used by detect-watched.js for per-origin
+// fingerprint farbling. Previously generated lazily inside the content
+// script on first call; that path lost a race on first-ever install
+// (~9 canvas calls landed before the async storage write completed).
+// Generating here means farblerSecret is in chrome.storage.local before
+// any content script runs — content script's read becomes a single
+// synchronous storage.get with no bootstrap branch.
+// Idempotent: only generates when missing. Triggered on three signals
+// (install, browser startup, SW startup) so the secret is always present.
+function _farblerBytesToHex(bytes) {
+  var hex = "";
+  for (var i = 0; i < bytes.length; i++) hex += ("00" + bytes[i].toString(16)).slice(-2);
+  return hex;
+}
+async function bootstrapFarblerSecret() {
+  try {
+    const v = await chrome.storage.local.get('farblerSecret');
+    if (v && typeof v.farblerSecret === 'string' && v.farblerSecret.length === 128) return;
+    const fresh = new Uint8Array(64);
+    crypto.getRandomValues(fresh);
+    await chrome.storage.local.set({ farblerSecret: _farblerBytesToHex(fresh) });
+  } catch (e) { /* content script falls back to state=off if missing */ }
+}
+chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); });
+chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); });
+bootstrapFarblerSecret();
+
 // --- Per-tab state ---
 const tabData = {};
 const domainTosCache = {};
