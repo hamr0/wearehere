@@ -121,7 +121,7 @@ Current popup carries 10 cards (Cookies, Network, Trackers, Pressure, Selling, P
 │  ✓ Cookies expire in 7 days   ·  19 trimmed
 │  ✓ Tracking blurred           ·  10 surfaces
 │
-│  [ Trust 30d ]   [ Manage blur → ]
+│  [ Trust 30d ]   [ Trust ID ]
 │
 │  ────────────────────────────────────────
 │  113 trimmed today · 38k blurred surfaces this month
@@ -133,7 +133,7 @@ Current popup carries 10 cards (Cookies, Network, Trackers, Pressure, Selling, P
 - Cookie scoper sweeps in real-time (no manual trigger needed), so the `[Sweep now]` button was dropped — it implied user-driven work where there's actually background work. Moved to the dashboard tab as a power-user escape hatch.
 - Fingerprint farbling (Phase 2) needed popup surface, but doesn't deserve its own card (already 3 sections including header). Folding it under "Privacy guard" gives both mechanisms parallel visual treatment without adding a 4th block.
 - Vocabulary: "Tracking blurred" (action verb, accurate without overpromising — we make ID harder, don't eliminate it) and "blurred surfaces" cumulative count parallel to "trimmed" cookies count.
-- The `[Manage blur →]` button opens the per-site blur settings in the dashboard tab (Slice 3a target).
+- The `[Trust ID]` button mirrors `[Trust 30d]` for cookies — both are "lower protection because user trusts this site" actions, just for the two different mechanisms. No duration on Trust ID (binary toggle: default mode vs blur-off-for-this-site). Sets the origin's blur mode to `off`; finer-grained per-site choices (`stable` mode) live in the dashboard Blur overrides block.
 
 ### Vocabulary
 
@@ -183,14 +183,15 @@ Lines render conditionally — only the mechanisms that fired show. If neither c
 |---|---|
 | per-tab (default) | `✓ Tracking blurred           ·  10 surfaces` |
 | stable | `✓ Tracking blurred           ·  stable seed` |
-| off (allowlisted) | `• Blur off                   ·  allowlisted` |
+| trusted (off, user override) | `• ID passing through         ·  trust active` |
 
 Action row:
 
-- `[ Trust 30d ]` shows when the site is **not** trusted; replaced by `[ Remove trust ]` during a trust window.
-- `[ Manage blur → ]` always present, opens the dashboard tab anchored to the current origin's blur settings.
+- `[ Trust 30d ]` shows when cookies are **not** trusted on this site; toggle to `[ ✓ Trust 30d ]` (or replace with `[ Untrust ]`) during an active cookie-trust window.
+- `[ Trust ID ]` shows when blur is **not** disabled on this site (default state); toggle to `[ ✓ Trust ID ]` (or `[ Untrust ID ]`) when the user has marked the site to bypass blur. Vocabulary: "Trust" = lower protection because user trusts this site, parallel intent across both mechanisms. No duration on `Trust ID` (blur trust is permanent until removed, unlike cookies trust which expires).
 - `[ Sweep now ]` removed — moved to dashboard tab as a power-user escape hatch.
-- `Trust 90d` does **not** ship in the popup — the dashboard tab carries longer-duration trust tiers.
+- `Trust 90d` does **not** ship in the popup — the dashboard tab carries longer-duration cookies-trust tiers. Blur has no longer tier — it's binary (default mode vs trusted).
+- `Trust ID` from the popup defaults to mode `off` for the origin. Power users who want `stable` mode (consistent seed per origin instead of blur disabled) must use the dashboard `Blur overrides` block — popup keeps the binary choice.
 
 Per-site counts (`19 trimmed, 3 killed`) only show numbers when non-zero (`, 3 killed` omitted on tighten-only sites). Footer carries global counters (`113 trimmed today · 38k blurred surfaces this month · last sweep <relative time>`).
 
@@ -406,12 +407,12 @@ Two stories the tab could tell — **persistence** (same companies across many s
 
 ┌─ Who follows you · 17 watchers ─────────────────────────────────────────┐
 │                                                                          │
-│   Company             Reach                       Mechanisms             │
-│   ─────────────────   ─────────────────────────   ──────────────────     │
-│   Google              ████████░░  78%  (18/23)    cookies · pixels · ID  │
-│   Meta                █████░░░░░  48%  (11/23)    pixels · ID            │
-│   Adobe               ███░░░░░░░  30%   (7/23)    pixels                 │
-│   Microsoft Clarity   ██░░░░░░░░  17%   (4/23)    pixels                 │
+│   Company            Reach           Trimmed   Blurred   Mech.           │
+│   ─────────────────  ────────────    ───────   ───────   ───────         │
+│   Google             78% (18/23)        312     2,431    C · P · ID      │
+│   Meta               48% (11/23)         89       847    P · ID          │
+│   Adobe              30%  (7/23)         47       312    P               │
+│   Microsoft Clarity  17%  (4/23)          0       104    P               │
 │   …                                                                      │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -434,7 +435,7 @@ Two stories the tab could tell — **persistence** (same companies across many s
 
 - **Hero strip** — four stats: `sites visited`, `hidden contacts` (deduped third-party domain hits), `unique watchers` (companies), and an amplification ratio (`1 visit ≈ N hidden contacts`). The ratio is the visceral hook; the absolute numbers earn it.
 - **Window selector** — `today / week / month / all time`. Persistence character changes at different scales; week is the default. Setting persists.
-- **Who follows you** — primary block. Rows ranked by reach % (visits where the company was seen / total visits in window). Bar visualizes share, fraction shows raw numbers. Mechanism chips use the popup vocabulary (`cookies · pixels · device ID`) — vocabulary stays consistent across surfaces.
+- **Who follows you** — primary block. Rows ranked by reach % (visits where the company was seen / total visits in window). `Trimmed` and `Blurred` columns (added 2026-05-19) tie protection counts to each watcher — proves not just *who* follows but *how much* we shielded against them. Mechanism chips use compact notation (`C · P · ID`) to fit alongside the new numeric columns: `C`=cookies, `P`=pixels, `ID`=device ID. Expanded vocabulary (`cookies · pixels · device ID`) still used in the popup where space allows.
 - **Recent visits** — secondary block. Per-site tag-along count + top 2 watchers + `+N more`. Carries the amplification story without burying persistence. `[ Clear history ]` resets the visit log without touching cookies/trust.
 
 **Mechanism vocabulary — same across popup and tab:**
