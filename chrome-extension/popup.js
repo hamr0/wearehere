@@ -360,12 +360,26 @@ function renderGuardBlurLine(report, blurOverridden, globalOn, overrideMode) {
     return;
   }
   const fp = (report && report.fingerprinting) || {};
-  const surfaces = fp.techniques || 0;
+  // fp.techniques counts notify categories (currently always 0 or 1 because
+  // every FP wrapper notifies under the single "fingerprint" category) — not
+  // useful as a per-site signal. The unique-API count lives at
+  // fp.methods[<cat>].apis.length; that's the real "how many surfaces did
+  // this page touch" number. Sum across all FP categories (just "fingerprint"
+  // today, but future-proof for finer-grained categories).
+  const methods = fp.methods || [];
+  let surfaces = 0;
+  let calls = 0;
+  for (const m of methods) {
+    surfaces += (m.apis && m.apis.length) || 0;
+    calls += m.calls || 0;
+  }
   if (surfaces === 0) {
     el.textContent = '✓ Tracking blurred · no surfaces probed yet';
     el.classList.add('ok');
   } else {
-    el.textContent = `✓ Tracking blurred · ${surfaces} surface${surfaces === 1 ? '' : 's'}`;
+    el.textContent =
+      `✓ Tracking blurred · ${surfaces} surface${surfaces === 1 ? '' : 's'}` +
+      (calls > surfaces ? `, ${calls.toLocaleString()} calls` : '');
     el.classList.add('ok');
   }
 }
