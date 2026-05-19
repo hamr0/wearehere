@@ -2,6 +2,12 @@
 
 (function () {
   // --- wearewatched: fingerprinting + permission wrappers ---
+
+  // Flip to true and reload the extension to surface [wh-farble]
+  // diagnostics in the page console. Off by default — wrappers fire
+  // on every canvas/WebGL/audio call and would flood real-page logs.
+  var DEBUG = false;
+
   var MSG_TYPE = "__wearewatched__";
 
   // Walk the stack to find the first non-extension, non-self frame —
@@ -40,19 +46,262 @@
     } catch (e) {}
   }
 
-  // 1. Canvas fingerprinting
+  // Capture original canvas readback APIs at IIFE top, before any wrappers
+  // are installed. farbleAnyCanvas must use the ORIGINAL getImageData —
+  // calling our wrapper from inside farbling causes double-perturbation
+  // (same seed, same offsets, XOR twice = back to original).
+  var ORIG_GET_IMAGE_DATA = CanvasRenderingContext2D.prototype.getImageData;
+
+  // Brand-true receiver guards. creepjs and similar detection harnesses probe
+  // for extension instrumentation by calling these prototype methods with a
+  // non-canvas receiver (e.g. `HTMLCanvasElement.prototype.toBlob.call({})`).
+  // Native throws TypeError; we must too, with nothing observable in between.
+  // Object.prototype.toString brand survives cross-realm (parent vs iframe).
+  function isCanvas(x) {
+    try { return Object.prototype.toString.call(x) === "[object HTMLCanvasElement]"; }
+    catch (e) { return false; }
+  }
+  function isCanvas2DCtx(x) {
+    try { return Object.prototype.toString.call(x) === "[object CanvasRenderingContext2D]"; }
+    catch (e) { return false; }
+  }
+  function isOffscreenCanvas(x) {
+    try {
+      if (typeof OffscreenCanvas === "undefined") return false;
+      return Object.prototype.toString.call(x) === "[object OffscreenCanvas]";
+    } catch (e) { return false; }
+  }
+
+  // Size gates. Below FARBLE_MIN_PIXELS (32×32): font/emoji/rect detection
+  // probes (1×1, 2×2, 8×8) that aggregate trivially and aren't fingerprintable
+  // in isolation — wasting ~100 wrapper calls per page perturbing them is pure
+  // overhead. Threshold set to 1024 (not 4096) after M4.1 testing showed
+  // creepjs's primary canvas2d test uses 40×40 / 50×50 canvases (1600 / 2500
+  // px) — must stay above gate. Above FARBLE_MAX_PIXELS (1024×1024): legit
+  // exports/screenshots/video frames; real fingerprinters use 50×20 to 500×500
+  // because larger canvases are too slow for high-rate probing. Skipping both
+  // ends preserves the privacy-relevant middle band and cuts CPU on the rest.
+  var FARBLE_MIN_PIXELS = 1024;
+  var FARBLE_MAX_PIXELS = 1048576;
+  function withinFarbleSize(w, h) {
+    var area = (w >>> 0) * (h >>> 0);
+    return area >= FARBLE_MIN_PIXELS && area <= FARBLE_MAX_PIXELS;
+  }
+
+  // Deterministic perturbation pattern: use seed for starting pixel offset,
+  // then unconditionally flip R, G, B at every ~100th pixel. Guarantees
+  // ~100 perturbations per call regardless of seed bits. Same origin →
+  // same offset → same byte changes (deterministic per-origin).
+  function applyFarble(data, seed) {
+    var stride = 400; // 4 bytes/px × 100 = every 100th pixel
+    var offset = ((seed >>> 0) % 100) * 4; // origin-dependent start pixel
+    var flipped = 0;
+    for (var i = offset; i + 2 < data.length; i += stride) {
+      data[i]     = data[i]     ^ 1;
+      data[i + 1] = data[i + 1] ^ 1;
+      data[i + 2] = data[i + 2] ^ 1;
+      flipped++;
+    }
+    return flipped;
+  }
+
+  // Farble any canvas (2D, WebGL, WebGL2, OffscreenCanvas). Returns an
+  // offscreen 2D canvas containing the perturbed image, or null if
+  // farbling is not possible. The drawImage indirection means we no
+  // longer require the source to hold a 2D context — WebGL canvases
+  // whose framebuffer would otherwise pass through toDataURL/toBlob
+  // unfarbled are now covered uniformly.
+  function farbleAnyCanvas(src, seed) {
+    try {
+      var w = src.width, h = src.height;
+      if (w <= 0 || h <= 0) { DEBUG && console.log("[wh-farble] zero-size", w, h); return null; }
+      if (!withinFarbleSize(w, h)) {
+        DEBUG && console.log("[wh-farble] skip size " + w + "x" + h + " (out of " + FARBLE_MIN_PIXELS + "–" + FARBLE_MAX_PIXELS + " px gate)");
+        return null;
+      }
+      var off = document.createElement("canvas");
+      off.width = w;
+      off.height = h;
+      var ctx = off.getContext("2d", { willReadFrequently: true });
+      if (!ctx) { DEBUG && console.log("[wh-farble] no offscreen 2d ctx"); return null; }
+      try { ctx.drawImage(src, 0, 0); }
+      catch (e) { DEBUG && console.log("[wh-farble] drawImage failed:", e.message || e); return null; }
+      // Use captured original to avoid recursing into our own wrapper,
+      // which would double-perturb (and XOR-cancel) the same bytes.
+      var imgData = ORIG_GET_IMAGE_DATA.call(ctx, 0, 0, w, h);
+      var flipped = applyFarble(imgData.data, seed);
+      ctx.putImageData(imgData, 0, 0);
+      DEBUG && console.log("[wh-farble] canvas " + w + "x" + h + " seed=" + (seed >>> 0).toString(16) + " flipped=" + flipped + " pixels (×3 bytes each)");
+      return off;
+    } catch (e) { DEBUG && console.log("[wh-farble] error:", e.message || e); return null; }
+  }
+
+  // Perturb pixels in-place on an ImageData object using the seeded pattern.
+  function perturbImageData(imgData, seed) {
+    try {
+      if (!withinFarbleSize(imgData.width, imgData.height)) {
+        DEBUG && console.log("[wh-farble] skip perturb " + imgData.width + "x" + imgData.height + " (out of " + FARBLE_MIN_PIXELS + "–" + FARBLE_MAX_PIXELS + " px gate)");
+        return;
+      }
+      var flipped = applyFarble(imgData.data, seed);
+      DEBUG && console.log("[wh-farble] perturbed " + imgData.width + "x" + imgData.height + " seed=" + (seed >>> 0).toString(16) + " flipped=" + flipped + " pixels (×3 bytes each)");
+    } catch (e) { DEBUG && console.log("[wh-farble] perturb error:", e.message || e); }
+  }
+
+  // 1a. Canvas fingerprinting — toDataURL (PNG/JPEG base64)
   var origToDataURL = HTMLCanvasElement.prototype.toDataURL;
   HTMLCanvasElement.prototype.toDataURL = function () {
+    if (!isCanvas(this)) return origToDataURL.apply(this, arguments);
     notify("Canvas.toDataURL", "fingerprint");
+    var state = farbleState();
+    DEBUG && console.log("[wh-farble] toDataURL called, state=" + state);
+    if (state !== "off") {
+      var off = farbleAnyCanvas(this, farbleSeed());
+      if (off) return origToDataURL.apply(off, arguments);
+    }
     return origToDataURL.apply(this, arguments);
   };
 
-  // 2. WebGL fingerprinting
-  var origGetParameter = WebGLRenderingContext.prototype.getParameter;
-  WebGLRenderingContext.prototype.getParameter = function (pname) {
-    notify("WebGL.getParameter", "fingerprint");
-    return origGetParameter.apply(this, arguments);
+  // 1b. Canvas fingerprinting — toBlob (async, returns Blob via callback)
+  var origToBlob = HTMLCanvasElement.prototype.toBlob;
+  if (origToBlob) {
+    HTMLCanvasElement.prototype.toBlob = function () {
+      if (!isCanvas(this)) return origToBlob.apply(this, arguments);
+      notify("Canvas.toBlob", "fingerprint");
+      var state = farbleState();
+      DEBUG && console.log("[wh-farble] toBlob called, state=" + state);
+      if (state !== "off") {
+        var off = farbleAnyCanvas(this, farbleSeed());
+        if (off) return origToBlob.apply(off, arguments);
+      }
+      return origToBlob.apply(this, arguments);
+    };
+  }
+
+  // 1c. Canvas fingerprinting — getImageData (raw pixel readback)
+  var origGetImageData = CanvasRenderingContext2D.prototype.getImageData;
+  CanvasRenderingContext2D.prototype.getImageData = function () {
+    if (!isCanvas2DCtx(this)) return origGetImageData.apply(this, arguments);
+    notify("Canvas.getImageData", "fingerprint");
+    var state = farbleState();
+    DEBUG && console.log("[wh-farble] getImageData called, state=" + state);
+    var imgData = origGetImageData.apply(this, arguments);
+    if (state !== "off" && imgData) perturbImageData(imgData, farbleSeed());
+    return imgData;
   };
+
+  // 2. WebGL fingerprinting — getParameter
+  // Tier A constant lies for WEBGL_debug_renderer_info (the extension
+  // fingerprinters use to pull GPU vendor + driver string). Other pname
+  // queries fall through to the real implementation — those are legit
+  // WebGL feature/capability queries and lying about them breaks pages.
+  // Same helper wraps WebGL1 and WebGL2 prototypes — pages can request
+  // either context type; we close both surfaces.
+  var UNMASKED_VENDOR_WEBGL   = 0x9245;
+  var UNMASKED_RENDERER_WEBGL = 0x9246;
+  var FARBLE_WEBGL_VENDOR   = "Google Inc. (Intel)";
+  var FARBLE_WEBGL_RENDERER = "ANGLE (Intel, Intel(R) Iris Xe Graphics Direct3D11 vs_5_0 ps_5_0, D3D11)";
+
+  function wrapGetParameter(proto, label, brand) {
+    var orig = proto.getParameter;
+    proto.getParameter = function (pname) {
+      if (Object.prototype.toString.call(this) !== brand) return orig.apply(this, arguments);
+      notify("WebGL.getParameter", "fingerprint");
+      if (farbleState() !== "off") {
+        if (pname === UNMASKED_RENDERER_WEBGL) {
+          DEBUG && console.log("[wh-farble] " + label + " getParameter UNMASKED_RENDERER → farbled");
+          return FARBLE_WEBGL_RENDERER;
+        }
+        if (pname === UNMASKED_VENDOR_WEBGL) {
+          DEBUG && console.log("[wh-farble] " + label + " getParameter UNMASKED_VENDOR → farbled");
+          return FARBLE_WEBGL_VENDOR;
+        }
+      }
+      return orig.apply(this, arguments);
+    };
+  }
+  wrapGetParameter(WebGLRenderingContext.prototype, "webgl1", "[object WebGLRenderingContext]");
+  if (typeof WebGL2RenderingContext !== "undefined") {
+    wrapGetParameter(WebGL2RenderingContext.prototype, "webgl2", "[object WebGL2RenderingContext]");
+  }
+
+  // 2b. WebGL fingerprinting — readPixels (direct framebuffer readback)
+  // farbleAnyCanvas catches WebGL via toDataURL/toBlob (drawImage roundtrip),
+  // but modern fingerprinters skip the encode and call readPixels directly
+  // into a typed array. Cloudflare bot detection and FingerprintJS Pro both
+  // use this path. We perturb the buffer in place after the original fills
+  // it, same applyFarble pattern used for ImageData.
+  //
+  // Constraints: applyFarble's stride assumes 4 bytes per pixel (RGBA +
+  // UNSIGNED_BYTE). Other formats (RGB = 3 bytes/px, FLOAT = 16 bytes/px,
+  // HALF_FLOAT, INT) need different strides — skip them rather than
+  // mis-perturb (corrupting a FLOAT depth buffer breaks games).
+  // WebGL2 PIXEL_PACK_BUFFER variant (7th arg = GLintptr offset, not a
+  // buffer) writes to GPU memory we can't touch from JS — also skip.
+  var GL_RGBA = 0x1908;
+  var GL_UNSIGNED_BYTE = 0x1401;
+
+  function wrapReadPixels(proto, label, brand) {
+    var orig = proto.readPixels;
+    if (!orig) return;
+    proto.readPixels = function (x, y, width, height, format, type, pixels) {
+      if (Object.prototype.toString.call(this) !== brand) return orig.apply(this, arguments);
+      notify("WebGL.readPixels", "fingerprint");
+      var ret = orig.apply(this, arguments);
+      var state = farbleState();
+      if (state === "off") return ret;
+      // PIXEL_PACK_BUFFER offset variant (WebGL2): can't farble GPU memory.
+      if (typeof pixels !== "object" || !pixels || typeof pixels.length !== "number") {
+        DEBUG && console.log("[wh-farble] " + label + " readPixels skip (no JS buffer)");
+        return ret;
+      }
+      // Only RGBA + UNSIGNED_BYTE matches the 4-byte stride.
+      if (format !== GL_RGBA || type !== GL_UNSIGNED_BYTE) {
+        DEBUG && console.log("[wh-farble] " + label + " readPixels skip format=0x" + (format >>> 0).toString(16) + " type=0x" + (type >>> 0).toString(16));
+        return ret;
+      }
+      if (!withinFarbleSize(width, height)) {
+        DEBUG && console.log("[wh-farble] " + label + " readPixels skip size " + width + "x" + height);
+        return ret;
+      }
+      var seed = farbleSeed();
+      var flipped = applyFarble(pixels, seed);
+      DEBUG && console.log("[wh-farble] " + label + " readPixels " + width + "x" + height + " seed=" + (seed >>> 0).toString(16) + " flipped=" + flipped + " pixels (×3 bytes each)");
+      return ret;
+    };
+  }
+  wrapReadPixels(WebGLRenderingContext.prototype, "webgl1", "[object WebGLRenderingContext]");
+  if (typeof WebGL2RenderingContext !== "undefined") {
+    wrapReadPixels(WebGL2RenderingContext.prototype, "webgl2", "[object WebGL2RenderingContext]");
+  }
+
+  // 2c. createImageBitmap — third common canvas extraction surface
+  // FingerprintJS Pro and a few commercial libs use createImageBitmap(canvas)
+  // to snapshot a canvas without touching toDataURL / toBlob / readPixels —
+  // a fast path that would otherwise leak real pixel data. We only intervene
+  // when the source is a canvas (HTMLCanvasElement or OffscreenCanvas): the
+  // source is farbled via farbleAnyCanvas first, then the original is called
+  // with the farbled offscreen copy. Other source types (Image, Video, Blob,
+  // ImageData, ImageBitmap) pass through unchanged — they're either
+  // unrelated to fingerprinting or already covered by other wrappers.
+  // Note: this is a global function, not a prototype method — the receiver
+  // guard pattern (checking `this`) doesn't apply; we check the first arg.
+  var origCreateImageBitmap = window.createImageBitmap;
+  if (typeof origCreateImageBitmap === "function") {
+    window.createImageBitmap = function (image) {
+      if (farbleState() !== "off" && (isCanvas(image) || isOffscreenCanvas(image))) {
+        notify("createImageBitmap.canvasSrc", "fingerprint");
+        DEBUG && console.log("[wh-farble] createImageBitmap canvas-source " + image.width + "x" + image.height);
+        var off = farbleAnyCanvas(image, farbleSeed());
+        if (off) {
+          var args = Array.prototype.slice.call(arguments);
+          args[0] = off;
+          return origCreateImageBitmap.apply(this, args);
+        }
+      }
+      return origCreateImageBitmap.apply(this, arguments);
+    };
+  }
 
   // 3. AudioContext fingerprinting
   var OrigAudioContext = window.AudioContext || window.webkitAudioContext;
@@ -64,12 +313,38 @@
     };
   }
 
+  // Phase 2 Slice 2 step 1: per-origin farble contract. detect-watched.js
+  // (ISOLATED world) writes two attributes on <html>:
+  //   data-wh-farble-state = "off" | "stable" | "per-tab"
+  //   data-wh-farble-seed  = 8-char hex int
+  // Read at call-time, not install-time, so the async storage round-trip
+  // has until the page's first probe to land. Unknown / missing state
+  // defaults to "off" (fail-safe — never farble if contract is malformed).
+  function farbleState() {
+    try {
+      var el = document.documentElement;
+      if (!el) return "off";
+      var s = el.getAttribute("data-wh-farble-state");
+      return (s === "stable" || s === "per-tab") ? s : "off";
+    } catch (e) { return "off"; }
+  }
+  function farbleSeed() {
+    try {
+      var el = document.documentElement;
+      if (!el) return 0;
+      var hex = el.getAttribute("data-wh-farble-seed") || "";
+      var n = parseInt(hex, 16);
+      return isFinite(n) ? (n >>> 0) : 0;
+    } catch (e) { return 0; }
+  }
+
   // 4. navigator.hardwareConcurrency
   var origConcurrency = Object.getOwnPropertyDescriptor(Navigator.prototype, "hardwareConcurrency");
   if (origConcurrency && origConcurrency.get) {
     Object.defineProperty(Navigator.prototype, "hardwareConcurrency", {
       get: function () {
         notify("Navigator.hardwareConcurrency", "fingerprint");
+        if (farbleState() !== "off") return 4;
         return origConcurrency.get.call(this);
       },
       configurable: true,
