@@ -584,14 +584,148 @@
   // 5. navigator.languages
   var origLanguages = Object.getOwnPropertyDescriptor(Navigator.prototype, "languages");
   if (origLanguages && origLanguages.get) {
+    var FARBLED_LANGUAGES = Object.freeze(["en-US", "en"]);
     Object.defineProperty(Navigator.prototype, "languages", {
       get: function () {
         notify("Navigator.languages", "fingerprint");
+        if (farbleState() !== "off") return FARBLED_LANGUAGES;
         return origLanguages.get.call(this);
       },
       configurable: true,
       enumerable: true
     });
+  }
+
+  // 5b. Slice 1 Tier A constants — platform / deviceMemory / screen.* / perf.now
+  //
+  // Property-getter lies. Per the receiver-guard pattern lock in the PRD,
+  // property descriptors don't need brand checks — the "wrong receiver"
+  // probe (`getter.call({})`) doesn't apply to descriptors the way it
+  // does to prototype methods. Each lie is gated on farbleState() so
+  // the OFF path stays bit-identical to native.
+  //
+  // Locked values (PRD § "Resolved during Slice 2 design"):
+  //   navigator.languages → ["en-US", "en"]       (above, section 5)
+  //   navigator.platform  → "Win32"               (max-population blend)
+  //   navigator.deviceMemory → 8                  (modal)
+  //   screen.width/height → snap to nearest of
+  //     {1366×768, 1920×1080, 2560×1440, 3840×2160}
+  //     "nearest" not "round-up": 1440×900 → 1366×768;
+  //     3000×2000 → 2560×1440. Avoids both quality hits and breakage.
+  //   screen.colorDepth / pixelDepth → 24
+  //   performance.now() → floor to 100µs (0.1ms) — Spectre-style
+  //     timing-attack precision floor. Native is ~5µs since Chrome's
+  //     post-Spectre mitigation; we coarsen further.
+
+  var origPlatform = Object.getOwnPropertyDescriptor(Navigator.prototype, "platform");
+  if (origPlatform && origPlatform.get) {
+    Object.defineProperty(Navigator.prototype, "platform", {
+      get: function () {
+        notify("Navigator.platform", "fingerprint");
+        if (farbleState() !== "off") return "Win32";
+        return origPlatform.get.call(this);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+
+  var origDeviceMemory = Object.getOwnPropertyDescriptor(Navigator.prototype, "deviceMemory");
+  if (origDeviceMemory && origDeviceMemory.get) {
+    Object.defineProperty(Navigator.prototype, "deviceMemory", {
+      get: function () {
+        notify("Navigator.deviceMemory", "fingerprint");
+        if (farbleState() !== "off") return 8;
+        return origDeviceMemory.get.call(this);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+
+  // Screen.* — snap real (w,h) to nearest bucket by Euclidean distance.
+  // Cached at install time (screen size doesn't change mid-page-load
+  // for the relevant FP probes). If real getters are missing on some
+  // exotic UA, fall back to the 1920×1080 bucket center.
+  var SCREEN_BUCKETS = [[1366, 768], [1920, 1080], [2560, 1440], [3840, 2160]];
+  var origScreenWidth = Object.getOwnPropertyDescriptor(Screen.prototype, "width");
+  var origScreenHeight = Object.getOwnPropertyDescriptor(Screen.prototype, "height");
+  var origScreenColorDepth = Object.getOwnPropertyDescriptor(Screen.prototype, "colorDepth");
+  var origScreenPixelDepth = Object.getOwnPropertyDescriptor(Screen.prototype, "pixelDepth");
+  var snappedScreen = [1920, 1080];
+  try {
+    if (origScreenWidth && origScreenWidth.get && origScreenHeight && origScreenHeight.get) {
+      var realW = origScreenWidth.get.call(screen) | 0;
+      var realH = origScreenHeight.get.call(screen) | 0;
+      var bestDist = Infinity;
+      for (var i = 0; i < SCREEN_BUCKETS.length; i++) {
+        var dw = SCREEN_BUCKETS[i][0] - realW;
+        var dh = SCREEN_BUCKETS[i][1] - realH;
+        var d = dw * dw + dh * dh;
+        if (d < bestDist) { bestDist = d; snappedScreen = SCREEN_BUCKETS[i]; }
+      }
+    }
+  } catch (e) {}
+
+  if (origScreenWidth && origScreenWidth.get) {
+    Object.defineProperty(Screen.prototype, "width", {
+      get: function () {
+        notify("Screen.width", "fingerprint");
+        if (farbleState() !== "off") return snappedScreen[0];
+        return origScreenWidth.get.call(this);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+  if (origScreenHeight && origScreenHeight.get) {
+    Object.defineProperty(Screen.prototype, "height", {
+      get: function () {
+        notify("Screen.height", "fingerprint");
+        if (farbleState() !== "off") return snappedScreen[1];
+        return origScreenHeight.get.call(this);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+  if (origScreenColorDepth && origScreenColorDepth.get) {
+    Object.defineProperty(Screen.prototype, "colorDepth", {
+      get: function () {
+        notify("Screen.colorDepth", "fingerprint");
+        if (farbleState() !== "off") return 24;
+        return origScreenColorDepth.get.call(this);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+  if (origScreenPixelDepth && origScreenPixelDepth.get) {
+    Object.defineProperty(Screen.prototype, "pixelDepth", {
+      get: function () {
+        notify("Screen.pixelDepth", "fingerprint");
+        if (farbleState() !== "off") return 24;
+        return origScreenPixelDepth.get.call(this);
+      },
+      configurable: true,
+      enumerable: true
+    });
+  }
+
+  // performance.now() precision floor. Native is ~5µs post-Spectre;
+  // we floor to 100µs (0.1ms). Wrapped via prototype to catch both
+  // performance.now() and Performance.prototype.now.call(...). Brand
+  // check would apply here (it's a method not a descriptor), but
+  // performance.now is well-behaved across realms and the cost of
+  // misuse is just "returns NaN" — not a detection vector.
+  if (typeof Performance !== "undefined" && Performance.prototype && Performance.prototype.now) {
+    var origPerfNow = Performance.prototype.now;
+    Performance.prototype.now = function () {
+      var t = origPerfNow.apply(this, arguments);
+      if (farbleState() === "off") return t;
+      notify("Performance.now", "fingerprint");
+      return Math.floor(t * 10) / 10;
+    };
   }
 
   // 6. Clipboard access
