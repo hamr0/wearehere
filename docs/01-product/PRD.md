@@ -211,19 +211,58 @@ Popup is the *glance + one action*; dashboard tabs are the *proof + management*.
 
 `40 MODERATE` stays. The number is the wearehere signature; the verdict ("Typical tracking. Clearing cookies helps.") is the carrier for non-tech users, but the number lets returning users compare across sites and across visits. Both layers earn their pixels.
 
-### Cookie scoper dashboard tab (decided 2026-05-12)
+### Privacy guard dashboard tab (decided 2026-05-12, fingerprint blur folded in 2026-05-19)
 
-Standalone tab — four blocks, no per-site context card (popup carries that), no default-cap knob (locked at 7d per wearecooked v5 PRD), no trust-expiry column (trust is permanent until removed; user removes manually).
+Standalone tab — seven blocks. The tab carries both cookie capping and fingerprint blur under one roof; mechanisms stay visually separate (parallel overview blocks for each, separate per-site rules tables) so each is scannable without cross-decision pressure. No per-site context card (popup carries that), no default-cap knob (locked at 7d per wearecooked v5 PRD), no trust-expiry column for cookies (trust is permanent until removed; user removes manually). Tab was originally named `Cookie scoper`; renamed `Privacy guard` when blur shipped in Phase 2 Slice 3.
+
+Reading flow: lifetime impact → current cookie state → cumulative blur work → per-site cookie trust → per-site blur overrides → defaults → audit log.
 
 ```
-┌─ Cookie scoper ──────────────────────────────────────────────────────────┐
+┌─ Privacy guard ──────────────────────────────────────────────────────────┐
 │                                                                          │
-│   157            45                 47                last sweep         │
-│   tightened      trackers killed    sites watched     12m ago            │
+│   42,244          38,452            598            just now              │
+│   trimmed         blurred           sweeps run     last active           │
+│   (lifetime)      (lifetime)        (lifetime)                           │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 
-┌─ Trusted sites · 9 ──────────────────────────────────────────────────────┐
+┌─ Cookies in your browser · 206 right now ───────────────────────────────┐
+│                                                                          │
+│   Coverage          137  ████████████████   capped (1p · 7d)             │
+│                      69  ████████           tracker (demoted to session) │
+│                       0  —                  trusted (passing through)    │
+│                                                                          │
+│   By expiry         97  ██████████████      session                      │
+│                    109  ███████████████     < 7 days                     │
+│                      0  —                   7–30 days                    │
+│                      0  —                   30–90 days                   │
+│                      0  —                   90 days+                     │
+│                                                                          │
+│   Top owners        google.com (53) · youtube.com (33) · linkedin.com    │
+│                     (18) · claude.ai (14) · github.com (14)              │
+│                                                                          │
+│                                                  [ Inspect all 206  ▾ ] │
+└──────────────────────────────────────────────────────────────────────────┘
+
+┌─ Surfaces blurred · 38,452 this month ──────────────────────────────────┐
+│                                                                          │
+│   Coverage        18,231  ████████████████   canvas (toDataURL +)        │
+│                    9,742  ████████           audio (getChannelData +)    │
+│                    5,891  █████              fonts (measureText)         │
+│                    3,128  ██                 screen + nav constants      │
+│                    1,460  █                  WebGL constants             │
+│                                                                          │
+│   By mode          47  ████████████████      per-tab (default)           │
+│                     2  ██                    stable (per-site)           │
+│                     2  ██                    off (allowlisted)           │
+│                                                                          │
+│   Top sites        creepjs.org (5,231) · cnn.com (4,892) · nytimes.com   │
+│                    (3,144) · youtube.com (2,887) · amiunique.org (2,401) │
+│                                                                          │
+│                                                 [ Inspect all sites ▾ ] │
+└──────────────────────────────────────────────────────────────────────────┘
+
+┌─ Trusted sites · 9 (cookies pass through) ──────────────────────────────┐
 │                                                                          │
 │   Domain               Trust    Cookies stored    Actions                │
 │   ─────────────────    ──────   ───────────────   ──────────────────     │
@@ -236,10 +275,25 @@ Standalone tab — four blocks, no per-site context card (popup carries that), n
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 
+┌─ Blur overrides · 4 (default per-tab) ──────────────────────────────────┐
+│                                                                          │
+│   Domain               Mode         Actions                              │
+│   ─────────────────    ──────────   ──────────────────                   │
+│   banking.com          off          [→ stable]  [✕]                      │
+│   bank-of-x.com        off          [→ stable]  [✕]                      │
+│   reddit.com           stable       [→ per-tab] [✕]                      │
+│   linkedin.com         stable       [→ per-tab] [✕]                      │
+│                                                                          │
+│   Add  [_______________________________]  [off ▾]    [Add]               │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+
 ┌─ Settings ───────────────────────────────────────────────────────────────┐
 │                                                                          │
-│   Sweep period      ( ) every 15 min   (•) hourly                        │
+│   Cookie sweep      ( ) every 15 min   (•) hourly                        │
 │                     ( ) every 4 hrs    ( ) every 12 hrs                  │
+│                                                                          │
+│   Default blur      ( ) off   ( ) stable per origin   (•) per-tab seed   │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
 
@@ -247,14 +301,13 @@ Standalone tab — four blocks, no per-site context card (popup carries that), n
 │                                                                          │
 │   1p anchor: 47 sites watched · gate opens at 10 (open)                  │
 │                                                                          │
-│   When        Trigger     Scanned    Rewrote    Demoted                  │
-│   ─────────   ─────────   ────────   ────────   ────────                 │
-│   14:32:01    alarm       1047       12         3                        │
-│   13:32:01    alarm       1043       0          0                        │
-│   12:32:01    alarm       1041       4          1                        │
-│   11:32:00    manual      1039       0          0                        │
-│   10:32:00    alarm       1035       0          0                        │
-│   09:32:00    alarm       1029       8          2                        │
+│   When        Event               Site            Detail                 │
+│   ─────────   ─────────────────   ───────────     ──────────────────     │
+│   14:32:01    cookie sweep        —               1047 scanned · 12 · 3  │
+│   14:30:47    blur active         nytimes.com     canvas, audio +6       │
+│   14:28:12    blur active         cnn.com         canvas, fonts +4       │
+│   14:25:33    blur active         youtube.com     audio                  │
+│   13:32:01    cookie sweep        —               1043 scanned · 0 · 0   │
 │   …                                                                      │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -262,10 +315,15 @@ Standalone tab — four blocks, no per-site context card (popup carries that), n
 
 **Block rules:**
 
-- **Lifetime hero** — four numbers across: `tightened`, `trackers killed`, `sites watched`, `last sweep` (relative timestamp). `sites watched` counts unique domains touched lifetime; proves coverage without overpromising deletion volume.
-- **Trusted sites** — primary management surface. Inline `[→ 30d]` / `[→ 90d]` toggles tier; `[✕]` removes trust. Add-domain row at the bottom with tier selector defaulting to 30d.
-- **Settings** — only `Sweep period` ships in phase 1. Default is `hourly`. The 7d cap is **not** user-tunable (architecture decision in wearecooked v5 PRD).
-- **Recent activity** — collapsed by default. Lists last N sweep events with trigger source (`alarm` for scheduled, `manual` for sweep-now). 1p anchor / cron gate state surfaces in the section header so power users can see whether the gate is open.
+- **Lifetime hero** — four numbers across: `trimmed` (cookies cumulative), `blurred` (surfaces cumulative — k-suffix at scale), `sweeps run` (cookie scoper background runs, lifetime), `last active` (relative timestamp of most-recent event from either mechanism). Sweeps-run preferred over `sites guarded` because it proves the system's always-on background work; per-site coverage already lives in Top owners / Top sites within the overview blocks.
+- **Cookies in your browser** (existing 2026-05-12 fold from old Cookies tab) — current state of the cookie population: coverage by scoper action, distribution by expiry bucket, vendor concentration in Top owners. Answers "what's IN the browser right now."
+- **Surfaces blurred** (new 2026-05-19) — parallel to Cookies in your browser but on a different axis: cumulative work (this month / lifetime) rather than current state. Coverage by surface family (canvas / audio / fonts / nav-screen / WebGL constants), distribution by blur mode active across sites, concentration by site (Top sites where blur fires most). Answers "where has the work happened."
+- **Trusted sites (cookies)** — primary cookie-management surface. Block title carries `(cookies pass through)` clarification because "trust" semantically differs between mechanisms (cookies trust = keep them longer, blur trust = unmask). Inline `[→ 30d]` / `[→ 90d]` toggles trust tier; `[✕]` removes trust. Add-domain row at the bottom, default 30d.
+- **Blur overrides** — exception list only; most sites use the Settings default. `off` for sites where the user wants blur disabled (e.g., a banking site that breaks under canvas farbling), `stable` for sites where consistent per-origin seed is preferred over per-tab freshness (e.g., a logged-in productivity tool that flips on per-tab variability). Add-domain row defaults to `off` mode (the most common override reason).
+- **Settings** — Cookie sweep period (default `hourly`) and Default blur mode (default `per-tab seed`) in one block. The 7d cookie cap is **not** user-tunable (architecture decision). Blur cannot be enabled globally with no mode — the radio is mutually exclusive between off/stable/per-tab.
+- **Recent activity** — collapsed by default. Unified log of cookie sweep events + blur firings. Cookie rows show `scanned · rewrote · demoted`; blur rows show site + which surfaces fired (`canvas, audio +N`). 1p anchor / cron gate state surfaces in the section header for cookie sweep power users.
+
+**Parallel structure between the two overview blocks** (Cookies in browser / Surfaces blurred) is deliberate: both present composition (Coverage), distribution (By expiry / By mode), concentration (Top owners / Top sites) in the same vertical rhythm and end with an `[ Inspect all … ▾ ]` expander. They sit on different axes (current state vs cumulative work) but read in the same visual cadence — the user learns the pattern once for cookies and re-applies it to blur instantly.
 
 **Per-site detail does not live here.** The popup is the per-site surface (current tab → its scoper card). The dashboard tab is lifetime + management + telemetry. No "this site" widget on the tab.
 
