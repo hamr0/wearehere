@@ -423,6 +423,125 @@
   wrapAnalyserMethod("getByteFrequencyData", applyFarbleUint8);
   wrapAnalyserMethod("getByteTimeDomainData", applyFarbleUint8);
 
+  // 4b. Font enumeration cap (M6) — CanvasRenderingContext2D.measureText
+  //
+  // Fingerprinters detect installed fonts by setting `ctx.font` to a
+  // candidate family then measuring "ABC…" — if width differs from the
+  // fallback's, the candidate is installed. Iterating hundreds of font
+  // names yields a stable signature ("user has Helvetica, no Lucida
+  // Bright" etc.). Defense: classify any font string into one of 11
+  // buckets (10 canonical Win32 fonts + "fallback") and return widths
+  // from a fixed per-bucket lookup table. Result: every farbled user
+  // reports the same Win32 font set regardless of OS or real fonts
+  // installed, indistinguishable as a population. Pairs with the
+  // future platform="Win32" Tier A lie.
+  //
+  // We return a duck-typed TextMetrics-like plain object — strict
+  // callers checking `instanceof TextMetrics` would notice, but real
+  // fingerprinters and most layout code only read `.width`. Native
+  // TextMetrics fields are readonly, so an instance shim isn't an
+  // option without a Proxy.
+  //
+  // Acknowledged ceiling (per PRD): SVG-glyph fingerprinting bypasses
+  // this entirely. Defense is partial by design; offsetWidth is left
+  // un-wrapped (too many legit callers — layout breakage risk).
+  //
+  // Scope: CanvasRenderingContext2D.prototype only. OffscreenCanvas's
+  // 2D context is the acknowledged v1 gap — matches the existing
+  // toDataURL/getImageData wrapper scope.
+
+  var FONT_BUCKETS = [
+    { name: "Arial", charW: 5.5 },
+    { name: "Times", charW: 5.2 },
+    { name: "Courier", charW: 6.0 },
+    { name: "Verdana", charW: 6.1 },
+    { name: "Georgia", charW: 5.4 },
+    { name: "Tahoma", charW: 5.3 },
+    { name: "Trebuchet", charW: 5.4 },
+    { name: "Comic Sans", charW: 5.6 },
+    { name: "Impact", charW: 4.8 },
+    { name: "Lucida Console", charW: 5.7 },
+    { name: "fallback", charW: 5.5 }
+  ];
+  // Order matters: specific font names first (catch "Verdana, sans-serif"
+  // as Verdana, not as the generic sans-serif). Multi-word names before
+  // single-word substrings ("Times New Roman" before bare "Times" — only
+  // matters for tie-breaking; both map to bucket 1 here).
+  var SPECIFIC_FONTS = [
+    ["arial", 0], ["helvetica", 0],
+    ["times new roman", 1], ["times", 1],
+    ["courier new", 2], ["courier", 2],
+    ["verdana", 3],
+    ["georgia", 4],
+    ["tahoma", 5],
+    ["trebuchet ms", 6], ["trebuchet", 6],
+    ["comic sans ms", 7], ["comic sans", 7],
+    ["impact", 8],
+    ["lucida console", 9]
+  ];
+  var GENERIC_FAMILIES = [
+    ["sans-serif", 0],
+    ["serif", 1],
+    ["monospace", 2]
+  ];
+  function classifyFont(fontStr) {
+    if (!fontStr) return 10;
+    var lc = String(fontStr).toLowerCase();
+    for (var i = 0; i < SPECIFIC_FONTS.length; i++) {
+      if (lc.indexOf(SPECIFIC_FONTS[i][0]) >= 0) return SPECIFIC_FONTS[i][1];
+    }
+    for (var j = 0; j < GENERIC_FAMILIES.length; j++) {
+      if (lc.indexOf(GENERIC_FAMILIES[j][0]) >= 0) return GENERIC_FAMILIES[j][1];
+    }
+    return 10;
+  }
+  // CSS font shorthand size token; rough px conversion for pt/em/rem
+  // (em/rem here treats 1em ≈ 16px since we don't know the element's
+  // parent computed font-size — fingerprinters who care about exact em
+  // resolution would need to bypass us via SVG anyway).
+  function parseFontSize(fontStr) {
+    var m = /(\d+(?:\.\d+)?)\s*(px|pt|em|rem)/i.exec(fontStr || "");
+    if (!m) return 10;
+    var n = parseFloat(m[1]);
+    var unit = m[2].toLowerCase();
+    if (unit === "pt") n *= 1.333;
+    else if (unit === "em" || unit === "rem") n *= 16;
+    return n > 0 ? n : 10;
+  }
+  function fakeTextMetrics(width) {
+    return {
+      width: width,
+      actualBoundingBoxLeft: 0,
+      actualBoundingBoxRight: width,
+      actualBoundingBoxAscent: 0,
+      actualBoundingBoxDescent: 0,
+      fontBoundingBoxAscent: 0,
+      fontBoundingBoxDescent: 0,
+      emHeightAscent: 0,
+      emHeightDescent: 0,
+      alphabeticBaseline: 0,
+      hangingBaseline: 0,
+      ideographicBaseline: 0
+    };
+  }
+
+  if (typeof CanvasRenderingContext2D !== "undefined" && CanvasRenderingContext2D.prototype && CanvasRenderingContext2D.prototype.measureText) {
+    var origMeasureText = CanvasRenderingContext2D.prototype.measureText;
+    CanvasRenderingContext2D.prototype.measureText = function (text) {
+      if (!isCanvas2DCtx(this)) return origMeasureText.apply(this, arguments);
+      if (farbleState() === "off") return origMeasureText.apply(this, arguments);
+      var fontStr = "";
+      try { fontStr = this.font || ""; } catch (e) {}
+      var bucket = classifyFont(fontStr);
+      var size = parseFontSize(fontStr);
+      var len = (text == null) ? 0 : String(text).length;
+      var width = len * FONT_BUCKETS[bucket].charW * (size / 10);
+      notify("CanvasRenderingContext2D.measureText", "fingerprint");
+      DEBUG && console.log("[wh-farble] measureText font='" + fontStr + "' bucket=" + FONT_BUCKETS[bucket].name + " size=" + size + " text.len=" + len + " width=" + width.toFixed(2));
+      return fakeTextMetrics(width);
+    };
+  }
+
   // Phase 2 Slice 2 step 1: per-origin farble contract. detect-watched.js
   // (ISOLATED world) writes two attributes on <html>:
   //   data-wh-farble-state = "off" | "stable" | "per-tab"
