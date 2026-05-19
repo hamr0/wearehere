@@ -71,6 +71,14 @@
       return Object.prototype.toString.call(x) === "[object OffscreenCanvas]";
     } catch (e) { return false; }
   }
+  function isAudioBuffer(x) {
+    try { return Object.prototype.toString.call(x) === "[object AudioBuffer]"; }
+    catch (e) { return false; }
+  }
+  function isAnalyserNode(x) {
+    try { return Object.prototype.toString.call(x) === "[object AnalyserNode]"; }
+    catch (e) { return false; }
+  }
 
   // Size gates. Below FARBLE_MIN_PIXELS (32×32): font/emoji/rect detection
   // probes (1×1, 2×2, 8×8) that aggregate trivially and aren't fingerprintable
@@ -111,6 +119,41 @@
         data[byteOffset + 2] = data[byteOffset + 2] ^ 1;
         flipped++;
       }
+    }
+    return flipped;
+  }
+
+  // Audio perturbation helpers (M5). Same xorshift32 chain as canvas
+  // applyFarble — 100 sample positions per call, deterministic per seed
+  // (A/B determinism + anti-averaging). Float32: additive ±0.0001 noise,
+  // far below typical 16-bit PCM step (~3e-5) cumulative dither floor and
+  // inaudible in real audio. Uint8 (analyser byte data, range 0–255):
+  // XOR 1 on low bit — 1/256 ≈ 0.39% — invisible in EQ visualizers.
+  var AUDIO_FLOAT_MAGNITUDE = 0.0001;
+  function applyFarbleFloat32(arr, seed) {
+    var s = (seed >>> 0) || 1;
+    var len = arr.length;
+    if (len === 0) return 0;
+    var flipped = 0;
+    for (var i = 0; i < PERTURB_COUNT; i++) {
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+      var idx = (s >>> 0) % len;
+      var sign = (s & 1) ? 1 : -1;
+      arr[idx] = arr[idx] + sign * AUDIO_FLOAT_MAGNITUDE;
+      flipped++;
+    }
+    return flipped;
+  }
+  function applyFarbleUint8(arr, seed) {
+    var s = (seed >>> 0) || 1;
+    var len = arr.length;
+    if (len === 0) return 0;
+    var flipped = 0;
+    for (var i = 0; i < PERTURB_COUNT; i++) {
+      s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+      var idx = (s >>> 0) % len;
+      arr[idx] = arr[idx] ^ 1;
+      flipped++;
     }
     return flipped;
   }
@@ -323,6 +366,62 @@
       return origCreateOscillator.apply(this, arguments);
     };
   }
+
+  // 3b. Audio farbling (M5) — AudioBuffer + AnalyserNode
+  //
+  // AudioContext fingerprinting (Cloudflare bot detection, FingerprintJS,
+  // creepjs) renders a known signal (oscillator → dynamicsCompressor →
+  // OfflineAudioContext) and hashes the resulting samples. Perturbing
+  // ~100 samples per readback breaks the hash without audible artifact.
+  //
+  // AudioBuffer.getChannelData returns a *reference* to the underlying
+  // Float32Array — mutation persists on the buffer. Two reads of the same
+  // channel must return the same data (native behavior + matches
+  // fingerprinter expectation), so we dedup via WeakMap<AudioBuffer,
+  // Set<channelIndex>>: perturb once on first read, return same data on
+  // subsequent reads. Without this, additive ±0.0001 noise would
+  // accumulate across calls and a fingerprinter could detect us by
+  // comparing two reads.
+  //
+  // AnalyserNode.{getFloat,getByte}*Data fills a caller-owned buffer each
+  // call — no dedup needed; perturb after the native fill completes.
+  if (typeof AudioBuffer !== "undefined" && AudioBuffer.prototype && AudioBuffer.prototype.getChannelData) {
+    var origGetChannelData = AudioBuffer.prototype.getChannelData;
+    var perturbedChannels = new WeakMap();
+    AudioBuffer.prototype.getChannelData = function (channel) {
+      if (!isAudioBuffer(this)) return origGetChannelData.apply(this, arguments);
+      var data = origGetChannelData.apply(this, arguments);
+      if (farbleState() === "off" || !data || !data.length) return data;
+      var done = perturbedChannels.get(this);
+      if (!done) { done = new Set(); perturbedChannels.set(this, done); }
+      if (done.has(channel)) return data;
+      var seed = farbleSeed();
+      var flipped = applyFarbleFloat32(data, seed);
+      done.add(channel);
+      notify("AudioBuffer.getChannelData", "fingerprint");
+      DEBUG && console.log("[wh-farble] AudioBuffer.getChannelData ch=" + channel + " len=" + data.length + " seed=" + seed.toString(16) + " flipped=" + flipped);
+      return data;
+    };
+  }
+
+  function wrapAnalyserMethod(name, perturbFn) {
+    if (typeof AnalyserNode === "undefined" || !AnalyserNode.prototype || !AnalyserNode.prototype[name]) return;
+    var orig = AnalyserNode.prototype[name];
+    AnalyserNode.prototype[name] = function (arr) {
+      if (!isAnalyserNode(this)) return orig.apply(this, arguments);
+      var ret = orig.apply(this, arguments);
+      if (farbleState() === "off" || !arr || !arr.length) return ret;
+      var seed = farbleSeed();
+      var flipped = perturbFn(arr, seed);
+      notify("AnalyserNode." + name, "fingerprint");
+      DEBUG && console.log("[wh-farble] AnalyserNode." + name + " len=" + arr.length + " seed=" + seed.toString(16) + " flipped=" + flipped);
+      return ret;
+    };
+  }
+  wrapAnalyserMethod("getFloatFrequencyData", applyFarbleFloat32);
+  wrapAnalyserMethod("getFloatTimeDomainData", applyFarbleFloat32);
+  wrapAnalyserMethod("getByteFrequencyData", applyFarbleUint8);
+  wrapAnalyserMethod("getByteTimeDomainData", applyFarbleUint8);
 
   // Phase 2 Slice 2 step 1: per-origin farble contract. detect-watched.js
   // (ISOLATED world) writes two attributes on <html>:
