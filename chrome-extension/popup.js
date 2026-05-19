@@ -259,11 +259,12 @@ function renderGuard(report) {
   chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
     const trust = (state && state.cookieScopeTrust) || {};
     const stats = (state && state.cookieScopeCounters) || null;
-    chrome.storage.local.get(['farblerSettings', 'farbleDevMode'], (s) => {
+    chrome.storage.local.get(['farblerSettings', 'farbleDevMode', 'farblerCounters'], (s) => {
       const farblerSettings = s.farblerSettings || {};
       const globalOn = !!s.farbleDevMode;
+      const farblerCounters = s.farblerCounters || { totalCalls: 0 };
       renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn);
-      renderGuardCounters(stats);
+      renderGuardCounters(stats, farblerCounters);
     });
   });
   wireGuardButtons();
@@ -364,31 +365,33 @@ function renderGuardBlurLine(report, blurOverridden, globalOn, overrideMode) {
   // every FP wrapper notifies under the single "fingerprint" category) — not
   // useful as a per-site signal. The unique-API count lives at
   // fp.methods[<cat>].apis.length; that's the real "how many surfaces did
-  // this page touch" number. Sum across all FP categories (just "fingerprint"
-  // today, but future-proof for finer-grained categories).
+  // this page touch" number. Call count is dropped from this line because
+  // it's dominated by Performance.now polling (frameworks call it 1000s of
+  // times per page), making it look adversarial when it isn't.
   const methods = fp.methods || [];
   let surfaces = 0;
-  let calls = 0;
   for (const m of methods) {
     surfaces += (m.apis && m.apis.length) || 0;
-    calls += m.calls || 0;
   }
   if (surfaces === 0) {
     el.textContent = '✓ Tracking blurred · no surfaces probed yet';
     el.classList.add('ok');
   } else {
-    el.textContent =
-      `✓ Tracking blurred · ${surfaces} surface${surfaces === 1 ? '' : 's'}` +
-      (calls > surfaces ? `, ${calls.toLocaleString()} calls` : '');
+    el.textContent = `✓ Tracking blurred · ${surfaces} surface${surfaces === 1 ? '' : 's'}`;
     el.classList.add('ok');
   }
 }
 
-function renderGuardCounters(stats) {
-  const r = (stats && stats.tightened) || 0;
-  const d = (stats && stats.demotions) || 0;
-  const last = stats && stats.lastSweep ? `last sweep ${relativeTime(stats.lastSweep)}` : 'never swept';
-  $('guard-counters').textContent = `${r.toLocaleString()} trimmed · ${d.toLocaleString()} killed · ${last}`;
+function renderGuardCounters(stats, farblerCounters) {
+  const trimmed = (stats && stats.tightened) || 0;
+  const blurred = (farblerCounters && farblerCounters.totalCalls) || 0;
+  const last = stats && stats.lastSweep ? relativeTime(stats.lastSweep) : null;
+  const parts = [
+    `${trimmed.toLocaleString()} cookies trimmed`,
+    `${blurred.toLocaleString()} surfaces blurred`,
+  ];
+  if (last) parts.push(last);
+  $('guard-counters').textContent = parts.join(' · ');
 }
 
 function wireGuardButtons() {
@@ -404,7 +407,7 @@ function wireGuardButtons() {
       const cap = isTrusted ? 0 : 30;
       chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: currentEtld1, cap }, () => {
         chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (s2) => {
-          chrome.storage.local.get(['farblerSettings', 'farbleDevMode'], (st) => {
+          chrome.storage.local.get(['farblerSettings', 'farbleDevMode', 'farblerCounters'], (st) => {
             renderGuardCard(
               currentEtld1,
               (s2 && s2.cookieScopeTrust) || {},
@@ -413,7 +416,7 @@ function wireGuardButtons() {
               st.farblerSettings || {},
               !!st.farbleDevMode
             );
-            renderGuardCounters((s2 && s2.cookieScopeCounters) || null);
+            renderGuardCounters((s2 && s2.cookieScopeCounters) || null, st.farblerCounters || null);
           });
         });
       });
