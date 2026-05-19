@@ -1,6 +1,6 @@
 /**
  * popup.js — wearehere variant A · retro terminal
- * Renders 3-block layout: Header / Who's watching / Footer chips / Cookie scoper card.
+ * Renders 4-block layout: Header / Who's watching / Footer chips / Privacy guard card.
  * Reads from background.js tabData via getReport message.
  */
 
@@ -97,7 +97,7 @@ function render(report) {
   renderHeader(report);
   renderWatchers(report);
   renderFooterChips(report);
-  renderScoper(report);
+  renderGuard(report);
   wireDashboardButton();
 }
 
@@ -250,57 +250,66 @@ function relativeTime(ms) {
 }
 
 let currentEtld1 = null;
+let currentReport = null;
 
-function renderScoper(report) {
+function renderGuard(report) {
+  currentReport = report;
+  const etld1 = etld1FromHost(report.site);
+  currentEtld1 = etld1;
   chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
     const trust = (state && state.cookieScopeTrust) || {};
     const stats = (state && state.cookieScopeCounters) || null;
-    const etld1 = etld1FromHost(report.site);
-    currentEtld1 = etld1;
-    renderScoperCard(etld1, trust, stats);
-    renderScoperCounters(stats);
+    chrome.storage.local.get(['farblerSettings', 'farbleDevMode'], (s) => {
+      const farblerSettings = s.farblerSettings || {};
+      const globalOn = !!s.farbleDevMode;
+      renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn);
+      renderGuardCounters(stats);
+    });
   });
-  wireScoperButtons();
+  wireGuardButtons();
 }
 
-function renderScoperCard(etld1, trust, stats) {
-  const siteEl = $('scoper-site');
-  const impactEl = $('scoper-impact');
+function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn) {
+  const siteEl = $('guard-site');
+  const cookiesEl = $('guard-cookies-line');
+  const blurEl = $('guard-blur-line');
   const trustBtn = $('trust-toggle');
+  const trustIdBtn = $('trust-id');
 
-  impactEl.classList.remove('unwired');
+  cookiesEl.classList.remove('unwired', 'ok', 'warn');
+  blurEl.classList.remove('unwired', 'ok', 'warn');
 
   if (!etld1) {
     siteEl.textContent = '—';
-    impactEl.textContent = 'not a regular site — scoper inactive here';
-    impactEl.classList.add('warn');
+    cookiesEl.textContent = 'not a regular site — guard inactive here';
+    cookiesEl.classList.add('unwired');
+    blurEl.textContent = '';
     trustBtn.disabled = true;
-    $('sweep-now').disabled = false;
+    trustIdBtn.disabled = true;
     return;
   }
 
   const trustEntry = trust[etld1];
-  const isTrusted = !!trustEntry;
-  const capDays = isTrusted ? trustEntry.capDays : 7;
+  const isCookieTrusted = !!trustEntry;
+  const capDays = isCookieTrusted ? trustEntry.capDays : 7;
 
-  safeSetHTML(siteEl, 
-    `<span class="host">${escapeText(etld1)}</span> ` +
-    `<span class="cap${isTrusted ? ' trusted' : ''}">· ${isTrusted ? 'trusted · ' + capDays + 'd cap' : capDays + ' day cap'}</span>`);
+  safeSetHTML(siteEl, `<span class="host">${escapeText(etld1)}</span>`);
 
-  if (isTrusted) {
-    trustBtn.textContent = '[ remove trust ]';
-    trustBtn.disabled = false;
-  } else {
-    trustBtn.textContent = '[ trust 30d ]';
-    trustBtn.disabled = false;
-  }
-  $('sweep-now').disabled = false;
+  trustBtn.textContent = isCookieTrusted ? '[ remove cookie trust ]' : '[ trust 30d ]';
+  trustBtn.disabled = false;
 
-  renderScoperImpact(etld1, capDays, isTrusted, stats);
+  // Blur state for this origin
+  const override = farblerSettings[etld1];
+  const blurOverridden = !!(override && override.mode === 'off');
+  trustIdBtn.textContent = blurOverridden ? '[ remove ID trust ]' : '[ trust ID ]';
+  trustIdBtn.disabled = !globalOn && !blurOverridden;
+
+  renderGuardCookiesLine(etld1, capDays, isCookieTrusted, stats);
+  renderGuardBlurLine(report, blurOverridden, globalOn, (override && override.mode) || null);
 }
 
-function renderScoperImpact(etld1, capDays, isTrusted, stats) {
-  const el = $('scoper-impact');
+function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
+  const el = $('guard-cookies-line');
   chrome.cookies.getAll({ domain: etld1 }, (cs) => {
     const nowSec = Date.now() / 1000;
     let maxSec = 0;
@@ -316,59 +325,62 @@ function renderScoperImpact(etld1, capDays, isTrusted, stats) {
 
     el.classList.remove('ok', 'warn');
     if (isTrusted && rewrites === 0) {
-      el.textContent = 'cookies passing through · 0 tightened';
-      el.classList.add('ok');
+      el.textContent = `• Cookies passing through · trusted ${capDays}d cap`;
     } else if (!isTrusted && rewrites === 0 && maxDays <= capDays) {
-      el.textContent = 'all cookies within cap ✓';
+      el.textContent = '✓ Cookies already short';
       el.classList.add('ok');
     } else if (rewrites === 0 && maxDays > capDays) {
-      el.textContent = `longest cookie ${maxDays}d → will trim to ${capDays}d`;
-      el.classList.add('warn');
+      el.textContent = `✓ Cookies expire in ${capDays} days · longest ${maxDays}d will trim`;
+      el.classList.add('ok');
     } else {
       el.textContent =
-        `longest ${maxDays}d → ${capDays}d · ${rewrites} tightened` +
+        `✓ Cookies expire in ${capDays} days · ${rewrites} trimmed` +
         (demotions > 0 ? `, ${demotions} killed` : '');
+      el.classList.add('ok');
     }
   });
 }
 
-function renderScoperCounters(stats) {
+function renderGuardBlurLine(report, blurOverridden, globalOn, overrideMode) {
+  const el = $('guard-blur-line');
+  el.classList.remove('ok', 'warn');
+
+  if (blurOverridden) {
+    el.textContent = '• ID passing through · trust active';
+    return;
+  }
+  if (!globalOn) {
+    el.textContent = '— blur disabled globally';
+    el.classList.add('unwired');
+    return;
+  }
+  if (overrideMode === 'stable') {
+    el.textContent = '✓ Tracking blurred · stable seed';
+    el.classList.add('ok');
+    return;
+  }
+  const fp = (report && report.fingerprinting) || {};
+  const surfaces = fp.techniques || 0;
+  if (surfaces === 0) {
+    el.textContent = '✓ Tracking blurred · no surfaces probed yet';
+    el.classList.add('ok');
+  } else {
+    el.textContent = `✓ Tracking blurred · ${surfaces} surface${surfaces === 1 ? '' : 's'}`;
+    el.classList.add('ok');
+  }
+}
+
+function renderGuardCounters(stats) {
   const r = (stats && stats.tightened) || 0;
   const d = (stats && stats.demotions) || 0;
   const last = stats && stats.lastSweep ? `last sweep ${relativeTime(stats.lastSweep)}` : 'never swept';
-  $('scoper-counters').textContent = `${r.toLocaleString()} tightened · ${d.toLocaleString()} killed · ${last}`;
+  $('guard-counters').textContent = `${r.toLocaleString()} trimmed · ${d.toLocaleString()} killed · ${last}`;
 }
 
-function wireScoperButtons() {
-  const sweepBtn = $('sweep-now');
+function wireGuardButtons() {
   const trustBtn = $('trust-toggle');
-  const status = $('scoper-status');
-
-  sweepBtn.onclick = () => {
-    sweepBtn.disabled = true;
-    sweepBtn.textContent = '[ sweeping… ]';
-    status.className = '';
-    status.textContent = '';
-    chrome.runtime.sendMessage({ type: 'scoper:sweep-now' }, (resp) => {
-      sweepBtn.disabled = false;
-      sweepBtn.textContent = '[ sweep now ]';
-      if (!resp || resp.error) {
-        status.className = 'warn';
-        status.textContent = resp && resp.error ? 'error: ' + resp.error : 'no response';
-      } else {
-        status.className = 'ok';
-        status.textContent =
-          `scanned ${resp.scanned} · rewrote ${resp.rewrites} · demoted ${resp.demotions}` +
-          (resp.failed ? ` · ${resp.failed} untrimmable` : '');
-      }
-      chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
-        const trust = (state && state.cookieScopeTrust) || {};
-        const stats = (state && state.cookieScopeCounters) || null;
-        renderScoperCard(currentEtld1, trust, stats);
-        renderScoperCounters(stats);
-      });
-    });
-  };
+  const trustIdBtn = $('trust-id');
+  const status = $('guard-status');
 
   trustBtn.onclick = () => {
     if (!currentEtld1) return;
@@ -378,9 +390,45 @@ function wireScoperButtons() {
       const cap = isTrusted ? 0 : 30;
       chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: currentEtld1, cap }, () => {
         chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (s2) => {
-          renderScoperCard(currentEtld1, (s2 && s2.cookieScopeTrust) || {}, (s2 && s2.cookieScopeCounters) || null);
-          renderScoperCounters((s2 && s2.cookieScopeCounters) || null);
+          chrome.storage.local.get(['farblerSettings', 'farbleDevMode'], (st) => {
+            renderGuardCard(
+              currentEtld1,
+              (s2 && s2.cookieScopeTrust) || {},
+              (s2 && s2.cookieScopeCounters) || null,
+              currentReport,
+              st.farblerSettings || {},
+              !!st.farbleDevMode
+            );
+            renderGuardCounters((s2 && s2.cookieScopeCounters) || null);
+          });
         });
+      });
+    });
+  };
+
+  trustIdBtn.onclick = () => {
+    if (!currentEtld1) return;
+    chrome.storage.local.get(['farblerSettings', 'farbleDevMode'], (s) => {
+      const settings = s.farblerSettings || {};
+      const overridden = !!(settings[currentEtld1] && settings[currentEtld1].mode === 'off');
+      if (overridden) {
+        delete settings[currentEtld1];
+      } else {
+        settings[currentEtld1] = { mode: 'off' };
+      }
+      chrome.storage.local.set({ farblerSettings: settings }, () => {
+        chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
+          renderGuardCard(
+            currentEtld1,
+            (state && state.cookieScopeTrust) || {},
+            (state && state.cookieScopeCounters) || null,
+            currentReport,
+            settings,
+            !!s.farbleDevMode
+          );
+        });
+        status.className = 'ok';
+        status.textContent = overridden ? 'ID trust removed · reload page to apply' : 'ID trusted · reload page to apply';
       });
     });
   };

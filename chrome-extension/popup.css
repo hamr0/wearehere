@@ -222,32 +222,36 @@ body {
 .warn { color: var(--warn); }
 .bad { color: var(--bad); }
 
-#scoper-card {
+#guard-card {
   margin-top: 14px;
   border-top: 2px solid var(--line);
   padding-top: 12px;
 }
 
-#scoper-site {
+#guard-site {
   color: var(--fg-bright);
+  margin-bottom: 8px;
 }
 
-#scoper-impact {
+#guard-cookies-line,
+#guard-blur-line {
   color: var(--fg-mute);
   font-size: 11px;
-  margin: 4px 0 12px;
+  margin: 3px 0;
 }
 
-#scoper-impact.unwired {
+#guard-cookies-line.unwired,
+#guard-blur-line.unwired {
   color: var(--fg-faint);
   font-style: italic;
 }
 
-#scoper-actions {
+#guard-actions {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
   justify-content: center;
+  margin-top: 10px;
 }
 
 .btn {
@@ -287,18 +291,18 @@ body {
   background: var(--fg-bright);
 }
 
-#scoper-status {
+#guard-status {
   color: var(--fg-mute);
   font-size: 11px;
   margin-top: 6px;
   min-height: 1.4em;
 }
 
-#scoper-status.ok { color: var(--ok); }
-#scoper-status.warn { color: var(--warn); }
-#scoper-status.gated { color: var(--warn); }
+#guard-status.ok { color: var(--ok); }
+#guard-status.warn { color: var(--warn); }
+#guard-status.gated { color: var(--warn); }
 
-#scoper-counters {
+#guard-counters {
   color: var(--fg-mute);
   font-size: 10px;
   margin-top: 12px;

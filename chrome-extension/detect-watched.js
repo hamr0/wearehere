@@ -84,22 +84,48 @@
     return bytesToHex(new Uint8Array(sig).slice(0, 4));
   }
 
+  // Match the popup's etld1 derivation (last two labels) for per-site
+  // override lookup. Crude but matches the existing scoper convention.
+  function etld1FromHost(host) {
+    if (!host) return "";
+    var labels = String(host).split(".").filter(Boolean);
+    if (labels.length < 2) return host;
+    return labels.slice(-2).join(".");
+  }
+
   (async function () {
     try {
       var stored = await new Promise(function (resolve) {
-        chrome.storage.local.get(["farbleDevMode"], resolve);
+        chrome.storage.local.get(["farbleDevMode", "farblerSettings"], resolve);
       });
       DEBUG && console.log("[wh-farble:dw] storage →", JSON.stringify(stored), "hasDoc=" + !!document.documentElement);
       if (!document.documentElement) return;
 
-      var state = (stored && stored.farbleDevMode) ? "per-tab" : "off";
+      var origin = location.hostname || "";
+      var etld1 = etld1FromHost(origin);
+      var settings = (stored && stored.farblerSettings) || {};
+      var override = settings[etld1] || null;
+      var globalOn = !!(stored && stored.farbleDevMode);
+
+      // Per-origin override beats global. Modes:
+      //   override.mode === "off"     → blur disabled here (user trusted ID)
+      //   override.mode === "stable"  → stable per-origin seed
+      //   (no override)               → globalOn ? "per-tab" : "off"
+      var state;
+      if (override && override.mode === "off") {
+        state = "off";
+      } else if (override && override.mode === "stable") {
+        state = globalOn ? "stable" : "off";
+      } else {
+        state = globalOn ? "per-tab" : "off";
+      }
+
       var seed = "";
       if (state !== "off") {
         var secret = await getSecret();
         if (!secret) {
           state = "off";  // SW bootstrap not landed; fail safe
         } else {
-          var origin = location.hostname || "";
           var label;
           if (state === "stable") {
             label = "stable|" + origin;
@@ -111,7 +137,7 @@
       }
       document.documentElement.setAttribute("data-wh-farble-state", state);
       document.documentElement.setAttribute("data-wh-farble-seed", seed);
-      DEBUG && console.log("[wh-farble:dw] set state=" + state + " seed=" + seed);
+      DEBUG && console.log("[wh-farble:dw] set state=" + state + " seed=" + seed + (override ? " (override=" + override.mode + ")" : ""));
     } catch (e) {
       DEBUG && console.log("[wh-farble:dw] err:", e && e.message);
     }
