@@ -662,7 +662,7 @@ function wireClearVisits() {
   const btn = $('clear-visits');
   if (!btn) return;
   btn.addEventListener('click', () => {
-    if (!confirm('Erase the visit-history ring buffer? This wipes the data behind Overview + Watchers cross-session blocks. Cookie scoper history is kept.')) return;
+    if (!confirm('Erase the visit-history ring buffer? This wipes the data behind Overview + Watchers cross-session blocks. Privacy guard history is kept.')) return;
     btn.disabled = true;
     btn.textContent = '[ clearing… ]';
     chrome.runtime.sendMessage({ type: 'visits:clear' }, () => {
@@ -1124,7 +1124,7 @@ const PERIOD_CHOICES = [
 function renderScoper(_report) {
   const panel = $('panel-scoper');
   safeSetHTML(panel, `
-    <div class="frame-title">cookie scoper</div>
+    <div class="frame-title">privacy guard</div>
     <div class="hero" id="scoper-hero">
       <div class="cell"><div class="num" id="scoper-tightened">—</div><div class="lbl">tightened (lifetime)</div></div>
       <div class="cell"><div class="num" id="scoper-killed">—</div><div class="lbl">trackers killed (lifetime)</div></div>
@@ -1135,10 +1135,17 @@ function renderScoper(_report) {
     <div class="frame-title">cookies in your browser</div>
     <div id="scoper-coverage" class="placeholder"><div>counting cookies…</div></div>
 
-    <div class="frame-title">trusted sites</div>
+    <div class="frame-title">surfaces blurred</div>
+    <div id="guard-surfaces"></div>
+
+    <div class="frame-title">trusted sites · cookies pass through</div>
     <div id="scoper-trust"></div>
 
-    <div class="frame-title">settings · sweep period</div>
+    <div class="frame-title">blur overrides</div>
+    <div id="guard-blur-overrides"></div>
+
+    <div class="frame-title">settings</div>
+    <div class="block-sub">cookie sweep</div>
     <div class="window-sel" id="scoper-period"></div>
     <div id="scoper-period-status" class="callout"></div>
 
@@ -1148,6 +1155,26 @@ function renderScoper(_report) {
 
   loadScoperState();
   renderCoverage();
+  renderSurfacesBlurred();
+  renderBlurOverrides();
+}
+
+// Surfaces-blurred overview block. The per-family / by-mode / top-sites
+// breakdown needs new telemetry in the inject.js hot path (Slice 3b-2);
+// until that lands, the lifetime total lives in the hero above and this
+// block states what's coming rather than faking empty bars.
+function renderSurfacesBlurred() {
+  const el = $('guard-surfaces');
+  if (!el) return;
+  safeSetHTML(el, `<div class="placeholder"><div>per-surface breakdown — canvas · audio · fonts · screen · WebGL — arrives in a follow-up update. lifetime total shows in the hero above.</div></div>`);
+}
+
+// Blur overrides — per-site exceptions to the default blur mode, backed by
+// farblerSettings[etld1].mode. Filled in Slice 3b commit 3; empty-state here.
+function renderBlurOverrides() {
+  const el = $('guard-blur-overrides');
+  if (!el) return;
+  safeSetHTML(el, `<div class="placeholder"><div>no blur overrides — every site uses your default blur mode.</div></div>`);
 }
 
 function loadScoperState() {
