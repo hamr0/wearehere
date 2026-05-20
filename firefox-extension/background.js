@@ -13,8 +13,302 @@ if (typeof importScripts === 'function') {
   importScripts('network-domains.js');
   importScripts('cookie-database.js');
   importScripts('visits.js');
+  // Window snapshots — rolled-up Overview aggregates. Loaded after visits.js
+  // so it can read the visitHistory key the moment append fires.
   importScripts('snapshots.js');
+  // Cookie scoper — loaded after cookie-database.js so classifyCookie is
+  // available for tracker-demotion. Self-contained module: registers its
+  // own alarm + onAlarm listener at load time.
   importScripts('scoper/scoper.js');
+}
+
+// =============================================================================
+// Farbler secret bootstrap (Phase 2 Slice 2 module 8)
+// =============================================================================
+// Generates the 64-byte HMAC key used by detect-watched.js for per-origin
+// fingerprint farbling. Previously generated lazily inside the content
+// script on first call; that path lost a race on first-ever install
+// (~9 canvas calls landed before the async storage write completed).
+// Generating here means farblerSecret is in chrome.storage.local before
+// any content script runs — content script's read becomes a single
+// synchronous storage.get with no bootstrap branch.
+// Idempotent: only generates when missing. Triggered on three signals
+// (install, browser startup, SW startup) so the secret is always present.
+function _farblerBytesToHex(bytes) {
+  var hex = "";
+  for (var i = 0; i < bytes.length; i++) hex += ("00" + bytes[i].toString(16)).slice(-2);
+  return hex;
+}
+async function bootstrapFarblerSecret() {
+  try {
+    const v = await chrome.storage.local.get('farblerSecret');
+    if (v && typeof v.farblerSecret === 'string' && v.farblerSecret.length === 128) return;
+    const fresh = new Uint8Array(64);
+    crypto.getRandomValues(fresh);
+    await chrome.storage.local.set({ farblerSecret: _farblerBytesToHex(fresh) });
+  } catch (e) { /* content script falls back to state=off if missing */ }
+}
+// Rotation salt for the "rotation" blur mode. Folded into the seed label
+// (`rotation|<salt>|<origin>`) so a site's farbled identity rotates on a time
+// window — denying long-term fingerprint linkage without ever changing within
+// a window. Rotation is keyed on time (not browser-session), because tab
+// groups / session-restore mean browsers rarely close, which would otherwise
+// make a per-session salt effectively permanent. "stable" mode omits the salt
+// (persistent per-origin) for sites the user pins. Single-writer (SW only);
+// detect-watched.js reads it and fails safe to "off" if absent.
+const FARBLE_SALT_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // rotate weekly
+async function bootstrapFarbleSalt() {
+  try {
+    const v = await chrome.storage.local.get(['farblerRotationSalt', 'farblerSaltIssuedAt']);
+    const fresh = typeof v.farblerRotationSalt === 'string' && v.farblerRotationSalt.length === 32
+      && typeof v.farblerSaltIssuedAt === 'number'
+      && (Date.now() - v.farblerSaltIssuedAt) < FARBLE_SALT_TTL_MS;
+    if (fresh) return;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    await chrome.storage.local.set({
+      farblerRotationSalt: _farblerBytesToHex(bytes),
+      farblerSaltIssuedAt: Date.now(),
+    });
+  } catch (e) { /* content script falls back to state=off if salt missing */ }
+}
+chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); });
+chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); });
+bootstrapFarblerSecret();
+bootstrapFarbleSalt();
+
+// Lifetime surfaces-blurred counters. Reads on init, increments in
+// memory on each `watched` detection delta (unique APIs, not call
+// sums), persists via debounced write to keep chrome.storage churn
+// low. SW recycle reloads from storage. Popup + dashboard read
+// chrome.storage.local.farblerCounters directly for display.
+//
+//   farblerCounters      = { totalCalls, byFamily: { canvas, audio, … } }
+//   farblerBlurredBySite = { [etld1]: surfaces }   (capped, Top sites)
+//
+// Both keys are written ONLY from this debounced path, so the in-memory
+// copy is authoritative — no read-modify-write race (unlike the byCompany
+// counter, which is serialized through visits.js's appendChain instead).
+const FARBLE_FAMILIES = ['canvas', 'audio', 'fonts', 'screennav', 'webgl'];
+function farbleFamilyOf(api) {
+  if (typeof api !== 'string') return 'screennav';
+  if (api.indexOf('Canvas.') === 0 || api === 'createImageBitmap.canvasSrc') return 'canvas';
+  if (api.indexOf('WebGL.') === 0) return 'webgl';
+  if (api.indexOf('Audio') === 0 || api.indexOf('AnalyserNode.') === 0) return 'audio';
+  if (api === 'CanvasRenderingContext2D.measureText') return 'fonts';
+  return 'screennav'; // Navigator.* / Screen.* / Performance.now
+}
+self.farbleFamilyOf = farbleFamilyOf;
+
+// Unique fingerprint APIs per family in an items array (one count per
+// distinct API — surface breadth, matching the totalCalls semantics).
+function farbleFamilyCounts(items) {
+  const m = {};
+  for (const it of items || []) {
+    if (!it || it.category !== 'fingerprint') continue;
+    const fam = farbleFamilyOf(it.api);
+    m[fam] = (m[fam] || 0) + 1;
+  }
+  return m;
+}
+// Per-family positive delta between prior and current item snapshots.
+// On navigation detect-watched.js resets its counts, so cur < prev for a
+// family — treat the current value as that page's fresh contribution
+// (same rule the total used). Sum of family deltas == the total delta.
+function farbleFamilyDelta(prevItems, curItems) {
+  const prev = farbleFamilyCounts(prevItems);
+  const cur = farbleFamilyCounts(curItems);
+  const out = {};
+  for (const fam of FARBLE_FAMILIES) {
+    const p = prev[fam] || 0;
+    const c = cur[fam] || 0;
+    const d = c >= p ? c - p : c;
+    if (d > 0) out[fam] = d;
+  }
+  return out;
+}
+
+const MAX_BLURRED_SITES = 300;
+let _farblerCountersMem = { totalCalls: 0, byFamily: {} };
+let _farblerBlurredBySiteMem = {};
+let _farblerCountersPersistTimer = null;
+(async function loadFarblerCounters() {
+  try {
+    const v = await chrome.storage.local.get(['farblerCounters', 'farblerBlurredBySite']);
+    if (v && v.farblerCounters && typeof v.farblerCounters.totalCalls === 'number') {
+      _farblerCountersMem = {
+        totalCalls: v.farblerCounters.totalCalls,
+        byFamily: (v.farblerCounters.byFamily && typeof v.farblerCounters.byFamily === 'object')
+          ? Object.assign({}, v.farblerCounters.byFamily) : {},
+      };
+    }
+    if (v && v.farblerBlurredBySite && typeof v.farblerBlurredBySite === 'object') {
+      _farblerBlurredBySiteMem = Object.assign({}, v.farblerBlurredBySite);
+    }
+  } catch {}
+})();
+function recordFarblerBlur(delta, famDelta, etld1) {
+  if (!delta || delta < 0) return;
+  _farblerCountersMem.totalCalls += delta;
+  if (famDelta) {
+    for (const fam in famDelta) {
+      _farblerCountersMem.byFamily[fam] = (_farblerCountersMem.byFamily[fam] || 0) + famDelta[fam];
+    }
+  }
+  if (etld1) {
+    _farblerBlurredBySiteMem[etld1] = (_farblerBlurredBySiteMem[etld1] || 0) + delta;
+  }
+  if (_farblerCountersPersistTimer) return;
+  _farblerCountersPersistTimer = setTimeout(() => {
+    _farblerCountersPersistTimer = null;
+    // Cap the per-site map to the highest-count sites (Top sites shows only
+    // a handful) and bound mem too, mirroring the byCompany cap.
+    const keys = Object.keys(_farblerBlurredBySiteMem);
+    if (keys.length > MAX_BLURRED_SITES) {
+      keys.sort((a, b) => _farblerBlurredBySiteMem[b] - _farblerBlurredBySiteMem[a]);
+      const trimmed = {};
+      for (let i = 0; i < MAX_BLURRED_SITES; i++) trimmed[keys[i]] = _farblerBlurredBySiteMem[keys[i]];
+      _farblerBlurredBySiteMem = trimmed;
+    }
+    try {
+      chrome.storage.local.set({
+        farblerCounters: { totalCalls: _farblerCountersMem.totalCalls, byFamily: _farblerCountersMem.byFamily },
+        farblerBlurredBySite: _farblerBlurredBySiteMem,
+      });
+    } catch {}
+  }, 2000);
+}
+
+// notify() in inject.js fires on detection regardless of farble state, so
+// gate crediting on blur actually being active for this site: resolve the
+// effective mode (per-site override beats the default) and skip when it's
+// "off". Keeps the lifetime counters honest — they count surfaces blurred,
+// not merely probed. Mirrors the resolution in detect-watched.js / visits.js.
+function creditFarblerIfActive(delta, famDelta, etld1) {
+  if (!delta || delta < 0) return;
+  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode'], (s) => {
+    const ov = s.farblerSettings && etld1 ? s.farblerSettings[etld1] : null;
+    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
+    if (mode === 'off') return;
+    recordFarblerBlur(delta, famDelta, etld1);
+  });
+}
+
+// Lifetime per-company surfaces-blurred counter. Populated at visit
+// append (visits.js → recordBlurredByCompany) so we credit each
+// observed company with that visit's unique-API count. Lives in
+// chrome.storage.local under farblerBlurredByCompany; the Watchers
+// tab joins by lowercased company name.
+const MAX_BLURRED_COMPANIES = 300;
+async function recordBlurredByCompany(perCompany) {
+  if (!perCompany) return;
+  try {
+    const { farblerBlurredByCompany } = await chrome.storage.local.get('farblerBlurredByCompany');
+    let next = (farblerBlurredByCompany && typeof farblerBlurredByCompany === 'object')
+      ? Object.assign({}, farblerBlurredByCompany) : {};
+    for (const [name, n] of Object.entries(perCompany)) {
+      if (!name || !n || n < 0) continue;
+      const k = name.toLowerCase();
+      const cur = next[k] || { name, count: 0 };
+      cur.name = name;
+      cur.count = (cur.count || 0) + n;
+      next[k] = cur;
+    }
+    // Company names can include detect-cooked's raw-domain fallback, so
+    // the key space isn't strictly bounded. Keep the highest-count
+    // companies — the Watchers table only renders the top 12, so dropping
+    // the long tail is invisible. Counters, unlike the domain map, can't
+    // evict by age without losing lifetime totals, hence by-count.
+    const keys = Object.keys(next);
+    if (keys.length > MAX_BLURRED_COMPANIES) {
+      keys.sort((a, b) => (next[b].count || 0) - (next[a].count || 0));
+      const trimmed = {};
+      for (let i = 0; i < MAX_BLURRED_COMPANIES; i++) trimmed[keys[i]] = next[keys[i]];
+      next = trimmed;
+    }
+    await chrome.storage.local.set({ farblerBlurredByCompany: next });
+  } catch {}
+}
+self.recordBlurredByCompany = recordBlurredByCompany;
+
+// Persisted cookie-domain → company map. detect-cooked.js does the
+// authoritative domain→company classification per page; we harvest its
+// items into chrome.storage.local so the scoper (running in SW context
+// at sweep time) can attribute trimmed-per-company without duplicating
+// COMPANY_MAP. Keyed by eTLD+1 of the cookie domain (last two labels)
+// to match the scoper's bySite convention. Cookies whose domain hasn't
+// been observed via cooked yet stay unattributed; map fills in as the
+// user browses.
+// Crude eTLD+1 = last two labels. Keep in sync with detect-watched.js
+// `etld1FromHost` — the relax-offer key is written here and read there, so they
+// must agree. (Both share the multi-part-TLD limitation, e.g. "a.co.uk" → "co.uk".)
+function harvestEtld1(host) {
+  if (!host) return null;
+  const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  const labels = cleaned.toLowerCase().split('.').filter(Boolean);
+  if (labels.length < 2) return null;
+  return labels.slice(-2).join('.');
+}
+// Hard cap on map size. The vast majority of entries are the ~250 named
+// trackers in COMPANY_MAP, but pattern-matched generic names (e.g.
+// "Tracking Pixel") attach to arbitrary domains, so the eTLD+1 key space
+// is not strictly bounded. Cap with insertion-order eviction (string keys
+// iterate in insertion order; first-writer-wins below means insertion
+// order ≈ first-learned, so we drop the oldest-learned domains first).
+const MAX_DOMAIN_COMPANY_ENTRIES = 1000;
+function capDomainCompanyMap(map) {
+  const keys = Object.keys(map);
+  const excess = keys.length - MAX_DOMAIN_COMPANY_ENTRIES;
+  if (excess <= 0) return;
+  for (let i = 0; i < excess; i++) delete map[keys[i]];
+}
+let _domainCompanyDirty = false;
+let _domainCompanyPersistTimer = null;
+let _domainCompanyMem = null;
+async function loadDomainCompanyMap() {
+  if (_domainCompanyMem) return _domainCompanyMem;
+  try {
+    const { cookieDomainCompanyMap } = await chrome.storage.local.get('cookieDomainCompanyMap');
+    _domainCompanyMem = (cookieDomainCompanyMap && typeof cookieDomainCompanyMap === 'object')
+      ? Object.assign({}, cookieDomainCompanyMap) : {};
+  } catch { _domainCompanyMem = {}; }
+  return _domainCompanyMem;
+}
+loadDomainCompanyMap();
+async function harvestCookieDomainCompanyMap(data) {
+  const items = data && data.items;
+  if (!Array.isArray(items) || !items.length) return;
+  const map = await loadDomainCompanyMap();
+  for (const it of items) {
+    const company = it && it.company;
+    const domain  = it && it.domain;
+    if (!company || !domain) continue;
+    // detect-cooked falls back to the raw domain as the "company" for
+    // trackers it can't name (company === domain). Those aren't real
+    // identities, never join cleanly against a named watcher, and — one
+    // unique value per domain — are the only unbounded growth vector.
+    // Skip them.
+    if (company === domain) continue;
+    const e = harvestEtld1(domain);
+    if (!e) continue;
+    // First-writer-wins per eTLD+1. Sibling subdomains can resolve to
+    // different company names (baidu.com → "Baidu" vs hm.baidu.com →
+    // "Baidu Analytics"); overwriting made the stored name depend on
+    // observation order. Keeping the first seen is deterministic and
+    // stable across SW restarts — the persisted entry is never clobbered.
+    if (e in map) continue;
+    map[e] = company;
+    _domainCompanyDirty = true;
+  }
+  if (_domainCompanyDirty && !_domainCompanyPersistTimer) {
+    _domainCompanyPersistTimer = setTimeout(() => {
+      _domainCompanyPersistTimer = null;
+      if (!_domainCompanyDirty) return;
+      _domainCompanyDirty = false;
+      capDomainCompanyMap(map);
+      try { chrome.storage.local.set({ cookieDomainCompanyMap: map }); } catch {}
+    }, 2000);
+  }
 }
 
 // --- Per-tab state ---
@@ -193,6 +487,15 @@ chrome.webRequest.onCompleted.addListener(
   (details) => {
     if (details.tabId < 0) return;
 
+    // Hard anti-bot block (e.g. Akamai/Cloudflare "Access Denied"): a main-frame
+    // 403 is a strong "this site is broken" signal. Surface the same relax offer
+    // as rage-reload (maybeOfferRelax no-ops if blur is already off here). Only
+    // 403 — 429 (rate-limit) is usually transient and unrelated to blur. Catches
+    // outright blocks; soft hangs still need rage-reload.
+    if (details.type === 'main_frame' && details.statusCode === 403) {
+      try { maybeOfferRelax(harvestEtld1(new URL(details.url).hostname)); } catch {}
+    }
+
     const domain = extractDomain(details.url);
     if (!domain) return;
 
@@ -278,6 +581,41 @@ chrome.webRequest.onErrorOccurred.addListener(
 // =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
+  // --- One-click "relax fingerprint protection here" from the in-page banner ---
+  // Persist blur-off for this site and reload the tab from the SW. Doing this
+  // page-side is unreliable: anti-bot sites tear down our content-script context
+  // right after the banner shows, so its own chrome.storage callbacks never fire.
+  // The SW context is stable and chrome.tabs.reload doesn't need page JS.
+  if (msg && msg.type === 'wh-relax-site' && msg.etld1) {
+    const etld1 = msg.etld1;
+    chrome.storage.local.get(['farblerSettings', 'farbleReloadOffer'], (s) => {
+      const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+      settings[etld1] = { mode: 'off', auto: true };
+      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
+      delete offer[etld1];
+      chrome.storage.local.set({ farblerSettings: settings, farbleReloadOffer: offer }, () => {
+        const tabId = sender.tab && sender.tab.id;
+        if (tabId != null) { try { chrome.tabs.reload(tabId); } catch (e) {} }
+        try { sendResponse({ ok: true }); } catch (e) {}
+        console.log('[relax] blur off + reload for', etld1);
+      });
+    });
+    return true;  // async sendResponse
+  }
+
+  // Dismiss ('✕') of the in-page relax banner. Routed through the SW for the
+  // same reason as wh-relax-site: the page's context may already be torn down,
+  // so a page-side storage write could silently no-op and the banner would
+  // re-show on the next load.
+  if (msg && msg.type === 'wh-clear-relax-offer' && msg.etld1) {
+    chrome.storage.local.get('farbleReloadOffer', (s) => {
+      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
+      delete offer[msg.etld1];
+      chrome.storage.local.set({ farbleReloadOffer: offer });
+    });
+    return;
+  }
+
   // --- Per-module detection messages from content scripts ---
   if (msg.type === 'detection' && sender.tab) {
     const tabId = sender.tab.id;
@@ -296,9 +634,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     // Route to per-module storage
     if (mod === 'watched') {
+      // Lifetime surfaces-blurred counter. Each `watched` item is one
+      // unique fingerprinting API; counting items (not call sums) keeps
+      // the lifetime number consistent with the per-site "N surfaces"
+      // display and avoids Performance.now()-style polling inflating the
+      // total. On navigation, detect-watched.js resets its in-script
+      // counters — delta goes negative; treat that as "current value is
+      // the contribution since the navigation."
+      try {
+        const prevItems = (tab.modules.watched && tab.modules.watched.items) || [];
+        const famDelta = farbleFamilyDelta(prevItems, data.items || []);
+        let delta = 0;
+        for (const fam in famDelta) delta += famDelta[fam];
+        if (delta > 0) creditFarblerIfActive(delta, famDelta, harvestEtld1(tab.domain));
+      } catch {}
       tab.modules.watched = data;
     } else if (mod === 'cooked') {
       tab.modules.cooked = data;
+      try { harvestCookieDomainCompanyMap(data); } catch {}
     } else if (mod === 'played') {
       tab.modules.played = data;
     } else if (mod === 'leaked') {
@@ -722,18 +1075,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // cookies and demoted M trackers…"). Per-sweep entries already carry
   // `rewrote` (tightened cookies) + `demotions` (tracker demotions).
   if (msg.type === 'impact:get-window') {
-    chrome.storage.local.get('cookieScopeHistory', ({ cookieScopeHistory }) => {
-      const arr = Array.isArray(cookieScopeHistory) ? cookieScopeHistory : [];
+    // Sum the hourly impact log (scoper.js writes it from BOTH the sweep and
+    // the realtime retrim flush). cookieScopeHistory only records sweeps, so
+    // a history-based window read ~0 once realtime trimming does the work.
+    chrome.storage.local.get('cookieScopeImpactLog', ({ cookieScopeImpactLog }) => {
+      const log = (cookieScopeImpactLog && typeof cookieScopeImpactLog === 'object') ? cookieScopeImpactLog : {};
       const ms = windowMs(msg.window);
-      const cutoff = ms == null ? 0 : Date.now() - ms;
-      let tightened = 0, demotions = 0, sweeps = 0;
-      for (const h of arr) {
-        if (h.at < cutoff) continue;
-        tightened += h.rewrote || 0;
-        demotions += h.demotions || 0;
-        sweeps++;
+      const cutoffHour = ms == null ? 0 : Math.floor((Date.now() - ms) / 3_600_000);
+      let tightened = 0, demotions = 0;
+      for (const k in log) {
+        if (+k < cutoffHour) continue;
+        tightened += (log[k] && log[k].t) || 0;
+        demotions += (log[k] && log[k].d) || 0;
       }
-      sendResponse({ tightened, demotions, sweeps, window: msg.window });
+      sendResponse({ tightened, demotions, window: msg.window });
     });
     return true;
   }
@@ -1024,13 +1379,16 @@ function buildReport(data) {
   }
 
   // Per-company device-id (fingerprinting) attribution. inject.js
-  // stack-walks the caller frame on each wrapped API hit and passes its
-  // host up via watched.byScript: { 'hotjar.com': { fingerprint: 4 }}.
-  // Resolve script host → company via the cooked-items map (which
-  // already pairs script domains with company names from detect-cooked.
-  // js's COMPANY_MAP). Scripts whose host doesn't appear in any cooked
-  // item stay unattributed — they'll fall back to the site-level
-  // "device-id reads" summary.
+  // stack-walks the caller frame on each wrapped API hit; detect-watched
+  // dedups to UNIQUE APIs per caller host and passes them up via
+  // watched.byScript: { 'hotjar.com': { fingerprint: 4 } } where 4 = the
+  // count of distinct fingerprint surfaces that script touched, NOT call
+  // volume. Summing it credits a company with surface breadth, matching
+  // the per-site "N surfaces" display. Resolve script host → company via
+  // the cooked-items map (which already pairs script domains with company
+  // names from detect-cooked.js's COMPANY_MAP). Scripts whose host
+  // doesn't appear in any cooked item stay unattributed — they fall back
+  // to the site-level "device-id reads" summary.
   const hostToCompany = {};
   for (const item of cookedItems) {
     if (item.domain && item.company) hostToCompany[item.domain] = item.company;
@@ -1336,8 +1694,49 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // rejects with "No tab with id: …".
   markTabRemoved(tabId);
   snapshotAndEvict(tabId);
+  delete reloadTrack[tabId];
 });
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+
+// --- rage-reload relax offer ------------------------------------------------
+// If a user reloads the same URL several times in a short window while blur is
+// ON for that site, surface a one-click "relax fingerprint protection here"
+// offer in the popup (read from farbleReloadOffer). The popup is where the fix
+// lives (Trust ID); we just flag that this site is a likely candidate.
+const RELAX_WINDOW_MS = 25000;
+const RELAX_MIN_LOADS = 2;     // initial load + 1 reload
+const RELAX_DEDUPE_MS = 1500;  // collapse the multiple 'loading' fires per reload
+const reloadTrack = {};        // tabId -> { url, times: [] }
+
+function trackReloadForRelaxOffer(tabId, url) {
+  if (!url || !/^https?:/.test(url)) return;
+  let etld1;
+  try { etld1 = harvestEtld1(new URL(url).hostname); } catch { return; }
+  if (!etld1) return;
+  const now = Date.now();
+  let t = reloadTrack[tabId];
+  if (!t || t.url !== url) { t = reloadTrack[tabId] = { url, times: [] }; }
+  if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;
+  t.times.push(now);
+  t.times = t.times.filter((x) => now - x <= RELAX_WINDOW_MS);
+  if (t.times.length >= RELAX_MIN_LOADS) {
+    t.times = [];  // reset so we don't re-fire on every later reload
+    maybeOfferRelax(etld1);
+  }
+}
+
+function maybeOfferRelax(etld1) {
+  if (!etld1) return;
+  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer'], (s) => {
+    const ov = s.farblerSettings && s.farblerSettings[etld1];
+    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
+    if (mode === 'off') return;  // blur already off here — nothing to offer
+    const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
+    offer[etld1] = { at: Date.now() };
+    chrome.storage.local.set({ farbleReloadOffer: offer });
+    console.log('[relax-offer] rage-reload on', etld1, '→ offering blur-off in popup');
+  });
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     const oldDomain = tabData[tabId]?.domain;
     try {
@@ -1349,6 +1748,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       snapshotAndEvict(tabId);
     }
   }
+  // Rage-reload → relax offer. A user hammering reload on the same URL is the
+  // most reliable "this page is broken" signal we have (render heuristics are
+  // unreliable and our content script gets torn down on stuck SPAs). Observed
+  // at the SW level so it survives that teardown.
+  if (changeInfo.status === 'loading') trackReloadForRelaxOffer(tabId, tab && tab.url);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (tabData[tabId]) updateBadge(tabId);

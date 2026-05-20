@@ -17,6 +17,7 @@
 //       watchers:    [name, ...] (top 10 company names)
 //       mechanisms:  { cookies, pixels, deviceId, typing, clicks } counts
 //       storedIds:   int (localData.suspicious)
+//       blurredSurfaces: int (fingerprint surfaces blurred this visit; 0 if off)
 //     }, ...
 //   ]
 //
@@ -27,6 +28,10 @@
 
 const VISIT_HISTORY_MAX = 1000;
 const VISIT_HISTORY_KEY = 'visitHistory';
+
+// Blur-firing activity log for the privacy guard "Recent activity" block.
+// One event per visit where blur was active and surfaces were touched.
+const FARBLER_HISTORY_MAX = 50;
 
 // Same simple eTLD+1 as the scoper — last two labels. Good enough for
 // per-visit keying. PSL would be more precise but the visit timeline is
@@ -118,6 +123,54 @@ async function appendVisit(report) {
       const here = bySite && bySite[record.etld1];
       record.scoperTightened = (here && here.tightened) || 0;
     } catch (e) { record.scoperTightened = 0; }
+
+    // Credit per-company lifetime "Blurred" surfaces. After detect-
+    // watched's unique-API fix, watcherMech[name].deviceId is the count
+    // of distinct fingerprint APIs the company's scripts touched on this
+    // visit. Summing it into the lifetime counter at visit boundaries
+    // matches the Watchers tab's "lifetime regardless of window" rule.
+    try {
+      if (self.recordBlurredByCompany) {
+        const perCompany = {};
+        for (const [name, m] of Object.entries(record.watcherMech || {})) {
+          if (m && m.deviceId > 0) perCompany[name] = m.deviceId;
+        }
+        if (Object.keys(perCompany).length) await self.recordBlurredByCompany(perCompany);
+      }
+    } catch (e) { /* best-effort */ }
+
+    // Blur-firing event for the Recent activity log. Gated on blur actually
+    // being active for this site — notify() fires on detection regardless of
+    // farble state, so resolve the effective mode (override beats default)
+    // and skip logging "blur active" when the site is off. Serialized in the
+    // append chain, so no race on farblerHistory.
+    try {
+      const fpMethod = ((report.fingerprinting && report.fingerprinting.methods) || [])
+        .find((m) => m.technique === 'fingerprint');
+      const apis = (fpMethod && fpMethod.apis) || [];
+      if (apis.length) {
+        const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
+        const ov = farblerSettings && farblerSettings[record.etld1];
+        const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'rotation');
+        // Stash the windowed-blur input on the visit record (0 when blur was
+        // off here) so Overview can sum surfaces blurred per time window from
+        // visitHistory — more accurate than the 50-capped farblerHistory.
+        record.blurredSurfaces = (mode !== 'off') ? apis.length : 0;
+        if (mode !== 'off') {
+          const fam = {};
+          for (const a of apis) {
+            const f = (typeof self.farbleFamilyOf === 'function') ? self.farbleFamilyOf(a) : 'screennav';
+            fam[f] = (fam[f] || 0) + 1;
+          }
+          const families = Object.keys(fam).sort((x, y) => fam[y] - fam[x]);
+          const { farblerHistory } = await chrome.storage.local.get('farblerHistory');
+          const arr = Array.isArray(farblerHistory) ? farblerHistory.slice() : [];
+          arr.unshift({ at: record.at, site: record.etld1, surfaces: apis.length, families, mode });
+          if (arr.length > FARBLER_HISTORY_MAX) arr.length = FARBLER_HISTORY_MAX;
+          await chrome.storage.local.set({ farblerHistory: arr });
+        }
+      }
+    } catch (e) { /* best-effort */ }
 
     const { visitHistory } = await chrome.storage.local.get(VISIT_HISTORY_KEY);
     const arr = Array.isArray(visitHistory) ? visitHistory.slice() : [];

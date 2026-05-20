@@ -130,17 +130,37 @@ function watchVisitsStorage() {
   // score trend, but those listen separately below.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    // Snapshot-driven blocks (hero + what-changed + who-follows-you)
-    // re-render only when the snapshot key changes (~hourly + post-append
-    // when stale). visitHistory updates do not retrigger these.
+    // Snapshot-driven blocks re-render only when the snapshot key changes
+    // (~hourly + post-append when stale). The lifetime hero/lists read the
+    // all-time snapshot; what-changed reads the windowed one.
     if (changes[WINDOW_SNAPSHOTS_KEY]) {
+      loadOverviewLifetime();
       loadOverviewAggregates();
       loadWatchersAggregates();
     }
-    // Per-visit detail (score trend dots, recent visits table) needs the
-    // raw history.
+    // Lifetime hero (trimmed/blurred cells) + the cookies/blurred top-3 lists
+    // read these counters, which move on sweeps / visit appends / realtime
+    // flush, independently of the snapshot recompute.
+    if (changes.cookieScopeCounters || changes.farblerCounters || changes.farblerBlurredBySite) {
+      loadOverviewLifetime();
+    }
+    // Windowed protection line reads the impact log, which the realtime retrim
+    // flush updates between snapshots. Refresh just the impact line.
+    if (changes.cookieScopeImpactLog) {
+      chrome.runtime.sendMessage({ type: 'impact:get-window', window: overviewWindow }, (impact) => {
+        renderImpactLine(impact);
+      });
+    }
+    // Per-visit detail (browsing exposure, recent visits) needs raw history.
     if (changes[VISIT_HISTORY_STORAGE_KEY]) {
       refreshRawVisitConsumers();
+    }
+    // The Watchers "who follows you" table reads lifetime per-company
+    // Trimmed/Blurred from these keys. They change on sweeps + visit
+    // appends independently of the snapshot recompute, so refresh the
+    // table when they move (it re-reads both keys from storage itself).
+    if (changes.cookieScopeCounters || changes.farblerBlurredByCompany) {
+      loadWatchersAggregates();
     }
   });
 }
@@ -157,12 +177,26 @@ const WINDOW_SNAPSHOTS_KEY = 'windowSnapshots';
 // the popup or the alarm write counters/history independently; the open
 // dashboard tab needs to mirror those updates without a manual reload.
 function watchScoperStorage() {
-  const keys = ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory'];
+  const keys = ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory', 'farblerCounters', 'farblerHistory'];
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (keys.some((k) => k in changes)) {
       loadScoperState();
       renderCoverage();
+    }
+    // Per-site rules read farblerSettings (blur, also written by the popup's
+    // Trust ID button) and cookieScopeTrust (handled via loadScoperState in
+    // the scoperKeys branch above) — keep the table in sync without a reload.
+    if ('farblerSettings' in changes) {
+      renderPerSiteRules();
+    }
+    if ('defaultBlurMode' in changes) {
+      renderDefaultBlurRadio();
+    }
+    // Surfaces-blurred block reads family/site counters plus the mode
+    // inputs; refresh on any of them.
+    if (['farblerCounters', 'farblerBlurredBySite', 'farblerSettings', 'defaultBlurMode'].some((k) => k in changes)) {
+      renderSurfacesBlurred();
     }
   });
 }
@@ -211,31 +245,45 @@ const WINDOW_OPTIONS = ['today', 'week', 'month', 'all'];
 let overviewWindow = 'week';
 let watchersWindow = 'week';
 
+// The protection line combines two async sources: windowed cookie impact
+// (impact:get-window) and windowed blur (summed from visits). Each setter
+// stashes its half here and re-renders the line, so whichever resolves
+// second paints the complete sentence. Reset at the start of each load.
+let _ovImpact = null;
+let _ovBlurred = 0;
+
 function renderOverview() {
   const panel = $('panel-overview');
   safeSetHTML(panel, `
-    <div class="frame-title">this period</div>
+    <div class="frame-title">this overview <span class="ft-tag">lifetime</span></div>
     <div class="hero" id="overview-hero">
       <div class="cell"><div class="num" id="ov-sites">—</div><div class="lbl">sites visited</div></div>
       <div class="cell"><div class="num" id="ov-score">—</div><div class="lbl">avg score</div></div>
       <div class="cell"><div class="num" id="ov-watchers">—</div><div class="lbl">unique watchers</div></div>
-      <div class="cell"><div class="num" id="ov-most-exposed">—</div><div class="lbl">most exposed</div></div>
+      <div class="cell"><div class="num" id="ov-trimmed">—</div><div class="lbl">cookies trimmed</div></div>
+      <div class="cell"><div class="num" id="ov-blurred">—</div><div class="lbl">surfaces blurred</div></div>
     </div>
-    <div class="callout" id="ov-callout"></div>
-    <div class="callout impact" id="ov-impact" hidden></div>
+    <div class="hero-lists" id="ov-lists"></div>
 
     <div class="window-sel" id="ov-window" style="margin-top:14px"></div>
+    <div class="callout impact" id="ov-impact" hidden></div>
 
     <div class="frame-title">what changed</div>
     <div id="ov-changed"></div>
 
-    <div class="frame-title">score trend</div>
+    <div class="frame-title">browsing exposure</div>
     <div id="ov-trend"></div>
   `);
 
+  // The window selector drives only the windowed drill-down (protection line +
+  // what-changed + browsing exposure). The hero and its top-3 lists are
+  // lifetime, so they stay put when the window changes.
   renderWindowSelector('ov-window', overviewWindow, (w) => {
     overviewWindow = w;
-    loadOverview();
+    _ovImpact = null;
+    _ovBlurred = 0;
+    loadOverviewAggregates();
+    loadOverviewRawVisits();
   });
   loadOverview();
 }
@@ -266,14 +314,29 @@ function renderWindowSelector(id, active, onChange) {
 }
 
 function loadOverview() {
+  _ovImpact = null;
+  _ovBlurred = 0;
+  loadOverviewLifetime();
   loadOverviewAggregates();
   loadOverviewRawVisits();
+}
+
+// Lifetime hero + the three top-3 lists below it. Reads the all-time snapshot
+// (selector-independent) for sites/score/watchers, and the lifetime counters
+// for trimmed/blurred. Refreshed on its own when those keys move.
+function loadOverviewLifetime() {
+  chrome.runtime.sendMessage({ type: 'snapshots:get-window', window: 'all' }, (resp) => {
+    const cur = (resp && resp.cur) || null;
+    chrome.storage.local.get(['cookieScopeCounters', 'farblerCounters', 'farblerBlurredBySite'], (s) => {
+      renderLifetimeHero(cur, s);
+      renderHeroLists(cur, s);
+    });
+  });
 }
 
 function loadOverviewAggregates() {
   chrome.runtime.sendMessage({ type: 'snapshots:get-window', window: overviewWindow }, (resp) => {
     const { cur, prev } = resp || { cur: null, prev: null };
-    renderOverviewHero(cur);
     renderWhatChanged(cur, prev);
   });
   chrome.runtime.sendMessage({ type: 'impact:get-window', window: overviewWindow }, (impact) => {
@@ -282,60 +345,82 @@ function loadOverviewAggregates() {
 }
 
 function renderImpactLine(impact) {
+  _ovImpact = impact || { tightened: 0, demotions: 0 };
+  renderProtectionLine();
+}
+
+// The promoted protection story: what the guard DID this window across both
+// mechanisms. Tells the story, not the mechanics. Hidden when nothing fired.
+function renderProtectionLine() {
   const el = $('ov-impact');
   if (!el) return;
-  if (!impact || (impact.tightened === 0 && impact.demotions === 0)) {
+  const trimmed = (_ovImpact && _ovImpact.tightened) || 0;
+  const demoted = (_ovImpact && _ovImpact.demotions) || 0;
+  const blurred = _ovBlurred || 0;
+  if (!trimmed && !demoted && !blurred) {
     el.hidden = true;
     el.textContent = '';
     return;
   }
-  // Tell the story, not the mechanics: "this <window>, wearehere did X".
-  // Hide demotion count when zero (sites with only first-party caps).
-  const win = overviewWindow === 'all' ? 'all time' : `this ${overviewWindow}`;
-  const cookieClause = impact.tightened
-    ? `shortened ${impact.tightened.toLocaleString()} cookie${impact.tightened === 1 ? '' : 's'}`
-    : '';
-  const demoteClause = impact.demotions
-    ? `${cookieClause ? ' and ' : ''}demoted ${impact.demotions.toLocaleString()} tracker${impact.demotions === 1 ? '' : 's'} to session-only`
-    : '';
+  const win = overviewWindow === 'today' ? 'today'
+            : overviewWindow === 'all' ? 'all time'
+            : `this ${overviewWindow}`;
+  const parts = [];
+  if (trimmed) parts.push(`shortened ${trimmed.toLocaleString()} cookie${trimmed === 1 ? '' : 's'}`);
+  if (demoted) parts.push(`demoted ${demoted.toLocaleString()} tracker${demoted === 1 ? '' : 's'} to session-only`);
+  if (blurred) parts.push(`blurred ${blurred.toLocaleString()} fingerprint surface${blurred === 1 ? '' : 's'}`);
+  const phrase = parts.length > 1
+    ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]
+    : parts[0];
   el.hidden = false;
-  safeSetHTML(el, `${win}: wearehere ${escapeText(cookieClause + demoteClause)} so they can't recognise you tomorrow.`);
+  safeSetHTML(el, `✓ ${escapeText(win)} wearehere ${escapeText(phrase)} — so trackers can't recognise you tomorrow.`);
 }
 
 function loadOverviewRawVisits() {
   chrome.runtime.sendMessage({ type: 'visits:get', window: overviewWindow }, (visits) => {
-    renderScoreTrend(Array.isArray(visits) ? visits : []);
+    const arr = Array.isArray(visits) ? visits : [];
+    _ovBlurred = arr.reduce((n, v) => n + (v.blurredSurfaces || 0), 0);
+    renderProtectionLine();
+    renderBrowsingExposure(arr);
   });
 }
 
-function renderOverviewHero(snap) {
-  if (!snap || !snap.visitsN) {
-    $('ov-sites').textContent = '0';
-    $('ov-score').textContent = '—';
-    $('ov-watchers').textContent = '0';
-    $('ov-most-exposed').textContent = '—';
-    safeSetHTML($('ov-callout'), `<span class="dim">no visits in this window yet — keep browsing and come back.</span>`);
-    return;
-  }
+// Lifetime hero. sites/score/watchers come from the all-time snapshot;
+// trimmed/blurred from the lifetime counters. Selector-independent.
+function renderLifetimeHero(snap, s) {
+  const trimmed = (s.cookieScopeCounters && s.cookieScopeCounters.tightened) || 0;
+  const blurred = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
+  const hasVisits = !!(snap && snap.visitsN);
+  $('ov-sites').textContent = hasVisits ? (snap.sites || []).length.toLocaleString() : '0';
+  $('ov-score').textContent = hasVisits ? snap.avgScore : '—';
+  $('ov-watchers').textContent = hasVisits ? Object.keys(snap.watchers || {}).length.toLocaleString() : '0';
+  $('ov-trimmed').textContent = trimmed.toLocaleString();
+  $('ov-blurred').textContent = blurred.toLocaleString();
+}
 
-  // Most-exposed shifts from "site with highest single-visit score" to
-  // "site with highest average score across the window". Average is a
-  // truer read of consistent exposure; the previous max-score variant
-  // could be biased by a single outlier visit.
-  const ranked = Object.entries(snap.avgScoreBySite || {})
-    .map(([etld1, avg]) => ({ etld1, avg }))
-    .sort((a, b) => (b.avg || 0) - (a.avg || 0));
-  const mostExposed = ranked[0];
-
-  $('ov-sites').textContent = (snap.sites || []).length.toLocaleString();
-  $('ov-score').textContent = snap.avgScore;
-  $('ov-watchers').textContent = Object.keys(snap.watchers || {}).length.toLocaleString();
-  $('ov-most-exposed').textContent = mostExposed ? mostExposed.etld1 : '—';
-
-  const top3 = ranked.slice(0, 3).map((v) => v.etld1).filter(Boolean);
-  safeSetHTML($('ov-callout'), top3.length
-    ? `most-watched: ${top3.map((s) => `<strong>${escapeText(s)}</strong>`).join(' · ')}`
-    : '');
+// The three lifetime top-3 lists under the hero. Mixed entities by design:
+// `watched` is the watcher company (by reach), `cookies` is the tracker domain
+// most trimmed, `blurred` is the visited site where blur fired most.
+function renderHeroLists(snap, s) {
+  const el = $('ov-lists');
+  if (!el) return;
+  const watchers = (snap && snap.watchers) || {};
+  const reach = (snap && snap.reachPct) || {};
+  const watched = Object.entries(watchers)
+    .map(([k, w]) => ({ name: (w && w.name) || k, pct: reach[k] || 0 }))
+    .sort((a, b) => b.pct - a.pct).slice(0, 3).map((w) => w.name);
+  const bySiteTrim = (s.cookieScopeCounters && s.cookieScopeCounters.bySite) || {};
+  const cookies = Object.entries(bySiteTrim)
+    .map(([d, v]) => [d, (v && v.tightened) || 0]).filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d]) => d);
+  const bySiteBlur = (s.farblerBlurredBySite && typeof s.farblerBlurredBySite === 'object') ? s.farblerBlurredBySite : {};
+  const blurred = Object.entries(bySiteBlur).filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d]) => d);
+  const seg = (label, items) => items.length
+    ? `<span class="hl-seg"><span class="hl-label">${label}</span> ${items.map((x) => `<strong>${escapeText(x)}</strong>`).join(' · ')}</span>`
+    : '';
+  const segs = [seg('watched', watched), seg('cookies', cookies), seg('blurred', blurred)].filter(Boolean);
+  safeSetHTML(el, segs.length ? segs.join('<span class="hl-sep">|</span>') : '<span class="dim">no activity yet</span>');
 }
 
 // What-changed event log: diff this-window vs prior-window of equal
@@ -370,11 +455,10 @@ function renderWhatChanged(cur, prev) {
 function diffAggregates(cur, prev) {
   const events = [];
 
-  // --- new site · in cur, not in prev ---
+  // --- new sites · in cur, not in prev (collapsed below into one summary
+  // event so first-visits don't drown the notable changes) ---
   const sitesPrev = new Set(prev.sites || []);
-  for (const s of (cur.sites || [])) {
-    if (!sitesPrev.has(s)) events.push({ cls: 'warn', icon: '⊕', kind: 'new site', text: `first visit to <strong>${escapeText(s)}</strong>` });
-  }
+  const newSites = (cur.sites || []).filter((s) => !sitesPrev.has(s));
 
   // --- watcher reach changes (new / gone / grew / shrank) ---
   const reachCur = cur.reachPct || {};
@@ -437,6 +521,18 @@ function diffAggregates(cur, prev) {
     if (!brokersPrev.has(k) && b.hits >= 2) {
       events.push({ cls: 'warn', icon: '⊕', kind: 'new broker', text: `<strong>${escapeText(b.name)}</strong> first seen this window` });
     }
+  }
+
+  // --- new-sites summary · pushed last so notable changes lead the feed ---
+  if (newSites.length) {
+    const shown = newSites.slice(0, 3).map(escapeText).join(', ');
+    const more = newSites.length > 3 ? ` +${newSites.length - 3} more` : '';
+    events.push({
+      cls: 'warn',
+      icon: '⊕',
+      kind: `${newSites.length} new site${newSites.length === 1 ? '' : 's'}`,
+      text: `<span title="${escapeText(newSites.join(', '))}">${shown}${more}</span>`,
+    });
   }
 
   return events;
@@ -503,88 +599,38 @@ function renderRecentVisits(visits) {
   `);
 }
 
-function renderScoreTrend(visits) {
+// Browsing exposure — sites this window bucketed by risk tier. Buckets by
+// SITE (average score across its visits) not by visit, so a heavily-
+// revisited site doesn't dominate the shape. Tiers match the dashboard's
+// scoring vocabulary (30 fair/mixed, 60 mixed/hostile).
+function renderBrowsingExposure(visits) {
   const el = $('ov-trend');
-  if (visits.length < 2) {
-    safeSetHTML(el, `<div class="placeholder"><div>need at least 2 visits to draw a trend.</div></div>`);
+  if (!visits.length) {
+    safeSetHTML(el, `<div class="placeholder"><div>no visits in this window yet.</div></div>`);
     return;
   }
-  // Order chronologically, oldest first.
-  const series = visits.slice().sort((a, b) => a.at - b.at);
-
-  // Generous left gutter for the Y-axis labels (0 / 30 / 60 / 100).
-  // Tier dividers at 30 (fair/mixed) and 60 (mixed/hostile) match the
-  // scoring vocabulary used elsewhere in the dashboard.
-  const W = 720, H = 180, PL = 30, PR = 12, PT = 14, PB = 24;
-  const plotW = W - PL - PR;
-  const plotH = H - PT - PB;
-  const minAt = series[0].at, maxAt = series[series.length - 1].at;
-  const span = Math.max(1, maxAt - minAt);
-
-  const xFor = (at) => PL + ((at - minAt) / span) * plotW;
-  const yFor = (score) => PT + (1 - (score || 0) / 100) * plotH;
-
-  const points = series.map((v) => `${xFor(v.at).toFixed(1)},${yFor(v.score).toFixed(1)}`).join(' ');
-
-  const dotFor = (v) => {
-    const s = v.score || 0;
-    const cls = s >= 60 ? 'bad' : s >= 30 ? 'warn' : 'ok';
-    const tip = `${v.etld1 || 'unknown'} · score ${s} · ${relativeTimeShort(v.at)}`;
-    return `<circle class="trend-dot ${cls}" cx="${xFor(v.at).toFixed(1)}" cy="${yFor(v.score).toFixed(1)}" r="3"><title>${escapeText(tip)}</title></circle>`;
-  };
-
-  // Friendly time axis: first label, midpoint, last.
-  const midAt = minAt + span / 2;
-  const xLabels = [
-    { x: PL, label: relativeTimeShort(minAt), anchor: 'start' },
-    { x: PL + plotW / 2, label: relativeTimeShort(midAt), anchor: 'middle' },
-    { x: PL + plotW, label: relativeTimeShort(maxAt), anchor: 'end' },
-  ];
-
-  const yTicks = [
-    { v: 0,   y: yFor(0)   },
-    { v: 30,  y: yFor(30)  },
-    { v: 60,  y: yFor(60)  },
-    { v: 100, y: yFor(100) },
-  ];
-
-  const scores = series.map((v) => v.score || 0);
-  const avg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-  const avgCls = avg >= 60 ? 'bad' : avg >= 30 ? 'warn' : 'ok';
-
+  const bySite = {};
+  for (const v of visits) {
+    if (!v.etld1) continue;
+    const e = bySite[v.etld1] || (bySite[v.etld1] = { sum: 0, n: 0 });
+    e.sum += v.score || 0;
+    e.n++;
+  }
+  let clean = 0, mixed = 0, hostile = 0;
+  for (const k in bySite) {
+    const avg = bySite[k].sum / bySite[k].n;
+    if (avg >= 60) hostile++;
+    else if (avg >= 30) mixed++;
+    else clean++;
+  }
+  const total = clean + mixed + hostile;
+  const max = Math.max(1, clean, mixed, hostile);
+  const bar = (n, cls) => `<span class="bar ${cls}" style="width:${Math.round((n / max) * 60)}%"></span>`;
   safeSetHTML(el, `
-    <div class="trend-caption dim">score over time · each dot is one visit · lower is better</div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="trend-svg" role="img" aria-label="score over time">
-      <!-- Tier bands -->
-      <rect x="${PL}" y="${yFor(100)}" width="${plotW}" height="${yFor(60) - yFor(100)}" class="trend-band ok"/>
-      <rect x="${PL}" y="${yFor(60)}"  width="${plotW}" height="${yFor(30) - yFor(60)}"  class="trend-band warn"/>
-      <rect x="${PL}" y="${yFor(30)}"  width="${plotW}" height="${yFor(0)  - yFor(30)}"  class="trend-band bad"/>
-
-      <!-- Y-axis grid + labels -->
-      ${yTicks.map((t) => `
-        <line x1="${PL}" y1="${t.y.toFixed(1)}" x2="${W - PR}" y2="${t.y.toFixed(1)}" class="trend-grid"/>
-        <text x="${PL - 6}" y="${(t.y + 3).toFixed(1)}" text-anchor="end" class="trend-axis">${t.v}</text>
-      `).join('')}
-
-      <!-- Series line + dots -->
-      <polyline class="trend-line" points="${points}"/>
-      ${series.map(dotFor).join('')}
-
-      <!-- X-axis time labels -->
-      ${xLabels.map((l) => `<text x="${l.x.toFixed(1)}" y="${H - 6}" text-anchor="${l.anchor}" class="trend-axis">${escapeText(l.label)}</text>`).join('')}
-    </svg>
-    <div class="trend-legend">
-      <span class="dim">${series.length} visits</span>
-      <span class="dim">·</span>
-      <span class="dim">avg <span class="${avgCls}">${avg}</span></span>
-      <span class="dim">·</span>
-      <span class="dim">range ${Math.min(...scores)} → ${Math.max(...scores)}</span>
-      <span class="dim" style="margin-left:auto">
-        <span class="ok">▮</span> fair
-        <span class="warn">▮</span> mixed
-        <span class="bad">▮</span> hostile
-      </span>
-    </div>
+    <div class="trend-caption dim">${total} site${total === 1 ? '' : 's'} this window · by risk tier · lower is better</div>
+    <div class="bar-row"><span class="nval">${clean}</span> ${bar(clean, 'ok')} <span class="nlbl">clean <span class="dim">(&lt; 30)</span></span></div>
+    <div class="bar-row"><span class="nval">${mixed}</span> ${bar(mixed, 'warn')} <span class="nlbl">mixed <span class="dim">(30–60)</span></span></div>
+    <div class="bar-row"><span class="nval">${hostile}</span> ${bar(hostile, 'bad')} <span class="nlbl">hostile <span class="dim">(60+)</span></span></div>
   `);
 }
 
@@ -655,7 +701,7 @@ function wireClearVisits() {
   const btn = $('clear-visits');
   if (!btn) return;
   btn.addEventListener('click', () => {
-    if (!confirm('Erase the visit-history ring buffer? This wipes the data behind Overview + Watchers cross-session blocks. Cookie scoper history is kept.')) return;
+    if (!confirm('Erase the visit-history ring buffer? This wipes the data behind Overview + Watchers cross-session blocks. Privacy guard history is kept.')) return;
     btn.disabled = true;
     btn.textContent = '[ clearing… ]';
     chrome.runtime.sendMessage({ type: 'visits:clear' }, () => {
@@ -703,62 +749,96 @@ function renderWatchersHero(snap) {
   $('w-amp').textContent = `${amp}×`;
 }
 
+let whoFollowsRenderToken = 0;
 function renderWhoFollowsYou(snap) {
+  // Invalidate any in-flight async render from a prior call (see token
+  // check before the storage callback below).
+  whoFollowsRenderToken++;
   const el = $('w-who');
   if (!snap || !snap.visitsN) {
     safeSetHTML(el, `<div class="placeholder"><div>no visits yet — once you've browsed, this fills in.</div></div>`);
+    renderWhoFollowsYouSummary(snap);
     return;
   }
 
   const watchers = snap.watchers || {};
   const reach = snap.reachPct || {};
   const ranked = Object.entries(watchers)
-    .map(([k, w]) => ({ ...w, pct: reach[k] || 0 }))
+    .map(([k, w]) => ({ ...w, key: k, pct: reach[k] || 0 }))
     .sort((a, b) => b.pct - a.pct)
     .slice(0, 12);
 
   if (ranked.length === 0) {
     safeSetHTML(el, `<div class="placeholder"><div>no named watchers in this window.</div></div>`);
+    renderWhoFollowsYouSummary(snap);
     return;
   }
 
-  const maxPct = Math.max(1, ranked[0].pct);
+  // Lifetime per-company protection counts. cookieScopeCounters.byCompany
+  // is written by the scoper at sweep + realtime retrim; farblerBlurred-
+  // ByCompany is written at visit append from watcherMech.deviceId. Both
+  // are "lifetime regardless of window" — the Reach column above respects
+  // the window selector, these don't.
+  // Render token: this read is async, so a rapid window flip (week→today→
+  // week) can land an older callback after a newer one and paint stale
+  // rows. Bail if a newer render started while we were waiting on storage.
+  const myToken = whoFollowsRenderToken;
+  chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany'], (s) => {
+    if (myToken !== whoFollowsRenderToken) return;
+    const byCompanyTrimmed = (s.cookieScopeCounters && s.cookieScopeCounters.byCompany) || {};
+    const byCompanyBlurred = s.farblerBlurredByCompany || {};
 
-  // Per-company mechanisms we can attribute: cookies, pixels, clicks,
-  // device-id. (device-id resolved via inject.js stack-walk → caller
-  // host → company via cooked-items map; typing remains site-level
-  // because detect-silent.js measures form-field exposure, not
-  // per-script keystroke listeners.)
-  const MECH_ORDER = ['cookies', 'pixels', 'clicks', 'deviceId'];
-  const MECH_LABEL = { cookies: 'cookies', pixels: 'pixels', clicks: 'clicks', deviceId: 'device-id' };
-  const mechLine = (m) => {
-    const parts = MECH_ORDER.filter((k) => (m[k] || 0) > 0).map((k) => MECH_LABEL[k]);
-    return parts.length ? parts.join(' · ') : 'presence only';
-  };
+    // Mechanisms spelled out as a "via …" line under the company name —
+    // clearer than a cryptic chip column. All four PRD-locked mechanisms
+    // surface: cookies · pixels · clicks · device-id.
+    const mechWords = (m) => {
+      const parts = [];
+      if ((m.cookies  || 0) > 0) parts.push('cookies');
+      if ((m.pixels   || 0) > 0) parts.push('pixels');
+      if ((m.clicks   || 0) > 0) parts.push('clicks');
+      if ((m.deviceId || 0) > 0) parts.push('device-id');
+      return parts.length ? 'via ' + parts.join(' · ') : '';
+    };
 
-  safeSetHTML(el, ranked.map((c) => `
-    <div class="reach-row">
-      <div class="reach-line">
-        <span class="reach-pct">${c.pct}%</span>
-        <span class="bar" style="width:${Math.round((c.pct / maxPct) * 60)}%"></span>
-        <span class="reach-name">${escapeText(c.name)}</span>
-        <span class="dim">seen on ${c.hits} of ${snap.visitsN} visit${snap.visitsN === 1 ? '' : 's'}</span>
-      </div>
-      <div class="reach-mech"><span class="dim">via</span> ${escapeText(mechLine(c.mech))}</div>
-    </div>
-  `).join(''));
+    const rowsHtml = ranked.map((c) => {
+      const trimmed = (byCompanyTrimmed[c.key] && byCompanyTrimmed[c.key].tightened) || 0;
+      const blurred = (byCompanyBlurred[c.key] && byCompanyBlurred[c.key].count) || 0;
+      const via = mechWords(c.mech || {});
+      return `
+        <div class="watcher-row">
+          <span class="wt-name">${escapeText(c.name)}${via ? `<span class="wt-via">${escapeText(via)}</span>` : ''}</span>
+          <span class="wt-reach">${c.hits} of ${snap.visitsN} <span class="dim">visits</span></span>
+          <span class="wt-num${trimmed > 0 ? ' pos' : ''}">${trimmed.toLocaleString()}</span>
+          <span class="wt-num${blurred > 0 ? ' pos' : ''}">${blurred.toLocaleString()}</span>
+        </div>`;
+    }).join('');
 
-  // Site-level summary: form-field exposure (typing). Other mechanisms
-  // are now per-company. Fingerprint reads from unattributed scripts
-  // (caller host not in the cooked-items company map) are silently
-  // dropped — the site-level "typing" line is what's left to surface.
+    safeSetHTML(el, `
+      <div class="watcher-table">
+        <div class="watcher-header">
+          <span class="wt-name">company</span>
+          <span class="wt-reach">reach</span>
+          <span class="wt-num">trimmed</span>
+          <span class="wt-num">blurred</span>
+        </div>
+        ${rowsHtml}
+      </div>`);
+
+    renderWhoFollowsYouSummary(snap);
+  });
+}
+
+function renderWhoFollowsYouSummary(snap) {
+  // Caption above the table: site-level form-field exposure (typing). It's
+  // deliberately separate from the per-company rows — keystroke listeners
+  // can't be attributed to a single company, so it frames the table rather
+  // than sitting in it.
   const summary = $('w-who-summary');
-  if (summary) {
-    const { fields = 0, visits: vsig = 0 } = snap.typing || {};
-    safeSetHTML(summary, fields
-      ? `also: ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
-      : '');
-  }
+  if (!summary) return;
+  const { fields = 0, visits: vsig = 0 } = (snap && snap.typing) || {};
+  safeSetHTML(summary, fields
+    ? `⌨ ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} — typing, can't be tied to one company <span title="form-field exposure can't be attributed to a single company — keystroke listeners aren't observable per-script">[?]</span>`
+    : '');
 }
 
 let siteSelectorsWired = false;
@@ -1081,23 +1161,33 @@ const PERIOD_CHOICES = [
 function renderScoper(_report) {
   const panel = $('panel-scoper');
   safeSetHTML(panel, `
-    <div class="frame-title">cookie scoper</div>
+    <div class="frame-title">privacy guard</div>
     <div class="hero" id="scoper-hero">
-      <div class="cell"><div class="num" id="scoper-tightened">—</div><div class="lbl">tightened (lifetime)</div></div>
-      <div class="cell"><div class="num" id="scoper-killed">—</div><div class="lbl">trackers killed (lifetime)</div></div>
+      <div class="cell"><div class="num" id="scoper-tightened">—</div><div class="lbl">trimmed (lifetime)</div></div>
+      <div class="cell"><div class="num" id="scoper-blurred">—</div><div class="lbl">blurred (lifetime)</div></div>
       <div class="cell"><div class="num" id="scoper-sweeps">—</div><div class="lbl">sweeps run (lifetime)</div></div>
-      <div class="cell"><div class="num" id="scoper-last">never</div><div class="lbl">last sweep</div></div>
+      <div class="cell"><div class="num" id="scoper-last">never</div><div class="lbl">last active</div></div>
     </div>
 
     <div class="frame-title">cookies in your browser</div>
     <div id="scoper-coverage" class="placeholder"><div>counting cookies…</div></div>
 
-    <div class="frame-title">trusted sites</div>
-    <div id="scoper-trust"></div>
+    <div class="frame-title">surfaces blurred</div>
+    <div id="guard-surfaces"></div>
 
-    <div class="frame-title">settings · sweep period</div>
+    <div class="frame-title">per-site rules</div>
+    <div class="block-help">Exceptions to the defaults, per site. Trust a site's cookies (kept longer than 7 days) or change how it's blurred. Add a site as a cookie or a blur rule — then fine-tune either column on its row.</div>
+    <div id="guard-rules"></div>
+
+    <div class="frame-title">settings</div>
+    <div class="block-sub">cookie sweep</div>
+    <div class="block-help">Shortens long-lived tracker cookies to about 7 days, so sites can't use them to recognise you days later. Runs automatically in the background — this just sets how often.</div>
     <div class="window-sel" id="scoper-period"></div>
     <div id="scoper-period-status" class="callout"></div>
+    <div class="block-sub">default blur</div>
+    <div class="block-help">Scrambles the canvas, audio and font signals sites read to fingerprint your device, so the same browser looks different to each site — harder to track without logins or cookies.</div>
+    <div class="window-sel" id="guard-blur-default"></div>
+    <div id="guard-blur-status" class="callout"></div>
 
     <div class="frame-title">recent activity</div>
     <div id="scoper-history"></div>
@@ -1105,13 +1195,294 @@ function renderScoper(_report) {
 
   loadScoperState();
   renderCoverage();
+  renderSurfacesBlurred();
+  renderDefaultBlurRadio();
+}
+
+// Default blur mode — applies to any site without a per-site override in
+// the Blur overrides block. "rotation" is the shipped default. Writing it
+// here is what new page loads read in detect-watched.js to resolve state.
+const BLUR_MODE_CHOICES = [
+  { mode: 'off', label: 'off' },
+  { mode: 'rotation', label: 'rotation' },
+  { mode: 'stable', label: 'stable per origin' },
+];
+
+// Steady-state line under the radio so a mode change is visibly confirmed
+// (unlike the sweep period, blur applies on the next page load, not live).
+const BLUR_MODE_DESC = {
+  off: 'blur off — sites can fingerprint unless a per-site override says otherwise',
+  rotation: 'rotation — a different fingerprint per site, rotating weekly (default)',
+  stable: 'stable seed — one persistent fingerprint per origin (no rotation; best for sites you log into)',
+};
+
+function setBlurStatusSteady(mode) {
+  const status = $('guard-blur-status');
+  // Don't clobber the transient "saved ✓" flash; it settles to steady itself.
+  if (status && !status.classList.contains('saved-flash')) {
+    status.textContent = BLUR_MODE_DESC[mode] || '';
+  }
+}
+
+function renderDefaultBlurRadio() {
+  const el = $('guard-blur-default');
+  if (!el) return;
+  chrome.storage.local.get('defaultBlurMode', (s) => {
+    const current = BLUR_MODE_CHOICES.find((c) => c.mode === s.defaultBlurMode) ? s.defaultBlurMode : 'rotation';
+    safeSetHTML(el, `<span class="lbl">mode</span>` + BLUR_MODE_CHOICES
+      .map((c) => `<span class="opt${c.mode === current ? ' active' : ''}" data-mode="${escapeText(c.mode)}">${escapeText(c.label)}</span>`)
+      .join(''));
+    setBlurStatusSteady(current);
+    el.querySelectorAll('.opt').forEach((opt) => {
+      opt.onclick = () => {
+        const m = opt.dataset.mode;
+        const status = $('guard-blur-status');
+        if (status) {
+          status.textContent = 'saved ✓ · applies on the next page load';
+          status.classList.add('saved-flash');
+        }
+        chrome.storage.local.set({ defaultBlurMode: m }, () => {
+          renderDefaultBlurRadio();
+          setTimeout(() => {
+            const st = $('guard-blur-status');
+            if (st) st.classList.remove('saved-flash');
+            setBlurStatusSteady(m);
+          }, 1500);
+        });
+      };
+    });
+  });
+}
+
+// Surfaces-blurred overview block. Parallel to "cookies in your browser"
+// but on the cumulative-work axis: coverage by surface family, distribution
+// by blur mode across sites, and the sites where blur fired most. Backed by
+// farblerCounters.byFamily + farblerBlurredBySite (3b-2 telemetry).
+const FAMILY_LABELS = {
+  canvas: 'canvas',
+  audio: 'audio',
+  fonts: 'fonts',
+  screennav: 'screen + nav',
+  webgl: 'WebGL',
+};
+
+function renderSurfacesBlurred() {
+  const el = $('guard-surfaces');
+  if (!el) return;
+  chrome.storage.local.get(['farblerCounters', 'farblerBlurredBySite', 'farblerSettings', 'defaultBlurMode'], (s) => {
+    const byFamily = (s.farblerCounters && s.farblerCounters.byFamily) || {};
+    const bySite = (s.farblerBlurredBySite && typeof s.farblerBlurredBySite === 'object') ? s.farblerBlurredBySite : {};
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+    const defaultMode = s.defaultBlurMode === 'per-tab' ? 'rotation' : (s.defaultBlurMode || 'rotation');
+
+    const famEntries = Object.entries(byFamily).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+    const siteEntries = Object.entries(bySite).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+
+    if (famEntries.length === 0 && siteEntries.length === 0) {
+      el.classList.add('placeholder');
+      safeSetHTML(el, `<div>no surfaces blurred yet — browse a few sites with blur on and this fills in.</div>`);
+      return;
+    }
+    el.classList.remove('placeholder');
+
+    // By mode: off/stable counts come straight from the per-site overrides;
+    // sites without an override run whatever the default mode is, so they
+    // land in the default's bucket (rotation or stable).
+    let offCount = 0;
+    let stableOverrides = 0;
+    for (const k in settings) {
+      if (!settings[k]) continue;
+      if (settings[k].mode === 'off') offCount++;
+      else if (settings[k].mode === 'stable') stableOverrides++;
+    }
+    const noOverrideBlurred = siteEntries.filter(([etld1]) => !settings[etld1]).length;
+    const rotationCount = defaultMode === 'rotation' ? noOverrideBlurred : 0;
+    const stableCount = stableOverrides + (defaultMode === 'stable' ? noOverrideBlurred : 0);
+
+    const maxFam = Math.max(1, ...famEntries.map(([, n]) => n));
+    const maxMode = Math.max(1, rotationCount, stableCount, offCount);
+    const bar = (n, max) => `<span class="bar" style="width:${Math.round((n / max) * 60)}%"></span>`;
+
+    const famRows = famEntries.map(([fam, n]) =>
+      `<div class="bar-row"><span class="nval">${n.toLocaleString()}</span> ${bar(n, maxFam)} <span class="nlbl">${escapeText(FAMILY_LABELS[fam] || fam)}</span></div>`
+    ).join('');
+
+    const topSites = siteEntries.slice(0, 5);
+
+    safeSetHTML(el, `
+      <div class="block-sub">coverage · by surface family</div>
+      ${famRows}
+
+      <div class="block-sub">by mode</div>
+      <div class="bar-row"><span class="nval">${rotationCount}</span> ${bar(rotationCount, maxMode)} <span class="nlbl">rotation (default)</span></div>
+      <div class="bar-row"><span class="nval">${stableCount}</span> ${bar(stableCount, maxMode)} <span class="nlbl">stable (per-site)</span></div>
+      <div class="bar-row"><span class="nval">${offCount}</span> ${bar(offCount, maxMode)} <span class="nlbl">off (allowlisted)</span></div>
+
+      <div class="callout" style="margin-top:10px">top sites: ${topSites.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${n.toLocaleString()})`).join(' · ') || '—'}</div>
+    `);
+  });
+}
+
+// Per-site rules — one table merging cookie trust + blur overrides, keyed by
+// eTLD+1. Cookie trust lives in cookieScopeTrust (via scoper:* messages); blur
+// overrides in farblerSettings[etld1].mode. A site shows here if it has a
+// non-default rule on either axis. The popup's Trust ID writes the same blur
+// key (mode "off"), so this table stays in sync via the storage watcher.
+//
+//   cookie cell cycles  7d (default/untrusted) → 30d → 90d → 7d
+//   blur cell cycles    rotation (default) → stable → off → rotation
+//   [✕] clears the whole site on both axes
+function renderPerSiteRules() {
+  const el = $('guard-rules');
+  if (!el) return;
+  chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
+    const trust = (state && state.cookieScopeTrust) || {};
+    chrome.storage.local.get('farblerSettings', (s) => {
+      const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+      const domains = new Set();
+      Object.keys(trust).forEach((d) => domains.add(d));
+      Object.keys(settings).forEach((d) => {
+        if (settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable')) domains.add(d);
+      });
+      // Newest-added rule floats to the top (so an add is visibly confirmed).
+      // Either axis can anchor a row, so use the newer of the blur override's
+      // and the cookie trust's addedAt — otherwise a cookie-anchored row (e.g.
+      // after blur is cycled back to the rotation default, deleting its blur
+      // entry) collapses to 0 and sinks into the alphabetical block.
+      const sorted = [...domains].sort((a, b) => {
+        const ta = Math.max((settings[a] && settings[a].addedAt) || 0, (trust[a] && trust[a].addedAt) || 0);
+        const tb = Math.max((settings[b] && settings[b].addedAt) || 0, (trust[b] && trust[b].addedAt) || 0);
+        if (tb !== ta) return tb - ta;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+
+      const addRow = `
+        <div class="trust-add">
+          <input type="text" id="rule-input" placeholder="example.com" autocomplete="off">
+          <span class="rule-radio">
+            <label><input type="radio" name="rule-kind" value="cookies" checked> cookies</label>
+            <label><input type="radio" name="rule-kind" value="blur"> blur</label>
+          </span>
+          <button class="btn-mini" id="rule-add-btn">[ add ]</button>
+        </div>
+      `;
+
+      if (sorted.length === 0) {
+        safeSetHTML(el, `${addRow}<div class="placeholder"><div>no per-site rules yet — every site uses the defaults (cookies capped at 7d · blur rotates weekly).</div></div>`);
+        wirePerSiteControls();
+        return;
+      }
+
+      // Mark the axis the user hasn't set as "(default)" (dimmed) so a
+      // cookie-only row doesn't read as if it also has a blur rule, and
+      // vice-versa. Only stable/off are real blur exceptions; rotation is
+      // the default. cap 0 = untrusted = the 7d default.
+      const rows = sorted.map((d) => {
+        const cap = trust[d] ? trust[d].capDays : 0;            // 0 = untrusted (7d default)
+        const cookieLabel = cap ? `${cap}d` : '7d';
+        const cookieNext = cap === 30 ? 90 : cap === 90 ? 0 : 30; // 7d→30→90→7d
+        const cookieNextLabel = cookieNext ? `${cookieNext}d` : '7d';
+        const cookieText = cap ? cookieLabel : `<span class="dim">${cookieLabel} (default)</span>`;
+
+        const rawMode = (settings[d] && settings[d].mode) || 'rotation';
+        const mode = rawMode === 'per-tab' ? 'rotation' : rawMode;  // fold legacy stub
+        const blurNext = mode === 'rotation' ? 'off' : mode === 'off' ? 'stable' : 'rotation';
+        const blurSet = !!(settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable'));
+        const blurText = blurSet ? escapeText(mode) : `<span class="dim">${escapeText(mode)} (default)</span>`;
+
+        return `
+          <tr>
+            <td>${escapeText(d)}</td>
+            <td class="num">${cookieText} <button class="btn-mini" data-act="cookie" data-d="${escapeText(d)}" data-cap="${cookieNext}">[ → ${cookieNextLabel} ]</button></td>
+            <td class="num">${blurText} <button class="btn-mini" data-act="blur" data-d="${escapeText(d)}" data-mode="${escapeText(blurNext)}">[ → ${escapeText(blurNext)} ]</button></td>
+            <td><button class="btn-mini" data-act="remove" data-d="${escapeText(d)}">[ ✕ ]</button></td>
+          </tr>`;
+      }).join('');
+
+      safeSetHTML(el, `
+        ${addRow}
+        <table class="table" style="margin-top:10px">
+          <thead><tr><th>domain</th><th>cookies</th><th>blur</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="block-help"><span class="dim">(default)</span> = no rule set on that axis — the site just uses the global default (cookies 7d · blur rotates weekly). Use the <strong>[ → ]</strong> button to set an exception.</div>
+      `);
+      wirePerSiteControls();
+    });
+  });
+}
+
+function wirePerSiteControls() {
+  const addBtn = $('rule-add-btn');
+  const input = $('rule-input');
+  if (addBtn && input) {
+    addBtn.onclick = () => {
+      const raw = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+      // Normalise to the same eTLD+1 (last two labels) that detect-watched.js
+      // and the scoper resolve at runtime — otherwise a typed "www.foo.com"
+      // stores a key that never matches, leaving a silently-dead rule.
+      const v = raw.split('.').filter(Boolean).slice(-2).join('.');
+      if (!v || !v.includes('.')) return;
+      const kindEl = document.querySelector('input[name="rule-kind"]:checked');
+      const kind = kindEl ? kindEl.value : 'cookies';
+      if (kind === 'blur') {
+        // Blur add defaults to off (the common "this site breaks" exception);
+        // tune to stable / rotation on the row.
+        setBlurOverride(v, 'off', () => { input.value = ''; });
+      } else {
+        chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: v, cap: 30 }, () => {
+          input.value = '';
+          renderPerSiteRules();
+        });
+      }
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click(); };
+  }
+  document.querySelectorAll('#guard-rules [data-act]').forEach((btn) => {
+    btn.onclick = () => {
+      const d = btn.dataset.d;
+      const act = btn.dataset.act;
+      if (act === 'cookie') {
+        const cap = parseInt(btn.dataset.cap, 10) || 0; // 0/30/90; 0 removes trust
+        chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: d, cap }, renderPerSiteRules);
+      } else if (act === 'blur') {
+        const mode = btn.dataset.mode; // rotation/stable/off
+        if (mode === 'rotation') removeBlurOverride(d);  // back to the default = no override
+        else setBlurOverride(d, mode);
+      } else { // remove the whole site on both axes
+        chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: d, cap: 0 }, () => removeBlurOverride(d));
+      }
+    };
+  });
+}
+
+function setBlurOverride(etld1, mode, done) {
+  chrome.storage.local.get('farblerSettings', (s) => {
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? Object.assign({}, s.farblerSettings) : {};
+    // Stamp the add time on first set, preserve it on a cycle, so the row keeps
+    // its newest-first position instead of jumping on every mode change.
+    const addedAt = (settings[etld1] && settings[etld1].addedAt) || Date.now();
+    settings[etld1] = { mode, addedAt };
+    chrome.storage.local.set({ farblerSettings: settings }, () => {
+      if (done) done();
+      renderPerSiteRules();
+    });
+  });
+}
+
+function removeBlurOverride(etld1) {
+  chrome.storage.local.get('farblerSettings', (s) => {
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? Object.assign({}, s.farblerSettings) : {};
+    delete settings[etld1];
+    chrome.storage.local.set({ farblerSettings: settings }, renderPerSiteRules);
+  });
 }
 
 function loadScoperState() {
   chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
     state = state || {};
     renderScoperHero(state);
-    renderTrustList(state.cookieScopeTrust || {});
+    renderPerSiteRules();
     renderPeriodRadio(state.cookieScopeSettings || {});
     renderHistoryList(state.cookieScopeHistory || []);
   });
@@ -1120,9 +1491,19 @@ function loadScoperState() {
 function renderScoperHero(state) {
   const stats = state.cookieScopeCounters || {};
   $('scoper-tightened').textContent = (stats.tightened || 0).toLocaleString();
-  $('scoper-killed').textContent = (stats.demotions || 0).toLocaleString();
   $('scoper-sweeps').textContent = (stats.sweeps || 0).toLocaleString();
+  // "last active" = most-recent guard event. Blur has no persisted timestamp
+  // yet (lands with blur telemetry in 3b-2), so the cookie sweep — the
+  // always-on hourly heartbeat — stands in as the activity marker.
   $('scoper-last').textContent = stats.lastSweep ? relativeTimeShort(stats.lastSweep) : 'never';
+  // Blurred lifetime total comes from farblerCounters.totalCalls — the same
+  // unique-surface counter the popup footer shows (kept consistent since the
+  // Slice 3a delta fix). Separate storage key from the cookie scoper state.
+  chrome.storage.local.get('farblerCounters', (s) => {
+    const blurred = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
+    const el = $('scoper-blurred');
+    if (el) el.textContent = blurred.toLocaleString();
+  });
 }
 
 function relativeTimeShort(ms) {
@@ -1183,68 +1564,6 @@ function renderCoverage() {
   });
 }
 
-function renderTrustList(trust) {
-  const el = $('scoper-trust');
-  const entries = Object.entries(trust).sort((a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0));
-
-  const addRow = `
-    <div class="trust-add">
-      <input type="text" id="trust-input" placeholder="example.com" autocomplete="off">
-      <button class="btn-mini" id="trust-add-btn">[ add 30d ]</button>
-    </div>
-  `;
-
-  if (entries.length === 0) {
-    safeSetHTML(el, `${addRow}<div class="placeholder"><div>no trusted sites yet — trust a site to keep its cookies past 7 days.</div></div>`);
-    wireTrustControls();
-    return;
-  }
-
-  const rows = entries.map(([etld1, t]) => `
-    <tr>
-      <td>${escapeText(etld1)}</td>
-      <td class="num">${t.capDays}d</td>
-      <td>
-        <button class="btn-mini" data-action="toggle" data-etld1="${escapeText(etld1)}" data-cap="${t.capDays === 30 ? 90 : 30}">[ ${t.capDays === 30 ? 'extend 90d' : 'shorten 30d'} ]</button>
-        <button class="btn-mini" data-action="remove" data-etld1="${escapeText(etld1)}">[ remove ]</button>
-      </td>
-    </tr>
-  `).join('');
-
-  safeSetHTML(el, `
-    ${addRow}
-    <table class="table" style="margin-top:10px">
-      <thead><tr><th>domain</th><th>cap</th><th>actions</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `);
-  wireTrustControls();
-}
-
-function wireTrustControls() {
-  const addBtn = $('trust-add-btn');
-  const input = $('trust-input');
-  if (addBtn && input) {
-    addBtn.onclick = () => {
-      const v = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-      if (!v || !v.includes('.')) return;
-      chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: v, cap: 30 }, () => {
-        input.value = '';
-        loadScoperState();
-      });
-    };
-    input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click(); };
-  }
-  document.querySelectorAll('#scoper-trust [data-action]').forEach((btn) => {
-    btn.onclick = () => {
-      const etld1 = btn.dataset.etld1;
-      const action = btn.dataset.action;
-      const cap = action === 'remove' ? 0 : parseInt(btn.dataset.cap, 10);
-      chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1, cap }, () => loadScoperState());
-    };
-  });
-}
-
 function renderPeriodRadio(settings) {
   const current = PERIOD_CHOICES.find((p) => p.min === settings.sweepPeriodMin) ? settings.sweepPeriodMin : 60;
   const el = $('scoper-period');
@@ -1291,21 +1610,34 @@ function renderAlarmStatus() {
   });
 }
 
+// Unified activity log: cookie sweeps (cookieScopeHistory) + blur firings
+// (farblerHistory), interleaved by time. The sweep history arrives via
+// scoper:get-state; blur history is fetched here.
 function renderHistoryList(history) {
   const el = $('scoper-history');
-  if (!history.length) {
-    safeSetHTML(el, `<div class="placeholder"><div>no sweeps yet — the first one fires shortly after install.</div></div>`);
-    return;
-  }
-  safeSetHTML(el, history.slice(0, 20).map((h) => {
-    const when = relativeTimeShort(h.at);
-    return `
+  const sweeps = (Array.isArray(history) ? history : []).map((h) => ({
+    at: h.at,
+    label: 'cookie sweep',
+    detail: `scanned ${h.scanned} · rewrote ${h.rewrote}${h.demotions ? ` · demoted ${h.demotions}` : ''}`,
+  }));
+  chrome.storage.local.get('farblerHistory', (s) => {
+    const blur = (Array.isArray(s.farblerHistory) ? s.farblerHistory : []).map((b) => ({
+      at: b.at,
+      label: 'blur active',
+      detail: `${b.site ? b.site + ' · ' : ''}${(b.families || []).join(', ')}${b.surfaces ? ` · ${b.surfaces} surface${b.surfaces === 1 ? '' : 's'}` : ''}`,
+    }));
+    const merged = sweeps.concat(blur).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 20);
+    if (!merged.length) {
+      safeSetHTML(el, `<div class="placeholder"><div>no activity yet — the first cookie sweep fires shortly after install; blur events log as you browse.</div></div>`);
+      return;
+    }
+    safeSetHTML(el, merged.map((e) => `
       <div class="event">
         <span class="event-icon ok">[ok]</span>
-        <span class="event-kind">${escapeText(h.trigger)} · ${escapeText(when)}</span>
-        <span class="event-text">scanned ${h.scanned} · rewrote ${h.rewrote}${h.demotions ? ` · demoted ${h.demotions}` : ''}</span>
-      </div>`;
-  }).join(''));
+        <span class="event-kind">${escapeText(e.label)} · ${escapeText(relativeTimeShort(e.at))}</span>
+        <span class="event-text">${escapeText(e.detail)}</span>
+      </div>`).join(''));
+  });
 }
 
 // =========================================================================
