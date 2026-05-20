@@ -90,6 +90,8 @@
 
   // Match the popup's etld1 derivation (last two labels) for per-site
   // override lookup. Crude but matches the existing scoper convention.
+  // Keep in sync with background.js `harvestEtld1` — the relax-offer key is
+  // written there and read here, so they must agree.
   function etld1FromHost(host) {
     if (!host) return "";
     var labels = String(host).split(".").filter(Boolean);
@@ -226,35 +228,38 @@
       };
       // Persist blur-off + reload via the service worker. Its context is stable
       // (unlike this page's, which the site can tear down) and chrome.tabs.reload
-      // doesn't depend on page JS surviving. The watchdog reload below covers the
-      // case where even sendMessage can't reach the SW (context already dead) — a
-      // fresh content script then re-shows the still-pending offer.
+      // doesn't depend on page JS surviving. Only reload page-side when the SW is
+      // unreachable (context already dead); otherwise trust the SW reload and keep
+      // a long backstop in case it never lands. A fresh content script re-shows
+      // the still-pending offer if we reload before the relax could persist.
       try {
         if (chrome.runtime && chrome.runtime.id) {
           chrome.runtime.sendMessage({ type: "wh-relax-site", etld1: etld1 }, function () {
             void (chrome.runtime && chrome.runtime.lastError);
           });
+          setTimeout(doReload, 3000);  // backstop only; the SW reload wins normally
+        } else {
+          doReload();                  // ctx dead — SW unreachable, reload now
         }
-      } catch (e) {}
-      setTimeout(doReload, 1200);
+      } catch (e) { doReload(); }
     });
     close.addEventListener("click", function () {
-      whClearRelaxOffer(etld1);
       try { hostEl.remove(); } catch (e) {}
+      // Clear via the SW for the same reason relax does — this page's context may
+      // already be torn down, so a page-side storage write could silently no-op.
+      try {
+        if (chrome.runtime && chrome.runtime.id) {
+          chrome.runtime.sendMessage({ type: "wh-clear-relax-offer", etld1: etld1 }, function () {
+            void (chrome.runtime && chrome.runtime.lastError);
+          });
+        }
+      } catch (e) {}
     });
 
     bar.appendChild(brand); bar.appendChild(msg); bar.appendChild(relax); bar.appendChild(close);
     root.appendChild(bar);
     document.documentElement.appendChild(hostEl);
     DEBUG && console.log("[wh-farble:relax] banner shown for " + etld1);
-  }
-
-  function whClearRelaxOffer(etld1) {
-    chrome.storage.local.get("farbleReloadOffer", function (s) {
-      var offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === "object") ? s.farbleReloadOffer : {};
-      delete offer[etld1];
-      chrome.storage.local.set({ farbleReloadOffer: offer });
-    });
   }
 
   function whCheckRelaxOffer() {

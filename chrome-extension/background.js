@@ -208,6 +208,9 @@ self.recordBlurredByCompany = recordBlurredByCompany;
 // to match the scoper's bySite convention. Cookies whose domain hasn't
 // been observed via cooked yet stay unattributed; map fills in as the
 // user browses.
+// Crude eTLD+1 = last two labels. Keep in sync with detect-watched.js
+// `etld1FromHost` — the relax-offer key is written here and read there, so they
+// must agree. (Both share the multi-part-TLD limitation, e.g. "a.co.uk" → "co.uk".)
 function harvestEtld1(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
@@ -454,10 +457,11 @@ chrome.webRequest.onCompleted.addListener(
     if (details.tabId < 0) return;
 
     // Hard anti-bot block (e.g. Akamai/Cloudflare "Access Denied"): a main-frame
-    // 403/429 is a zero-false-positive "this site is broken" signal. Surface the
-    // same relax offer as rage-reload (maybeOfferRelax no-ops if blur is already
-    // off here). Catches outright blocks; soft hangs still need rage-reload.
-    if (details.type === 'main_frame' && (details.statusCode === 403 || details.statusCode === 429)) {
+    // 403 is a strong "this site is broken" signal. Surface the same relax offer
+    // as rage-reload (maybeOfferRelax no-ops if blur is already off here). Only
+    // 403 — 429 (rate-limit) is usually transient and unrelated to blur. Catches
+    // outright blocks; soft hangs still need rage-reload.
+    if (details.type === 'main_frame' && details.statusCode === 403) {
       try { maybeOfferRelax(harvestEtld1(new URL(details.url).hostname)); } catch {}
     }
 
@@ -566,6 +570,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       });
     });
     return true;  // async sendResponse
+  }
+
+  // Dismiss ('✕') of the in-page relax banner. Routed through the SW for the
+  // same reason as wh-relax-site: the page's context may already be torn down,
+  // so a page-side storage write could silently no-op and the banner would
+  // re-show on the next load.
+  if (msg && msg.type === 'wh-clear-relax-offer' && msg.etld1) {
+    chrome.storage.local.get('farbleReloadOffer', (s) => {
+      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
+      delete offer[msg.etld1];
+      chrome.storage.local.set({ farbleReloadOffer: offer });
+    });
+    return;
   }
 
   // --- Per-module detection messages from content scripts ---
