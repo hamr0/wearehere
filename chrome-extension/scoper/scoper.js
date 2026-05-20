@@ -30,6 +30,13 @@ const DEFAULT_PERIOD_MIN = 60;
 const FIRST_SWEEP_DELAY_MIN = 1;
 const HISTORY_MAX = 50;
 const SEC_PER_DAY = 86400;
+// Windowed impact log — hourly buckets of cookies tightened/demoted, fed by
+// BOTH the sweep and the realtime retrim flush. The Overview's "this period"
+// numbers sum this (cookieScopeHistory only records sweeps, and realtime
+// retrim — the dominant path — never reaches it, so a history-based window
+// reads ~0). Bucketed by hour so size is bounded by time, not activity.
+const IMPACT_LOG_KEY = 'cookieScopeImpactLog';
+const IMPACT_LOG_MAX_HOURS = 33 * 24; // ~a month + slack; covers the longest window
 
 const CAP_UNTRUSTED = 7;
 const CAP_TRUSTED_DEFAULT = 30;
@@ -157,6 +164,7 @@ async function sweep(trigger) {
 
   await mergeCounters(rewrote, demotions, perSite, perCompany);
   await appendHistory({ at: Date.now(), trigger, scanned, rewrote, demotions });
+  await recordImpact(rewrote, demotions);
 
   const stats = { scanned, rewrote, demotions, failed, rewrites: rewrote };
   console.log(`[scoper] sweep (${trigger}): scanned ${scanned}, rewrote ${rewrote}, demoted ${demotions}`);
@@ -252,6 +260,30 @@ async function appendHistory(entry) {
   await chrome.storage.local.set({ cookieScopeHistory: arr });
 }
 
+// Add to the current hour bucket of the windowed impact log. Sweep and the
+// realtime flush both call this; their events are disjoint (different
+// cookies, different times), so summing is correct — no double count.
+// Serialized through its own chain so a sweep and a flush landing together
+// can't read-modify-write over each other.
+let impactWriteChain = Promise.resolve();
+function recordImpact(tightened, demotions) {
+  if (!tightened && !demotions) return Promise.resolve();
+  const job = impactWriteChain.then(async () => {
+    const stored = await chrome.storage.local.get(IMPACT_LOG_KEY);
+    const log = (stored[IMPACT_LOG_KEY] && typeof stored[IMPACT_LOG_KEY] === 'object') ? stored[IMPACT_LOG_KEY] : {};
+    const hour = Math.floor(Date.now() / 3_600_000);
+    const cur = log[hour] || { t: 0, d: 0 };
+    cur.t += tightened || 0;
+    cur.d += demotions || 0;
+    log[hour] = cur;
+    const minHour = hour - IMPACT_LOG_MAX_HOURS;
+    for (const k in log) { if (+k < minHour) delete log[k]; }
+    await chrome.storage.local.set({ [IMPACT_LOG_KEY]: log });
+  });
+  impactWriteChain = job.catch(() => {});
+  return job;
+}
+
 async function ensureAlarm() {
   const { sweepPeriodMin } = await loadSettings();
   chrome.alarms.create(SCOPER_ALARM, {
@@ -340,6 +372,7 @@ async function flushPendingRetrim() {
   pendingRetrim = { tightened: 0, demotions: 0, bySite: {}, byCompany: {} };
   if (!delta.tightened && !delta.demotions) return;
   await mergeCountersInternal(delta.tightened, delta.demotions, delta.bySite, delta.byCompany, { isSweep: false });
+  await recordImpact(delta.tightened, delta.demotions);
 }
 
 chrome.cookies.onChanged.addListener(async (info) => {

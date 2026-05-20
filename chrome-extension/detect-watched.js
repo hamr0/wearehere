@@ -100,7 +100,7 @@
   (async function () {
     try {
       var stored = await new Promise(function (resolve) {
-        chrome.storage.local.get(["defaultBlurMode", "farblerSettings"], resolve);
+        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies"], resolve);
       });
       DEBUG && console.log("[wh-farble:dw] storage →", JSON.stringify(stored), "hasDoc=" + !!document.documentElement);
       if (!document.documentElement) return;
@@ -145,12 +145,132 @@
       }
       document.documentElement.setAttribute("data-wh-farble-state", state);
       document.documentElement.setAttribute("data-wh-farble-seed", seed);
-      DEBUG && console.log("[wh-farble:dw] set state=" + state + " seed=" + seed + (override ? " (override=" + override.mode + ")" : ""));
+      // Per-family disable (diagnostic / per-site relax). Global list for now:
+      //   chrome.storage.local.set({ farbleDisableFamilies: ["webgl"] })
+      // inject.js skips farbling for any listed family (canvas|webgl|audio|
+      // fonts|screennav). Empty/absent → all families follow the state above.
+      var disable = (stored && stored.farbleDisableFamilies);
+      var disableStr = Array.isArray(disable) ? disable.join(",") : (typeof disable === "string" ? disable : "");
+      if (disableStr) document.documentElement.setAttribute("data-wh-farble-disable", disableStr);
+      else document.documentElement.removeAttribute("data-wh-farble-disable");
+      DEBUG && console.log("[wh-farble:dw] set state=" + state + " seed=" + seed + (override ? " (override=" + override.mode + ")" : "") + (disableStr ? " disable=" + disableStr : ""));
     } catch (e) {
       DEBUG && console.log("[wh-farble:dw] err:", e && e.message);
     }
   })();
   // --- end farble-seed ---
+
+  // --- relax banner (in-page) ------------------------------------------
+  // background.js flags farbleReloadOffer[etld1] when a user rage-reloads a
+  // site that's likely broken by fingerprint blur. Show a top banner offering
+  // one-click relax + reload — far more discoverable than expecting the user
+  // to find our toolbar popup. Top frame + http(s) only. Rendered in a shadow
+  // root with styles set via the CSSOM (not a <style> tag / style attribute),
+  // so the page's CSS can't distort it and a strict CSP can't block it. We
+  // react to storage.onChanged so it appears on the current load, and also
+  // check once at start in case the flag predates this load.
+  var WH_RELAX_ETLD1 = (function () { try { return etld1FromHost(location.hostname || ""); } catch (e) { return ""; } })();
+  var whRelaxShown = false;
+
+  function showRelaxBanner(etld1) {
+    if (whRelaxShown || window.top !== window || !document.documentElement) return;
+    if (document.getElementById("wh-relax-banner-host")) return;
+    whRelaxShown = true;
+
+    var hostEl = document.createElement("div");
+    hostEl.id = "wh-relax-banner-host";
+    hostEl.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;";
+    var root = hostEl.attachShadow ? hostEl.attachShadow({ mode: "open" }) : hostEl;
+
+    var bar = document.createElement("div");
+    bar.style.cssText = "display:flex;align-items:center;justify-content:center;gap:10px;" +
+      "position:relative;padding:10px 44px;" +
+      "background:#1a1b26;color:#c0caf5;border-bottom:2px solid #e0af68;" +
+      "font:13px/1.4 'JetBrains Mono','IBM Plex Mono',ui-monospace,Menlo,monospace;" +
+      "box-shadow:0 2px 8px rgba(0,0,0,0.4);";
+
+    // Full [we]arehere wordmark, matching the popup.
+    var brand = document.createElement("span");
+    brand.style.cssText = "flex-shrink:0;font-weight:800;";
+    var we = document.createElement("span"); we.textContent = "[we]"; we.style.cssText = "color:#e0af68;";
+    var rest = document.createElement("span"); rest.textContent = "arehere"; rest.style.cssText = "color:#c0caf5;";
+    brand.appendChild(we); brand.appendChild(rest);
+
+    var msg = document.createElement("span");
+    msg.textContent = etld1 + " may not work with fingerprint protection on.";
+    msg.style.cssText = "min-width:0;";
+
+    var relax = document.createElement("button");
+    relax.textContent = "relax & reload";
+    relax.style.cssText = "flex-shrink:0;cursor:pointer;padding:5px 12px;border:1px solid #e0af68;" +
+      "background:#e0af68;color:#1a1b26;font:inherit;font-weight:700;border-radius:3px;";
+
+    var close = document.createElement("button");
+    close.textContent = "✕";
+    close.setAttribute("aria-label", "dismiss");
+    close.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);" +
+      "cursor:pointer;padding:5px 9px;border:1px solid #565f89;" +
+      "background:transparent;color:#9aa5ce;font:inherit;border-radius:3px;";
+
+    relax.addEventListener("click", function () {
+      DEBUG && console.log("[wh-farble:relax] relax clicked for " + etld1);
+      // Dismiss synchronously — instant feedback and not gated on any async
+      // callback (the previous bug: reload was the callback to a storage write
+      // that never fired once this page's content-script context was torn down
+      // by the anti-bot script right after the banner appeared).
+      try { hostEl.remove(); } catch (e) {}
+      var reloaded = false;
+      var doReload = function () {
+        if (reloaded) return; reloaded = true;
+        try { location.reload(); } catch (e) { try { location.href = location.href; } catch (e2) {} }
+      };
+      // Persist blur-off + reload via the service worker. Its context is stable
+      // (unlike this page's, which the site can tear down) and chrome.tabs.reload
+      // doesn't depend on page JS surviving. The watchdog reload below covers the
+      // case where even sendMessage can't reach the SW (context already dead) — a
+      // fresh content script then re-shows the still-pending offer.
+      try {
+        if (chrome.runtime && chrome.runtime.id) {
+          chrome.runtime.sendMessage({ type: "wh-relax-site", etld1: etld1 }, function () {
+            void (chrome.runtime && chrome.runtime.lastError);
+          });
+        }
+      } catch (e) {}
+      setTimeout(doReload, 1200);
+    });
+    close.addEventListener("click", function () {
+      whClearRelaxOffer(etld1);
+      try { hostEl.remove(); } catch (e) {}
+    });
+
+    bar.appendChild(brand); bar.appendChild(msg); bar.appendChild(relax); bar.appendChild(close);
+    root.appendChild(bar);
+    document.documentElement.appendChild(hostEl);
+    DEBUG && console.log("[wh-farble:relax] banner shown for " + etld1);
+  }
+
+  function whClearRelaxOffer(etld1) {
+    chrome.storage.local.get("farbleReloadOffer", function (s) {
+      var offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === "object") ? s.farbleReloadOffer : {};
+      delete offer[etld1];
+      chrome.storage.local.set({ farbleReloadOffer: offer });
+    });
+  }
+
+  function whCheckRelaxOffer() {
+    if (window.top !== window || !/^https?:$/.test(location.protocol) || !WH_RELAX_ETLD1) return;
+    chrome.storage.local.get("farbleReloadOffer", function (s) {
+      var o = s && s.farbleReloadOffer && s.farbleReloadOffer[WH_RELAX_ETLD1];
+      if (o && o.at && (Date.now() - o.at) < 10 * 60 * 1000) showRelaxBanner(WH_RELAX_ETLD1);
+    });
+  }
+
+  chrome.storage.onChanged.addListener(function (changes, area) {
+    if (area === "local" && changes.farbleReloadOffer) whCheckRelaxOffer();
+  });
+  whCheckRelaxOffer();
+  // --- end relax banner ------------------------------------------------
+
 
   // inject.js is loaded by manifest as a MAIN-world content script at
   // document_start (see manifest.json content_scripts). The dynamic

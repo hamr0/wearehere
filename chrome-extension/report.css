@@ -297,8 +297,23 @@ body {
   padding: 16px;
 }
 
+/* Overview hero carries a 5th cell (surfaces blurred). */
+#overview-hero { grid-template-columns: repeat(5, 1fr); }
+
+/* Lifetime top-3 lists under the overview hero (watched / cookies / blurred),
+   on one wrapping line, segments split by a dim pipe. */
+.hero-lists { margin: 10px 0 4px; font-size: 11px; color: var(--fg-mute); line-height: 1.7; text-align: center; }
+.hero-lists .hl-label { color: var(--fg-faint); }
+.hero-lists .hl-label::after { content: ":"; }
+.hero-lists strong { color: var(--fg-bright); font-weight: 600; }
+.hero-lists .hl-sep { color: var(--fg-faint); margin: 0 8px; }
+
+/* Right-aligned tag in a frame title (e.g. the hero's "lifetime" marker). */
+.ft-tag { float: right; color: var(--fg-faint); font-size: 11px; font-weight: normal; }
+
 .hero .cell {
   min-width: 0;
+  text-align: center;
 }
 
 .hero .num {
@@ -662,14 +677,16 @@ input[type="text"].mono-input {
   #header { padding: 14px 16px 10px; flex-wrap: wrap; }
   #tab-bar { display: none; }
   #tab-select { display: inline-block; }
-  .hero { grid-template-columns: repeat(2, 1fr); }
+  .hero,
+  #overview-hero { grid-template-columns: repeat(2, 1fr); }
   .table { font-size: 11px; }
   .event-kind { min-width: 90px; }
   .bar { max-width: 40%; }
 }
 
 @media (max-width: 480px) {
-  .hero { grid-template-columns: 1fr; }
+  .hero,
+  #overview-hero { grid-template-columns: 1fr; }
   .hero .cell { border-bottom: 1px dashed var(--line); padding-bottom: 10px; }
   .hero .cell:last-child { border-bottom: 0; padding-bottom: 0; }
 }

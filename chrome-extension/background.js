@@ -453,6 +453,14 @@ chrome.webRequest.onCompleted.addListener(
   (details) => {
     if (details.tabId < 0) return;
 
+    // Hard anti-bot block (e.g. Akamai/Cloudflare "Access Denied"): a main-frame
+    // 403/429 is a zero-false-positive "this site is broken" signal. Surface the
+    // same relax offer as rage-reload (maybeOfferRelax no-ops if blur is already
+    // off here). Catches outright blocks; soft hangs still need rage-reload.
+    if (details.type === 'main_frame' && (details.statusCode === 403 || details.statusCode === 429)) {
+      try { maybeOfferRelax(harvestEtld1(new URL(details.url).hostname)); } catch {}
+    }
+
     const domain = extractDomain(details.url);
     if (!domain) return;
 
@@ -537,6 +545,28 @@ chrome.webRequest.onErrorOccurred.addListener(
 // Message handler
 // =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+
+  // --- One-click "relax fingerprint protection here" from the in-page banner ---
+  // Persist blur-off for this site and reload the tab from the SW. Doing this
+  // page-side is unreliable: anti-bot sites tear down our content-script context
+  // right after the banner shows, so its own chrome.storage callbacks never fire.
+  // The SW context is stable and chrome.tabs.reload doesn't need page JS.
+  if (msg && msg.type === 'wh-relax-site' && msg.etld1) {
+    const etld1 = msg.etld1;
+    chrome.storage.local.get(['farblerSettings', 'farbleReloadOffer'], (s) => {
+      const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+      settings[etld1] = { mode: 'off', auto: true };
+      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
+      delete offer[etld1];
+      chrome.storage.local.set({ farblerSettings: settings, farbleReloadOffer: offer }, () => {
+        const tabId = sender.tab && sender.tab.id;
+        if (tabId != null) { try { chrome.tabs.reload(tabId); } catch (e) {} }
+        try { sendResponse({ ok: true }); } catch (e) {}
+        console.log('[relax] blur off + reload for', etld1);
+      });
+    });
+    return true;  // async sendResponse
+  }
 
   // --- Per-module detection messages from content scripts ---
   if (msg.type === 'detection' && sender.tab) {
@@ -997,18 +1027,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // cookies and demoted M trackers…"). Per-sweep entries already carry
   // `rewrote` (tightened cookies) + `demotions` (tracker demotions).
   if (msg.type === 'impact:get-window') {
-    chrome.storage.local.get('cookieScopeHistory', ({ cookieScopeHistory }) => {
-      const arr = Array.isArray(cookieScopeHistory) ? cookieScopeHistory : [];
+    // Sum the hourly impact log (scoper.js writes it from BOTH the sweep and
+    // the realtime retrim flush). cookieScopeHistory only records sweeps, so
+    // a history-based window read ~0 once realtime trimming does the work.
+    chrome.storage.local.get('cookieScopeImpactLog', ({ cookieScopeImpactLog }) => {
+      const log = (cookieScopeImpactLog && typeof cookieScopeImpactLog === 'object') ? cookieScopeImpactLog : {};
       const ms = windowMs(msg.window);
-      const cutoff = ms == null ? 0 : Date.now() - ms;
-      let tightened = 0, demotions = 0, sweeps = 0;
-      for (const h of arr) {
-        if (h.at < cutoff) continue;
-        tightened += h.rewrote || 0;
-        demotions += h.demotions || 0;
-        sweeps++;
+      const cutoffHour = ms == null ? 0 : Math.floor((Date.now() - ms) / 3_600_000);
+      let tightened = 0, demotions = 0;
+      for (const k in log) {
+        if (+k < cutoffHour) continue;
+        tightened += (log[k] && log[k].t) || 0;
+        demotions += (log[k] && log[k].d) || 0;
       }
-      sendResponse({ tightened, demotions, sweeps, window: msg.window });
+      sendResponse({ tightened, demotions, window: msg.window });
     });
     return true;
   }
@@ -1614,8 +1646,49 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // rejects with "No tab with id: …".
   markTabRemoved(tabId);
   snapshotAndEvict(tabId);
+  delete reloadTrack[tabId];
 });
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+
+// --- rage-reload relax offer ------------------------------------------------
+// If a user reloads the same URL several times in a short window while blur is
+// ON for that site, surface a one-click "relax fingerprint protection here"
+// offer in the popup (read from farbleReloadOffer). The popup is where the fix
+// lives (Trust ID); we just flag that this site is a likely candidate.
+const RELAX_WINDOW_MS = 25000;
+const RELAX_MIN_LOADS = 2;     // initial load + 1 reload
+const RELAX_DEDUPE_MS = 1500;  // collapse the multiple 'loading' fires per reload
+const reloadTrack = {};        // tabId -> { url, times: [] }
+
+function trackReloadForRelaxOffer(tabId, url) {
+  if (!url || !/^https?:/.test(url)) return;
+  let etld1;
+  try { etld1 = harvestEtld1(new URL(url).hostname); } catch { return; }
+  if (!etld1) return;
+  const now = Date.now();
+  let t = reloadTrack[tabId];
+  if (!t || t.url !== url) { t = reloadTrack[tabId] = { url, times: [] }; }
+  if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;
+  t.times.push(now);
+  t.times = t.times.filter((x) => now - x <= RELAX_WINDOW_MS);
+  if (t.times.length >= RELAX_MIN_LOADS) {
+    t.times = [];  // reset so we don't re-fire on every later reload
+    maybeOfferRelax(etld1);
+  }
+}
+
+function maybeOfferRelax(etld1) {
+  if (!etld1) return;
+  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer'], (s) => {
+    const ov = s.farblerSettings && s.farblerSettings[etld1];
+    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'per-tab');
+    if (mode === 'off') return;  // blur already off here — nothing to offer
+    const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
+    offer[etld1] = { at: Date.now() };
+    chrome.storage.local.set({ farbleReloadOffer: offer });
+    console.log('[relax-offer] rage-reload on', etld1, '→ offering blur-off in popup');
+  });
+}
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
     const oldDomain = tabData[tabId]?.domain;
     try {
@@ -1627,6 +1700,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       snapshotAndEvict(tabId);
     }
   }
+  // Rage-reload → relax offer. A user hammering reload on the same URL is the
+  // most reliable "this page is broken" signal we have (render heuristics are
+  // unreliable and our content script gets torn down on stuck SPAs). Observed
+  // at the SW level so it survives that teardown.
+  if (changeInfo.status === 'loading') trackReloadForRelaxOffer(tabId, tab && tab.url);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (tabData[tabId]) updateBadge(tabId);

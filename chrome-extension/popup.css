@@ -311,6 +311,26 @@ body {
   min-height: 1.4em;
 }
 
+/* Rage-reload relax hint (popup fallback). One-line note + a pulse on the
+   existing Trust ID button, which is the actual relax action. */
+#guard-relax-offer {
+  margin: 8px 0 4px;
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.4;
+}
+#guard-relax-offer strong { color: var(--fg-bright); font-weight: 600; }
+
+.btn.pulse {
+  border-color: var(--warn);
+  color: var(--warn);
+  animation: wh-pulse 1.2s ease-in-out infinite;
+}
+@keyframes wh-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255, 158, 100, 0.5); }
+  50%      { box-shadow: 0 0 0 4px rgba(255, 158, 100, 0); }
+}
+
 #guard-status.ok { color: var(--ok); }
 #guard-status.warn { color: var(--warn); }
 #guard-status.gated { color: var(--warn); }

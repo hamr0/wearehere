@@ -130,15 +130,28 @@ function watchVisitsStorage() {
   // score trend, but those listen separately below.
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
-    // Snapshot-driven blocks (hero + what-changed + who-follows-you)
-    // re-render only when the snapshot key changes (~hourly + post-append
-    // when stale). visitHistory updates do not retrigger these.
+    // Snapshot-driven blocks re-render only when the snapshot key changes
+    // (~hourly + post-append when stale). The lifetime hero/lists read the
+    // all-time snapshot; what-changed reads the windowed one.
     if (changes[WINDOW_SNAPSHOTS_KEY]) {
+      loadOverviewLifetime();
       loadOverviewAggregates();
       loadWatchersAggregates();
     }
-    // Per-visit detail (score trend dots, recent visits table) needs the
-    // raw history.
+    // Lifetime hero (trimmed/blurred cells) + the cookies/blurred top-3 lists
+    // read these counters, which move on sweeps / visit appends / realtime
+    // flush, independently of the snapshot recompute.
+    if (changes.cookieScopeCounters || changes.farblerCounters || changes.farblerBlurredBySite) {
+      loadOverviewLifetime();
+    }
+    // Windowed protection line reads the impact log, which the realtime retrim
+    // flush updates between snapshots. Refresh just the impact line.
+    if (changes.cookieScopeImpactLog) {
+      chrome.runtime.sendMessage({ type: 'impact:get-window', window: overviewWindow }, (impact) => {
+        renderImpactLine(impact);
+      });
+    }
+    // Per-visit detail (browsing exposure, recent visits) needs raw history.
     if (changes[VISIT_HISTORY_STORAGE_KEY]) {
       refreshRawVisitConsumers();
     }
@@ -242,17 +255,18 @@ let _ovBlurred = 0;
 function renderOverview() {
   const panel = $('panel-overview');
   safeSetHTML(panel, `
-    <div class="frame-title">this period</div>
+    <div class="frame-title">this overview <span class="ft-tag">lifetime</span></div>
     <div class="hero" id="overview-hero">
       <div class="cell"><div class="num" id="ov-sites">—</div><div class="lbl">sites visited</div></div>
       <div class="cell"><div class="num" id="ov-score">—</div><div class="lbl">avg score</div></div>
       <div class="cell"><div class="num" id="ov-watchers">—</div><div class="lbl">unique watchers</div></div>
       <div class="cell"><div class="num" id="ov-trimmed">—</div><div class="lbl">cookies trimmed</div></div>
+      <div class="cell"><div class="num" id="ov-blurred">—</div><div class="lbl">surfaces blurred</div></div>
     </div>
-    <div class="callout impact" id="ov-impact" hidden></div>
-    <div class="callout" id="ov-callout"></div>
+    <div class="hero-lists" id="ov-lists"></div>
 
     <div class="window-sel" id="ov-window" style="margin-top:14px"></div>
+    <div class="callout impact" id="ov-impact" hidden></div>
 
     <div class="frame-title">what changed</div>
     <div id="ov-changed"></div>
@@ -261,9 +275,15 @@ function renderOverview() {
     <div id="ov-trend"></div>
   `);
 
+  // The window selector drives only the windowed drill-down (protection line +
+  // what-changed + browsing exposure). The hero and its top-3 lists are
+  // lifetime, so they stay put when the window changes.
   renderWindowSelector('ov-window', overviewWindow, (w) => {
     overviewWindow = w;
-    loadOverview();
+    _ovImpact = null;
+    _ovBlurred = 0;
+    loadOverviewAggregates();
+    loadOverviewRawVisits();
   });
   loadOverview();
 }
@@ -296,14 +316,27 @@ function renderWindowSelector(id, active, onChange) {
 function loadOverview() {
   _ovImpact = null;
   _ovBlurred = 0;
+  loadOverviewLifetime();
   loadOverviewAggregates();
   loadOverviewRawVisits();
+}
+
+// Lifetime hero + the three top-3 lists below it. Reads the all-time snapshot
+// (selector-independent) for sites/score/watchers, and the lifetime counters
+// for trimmed/blurred. Refreshed on its own when those keys move.
+function loadOverviewLifetime() {
+  chrome.runtime.sendMessage({ type: 'snapshots:get-window', window: 'all' }, (resp) => {
+    const cur = (resp && resp.cur) || null;
+    chrome.storage.local.get(['cookieScopeCounters', 'farblerCounters', 'farblerBlurredBySite'], (s) => {
+      renderLifetimeHero(cur, s);
+      renderHeroLists(cur, s);
+    });
+  });
 }
 
 function loadOverviewAggregates() {
   chrome.runtime.sendMessage({ type: 'snapshots:get-window', window: overviewWindow }, (resp) => {
     const { cur, prev } = resp || { cur: null, prev: null };
-    renderOverviewHero(cur);
     renderWhatChanged(cur, prev);
   });
   chrome.runtime.sendMessage({ type: 'impact:get-window', window: overviewWindow }, (impact) => {
@@ -313,8 +346,6 @@ function loadOverviewAggregates() {
 
 function renderImpactLine(impact) {
   _ovImpact = impact || { tightened: 0, demotions: 0 };
-  const cell = $('ov-trimmed');
-  if (cell) cell.textContent = (_ovImpact.tightened || 0).toLocaleString();
   renderProtectionLine();
 }
 
@@ -331,7 +362,9 @@ function renderProtectionLine() {
     el.textContent = '';
     return;
   }
-  const win = overviewWindow === 'all' ? 'all time' : `this ${overviewWindow}`;
+  const win = overviewWindow === 'today' ? 'today'
+            : overviewWindow === 'all' ? 'all time'
+            : `this ${overviewWindow}`;
   const parts = [];
   if (trimmed) parts.push(`shortened ${trimmed.toLocaleString()} cookie${trimmed === 1 ? '' : 's'}`);
   if (demoted) parts.push(`demoted ${demoted.toLocaleString()} tracker${demoted === 1 ? '' : 's'} to session-only`);
@@ -352,32 +385,42 @@ function loadOverviewRawVisits() {
   });
 }
 
-function renderOverviewHero(snap) {
-  if (!snap || !snap.visitsN) {
-    $('ov-sites').textContent = '0';
-    $('ov-score').textContent = '—';
-    $('ov-watchers').textContent = '0';
-    $('ov-trimmed').textContent = '0';
-    safeSetHTML($('ov-callout'), `<span class="dim">no visits in this window yet — keep browsing and come back.</span>`);
-    return;
-  }
+// Lifetime hero. sites/score/watchers come from the all-time snapshot;
+// trimmed/blurred from the lifetime counters. Selector-independent.
+function renderLifetimeHero(snap, s) {
+  const trimmed = (s.cookieScopeCounters && s.cookieScopeCounters.tightened) || 0;
+  const blurred = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
+  const hasVisits = !!(snap && snap.visitsN);
+  $('ov-sites').textContent = hasVisits ? (snap.sites || []).length.toLocaleString() : '0';
+  $('ov-score').textContent = hasVisits ? snap.avgScore : '—';
+  $('ov-watchers').textContent = hasVisits ? Object.keys(snap.watchers || {}).length.toLocaleString() : '0';
+  $('ov-trimmed').textContent = trimmed.toLocaleString();
+  $('ov-blurred').textContent = blurred.toLocaleString();
+}
 
-  // Most-watched sites — ranked by average score across the window (a truer
-  // read of consistent exposure than a single-visit max). The hero's 4th cell
-  // is now "cookies trimmed" (set by renderImpactLine); these top sites live
-  // in the callout line below so there's no duplication.
-  const ranked = Object.entries(snap.avgScoreBySite || {})
-    .map(([etld1, avg]) => ({ etld1, avg }))
-    .sort((a, b) => (b.avg || 0) - (a.avg || 0));
-
-  $('ov-sites').textContent = (snap.sites || []).length.toLocaleString();
-  $('ov-score').textContent = snap.avgScore;
-  $('ov-watchers').textContent = Object.keys(snap.watchers || {}).length.toLocaleString();
-
-  const top3 = ranked.slice(0, 3).map((v) => v.etld1).filter(Boolean);
-  safeSetHTML($('ov-callout'), top3.length
-    ? `most-watched: ${top3.map((s) => `<strong>${escapeText(s)}</strong>`).join(' · ')}`
-    : '');
+// The three lifetime top-3 lists under the hero. Mixed entities by design:
+// `watched` is the watcher company (by reach), `cookies` is the tracker domain
+// most trimmed, `blurred` is the visited site where blur fired most.
+function renderHeroLists(snap, s) {
+  const el = $('ov-lists');
+  if (!el) return;
+  const watchers = (snap && snap.watchers) || {};
+  const reach = (snap && snap.reachPct) || {};
+  const watched = Object.entries(watchers)
+    .map(([k, w]) => ({ name: (w && w.name) || k, pct: reach[k] || 0 }))
+    .sort((a, b) => b.pct - a.pct).slice(0, 3).map((w) => w.name);
+  const bySiteTrim = (s.cookieScopeCounters && s.cookieScopeCounters.bySite) || {};
+  const cookies = Object.entries(bySiteTrim)
+    .map(([d, v]) => [d, (v && v.tightened) || 0]).filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d]) => d);
+  const bySiteBlur = (s.farblerBlurredBySite && typeof s.farblerBlurredBySite === 'object') ? s.farblerBlurredBySite : {};
+  const blurred = Object.entries(bySiteBlur).filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1]).slice(0, 3).map(([d]) => d);
+  const seg = (label, items) => items.length
+    ? `<span class="hl-seg"><span class="hl-label">${label}</span> ${items.map((x) => `<strong>${escapeText(x)}</strong>`).join(' · ')}</span>`
+    : '';
+  const segs = [seg('watched', watched), seg('cookies', cookies), seg('blurred', blurred)].filter(Boolean);
+  safeSetHTML(el, segs.length ? segs.join('<span class="hl-sep">|</span>') : '<span class="dim">no activity yet</span>');
 }
 
 // What-changed event log: diff this-window vs prior-window of equal
@@ -764,7 +807,7 @@ function renderWhoFollowsYou(snap) {
       return `
         <div class="watcher-row">
           <span class="wt-name">${escapeText(c.name)}${via ? `<span class="wt-via">${escapeText(via)}</span>` : ''}</span>
-          <span class="wt-reach">${c.pct}% <span class="dim">(${c.hits}/${snap.visitsN})</span></span>
+          <span class="wt-reach">${c.hits} of ${snap.visitsN} <span class="dim">visits</span></span>
           <span class="wt-num${trimmed > 0 ? ' pos' : ''}">${trimmed.toLocaleString()}</span>
           <span class="wt-num${blurred > 0 ? ' pos' : ''}">${blurred.toLocaleString()}</span>
         </div>`;
@@ -786,16 +829,15 @@ function renderWhoFollowsYou(snap) {
 }
 
 function renderWhoFollowsYouSummary(snap) {
-  // Site-level summary: form-field exposure (typing). Per-company
-  // mechanisms now live in the table above; fingerprint reads from
-  // unattributed scripts (caller host not in the cooked-items company
-  // map) are silently dropped — the site-level "typing" line is what's
-  // left to surface here.
+  // Caption above the table: site-level form-field exposure (typing). It's
+  // deliberately separate from the per-company rows — keystroke listeners
+  // can't be attributed to a single company, so it frames the table rather
+  // than sitting in it.
   const summary = $('w-who-summary');
   if (!summary) return;
   const { fields = 0, visits: vsig = 0 } = (snap && snap.typing) || {};
   safeSetHTML(summary, fields
-    ? `also: ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} <span title="form-field exposure can't be attributed to a single company — listeners aren't observable per-script">[?]</span>`
+    ? `⌨ ${fields} form field${fields === 1 ? '' : 's'} exposed across ${vsig} visit${vsig === 1 ? '' : 's'} — typing, can't be tied to one company <span title="form-field exposure can't be attributed to a single company — keystroke listeners aren't observable per-script">[?]</span>`
     : '');
 }
 
@@ -1321,20 +1363,27 @@ function renderPerSiteRules() {
         return;
       }
 
+      // Mark the axis the user hasn't set as "(default)" (dimmed) so a
+      // cookie-only row doesn't read as if it also has a blur rule, and
+      // vice-versa. Only stable/off are real blur exceptions; per-tab is
+      // the default. cap 0 = untrusted = the 7d default.
       const rows = sorted.map((d) => {
         const cap = trust[d] ? trust[d].capDays : 0;            // 0 = untrusted (7d default)
         const cookieLabel = cap ? `${cap}d` : '7d';
         const cookieNext = cap === 30 ? 90 : cap === 90 ? 0 : 30; // 7d→30→90→7d
         const cookieNextLabel = cookieNext ? `${cookieNext}d` : '7d';
+        const cookieText = cap ? cookieLabel : `<span class="dim">${cookieLabel} (default)</span>`;
 
         const mode = (settings[d] && settings[d].mode) || 'per-tab';
         const blurNext = mode === 'per-tab' ? 'stable' : mode === 'stable' ? 'off' : 'per-tab';
+        const blurSet = !!(settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable'));
+        const blurText = blurSet ? escapeText(mode) : `<span class="dim">${escapeText(mode)} (default)</span>`;
 
         return `
           <tr>
             <td>${escapeText(d)}</td>
-            <td class="num">${cookieLabel} <button class="btn-mini" data-act="cookie" data-d="${escapeText(d)}" data-cap="${cookieNext}">[ → ${cookieNextLabel} ]</button></td>
-            <td class="num">${escapeText(mode)} <button class="btn-mini" data-act="blur" data-d="${escapeText(d)}" data-mode="${escapeText(blurNext)}">[ → ${escapeText(blurNext)} ]</button></td>
+            <td class="num">${cookieText} <button class="btn-mini" data-act="cookie" data-d="${escapeText(d)}" data-cap="${cookieNext}">[ → ${cookieNextLabel} ]</button></td>
+            <td class="num">${blurText} <button class="btn-mini" data-act="blur" data-d="${escapeText(d)}" data-mode="${escapeText(blurNext)}">[ → ${escapeText(blurNext)} ]</button></td>
             <td><button class="btn-mini" data-act="remove" data-d="${escapeText(d)}">[ ✕ ]</button></td>
           </tr>`;
       }).join('');
@@ -1345,6 +1394,7 @@ function renderPerSiteRules() {
           <thead><tr><th>domain</th><th>cookies</th><th>blur</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
+        <div class="block-help"><span class="dim">(default)</span> = no rule set on that axis — the site just uses the global default (cookies 7d · blur per-tab). Use the <strong>[ → ]</strong> button to set an exception.</div>
       `);
       wirePerSiteControls();
     });
@@ -1356,7 +1406,11 @@ function wirePerSiteControls() {
   const input = $('rule-input');
   if (addBtn && input) {
     addBtn.onclick = () => {
-      const v = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+      const raw = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+      // Normalise to the same eTLD+1 (last two labels) that detect-watched.js
+      // and the scoper resolve at runtime — otherwise a typed "www.foo.com"
+      // stores a key that never matches, leaving a silently-dead rule.
+      const v = raw.split('.').filter(Boolean).slice(-2).join('.');
       if (!v || !v.includes('.')) return;
       const kindEl = document.querySelector('input[name="rule-kind"]:checked');
       const kind = kindEl ? kindEl.value : 'cookies';

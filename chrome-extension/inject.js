@@ -206,7 +206,7 @@
   HTMLCanvasElement.prototype.toDataURL = function () {
     if (!isCanvas(this)) return origToDataURL.apply(this, arguments);
     notify("Canvas.toDataURL", "fingerprint");
-    var state = farbleState();
+    var state = famState("canvas");
     DEBUG && console.log("[wh-farble] toDataURL called, state=" + state);
     if (state !== "off") {
       var off = farbleAnyCanvas(this, farbleSeed());
@@ -221,7 +221,7 @@
     HTMLCanvasElement.prototype.toBlob = function () {
       if (!isCanvas(this)) return origToBlob.apply(this, arguments);
       notify("Canvas.toBlob", "fingerprint");
-      var state = farbleState();
+      var state = famState("canvas");
       DEBUG && console.log("[wh-farble] toBlob called, state=" + state);
       if (state !== "off") {
         var off = farbleAnyCanvas(this, farbleSeed());
@@ -236,7 +236,7 @@
   CanvasRenderingContext2D.prototype.getImageData = function () {
     if (!isCanvas2DCtx(this)) return origGetImageData.apply(this, arguments);
     notify("Canvas.getImageData", "fingerprint");
-    var state = farbleState();
+    var state = famState("canvas");
     DEBUG && console.log("[wh-farble] getImageData called, state=" + state);
     var imgData = origGetImageData.apply(this, arguments);
     if (state !== "off" && imgData) perturbImageData(imgData, farbleSeed());
@@ -260,7 +260,7 @@
     proto.getParameter = function (pname) {
       if (Object.prototype.toString.call(this) !== brand) return orig.apply(this, arguments);
       notify("WebGL.getParameter", "fingerprint");
-      if (farbleState() !== "off") {
+      if (famState("webgl") !== "off") {
         if (pname === UNMASKED_RENDERER_WEBGL) {
           DEBUG && console.log("[wh-farble] " + label + " getParameter UNMASKED_RENDERER → farbled");
           return FARBLE_WEBGL_RENDERER;
@@ -302,7 +302,7 @@
       if (Object.prototype.toString.call(this) !== brand) return orig.apply(this, arguments);
       notify("WebGL.readPixels", "fingerprint");
       var ret = orig.apply(this, arguments);
-      var state = farbleState();
+      var state = famState("webgl");
       if (state === "off") return ret;
       // PIXEL_PACK_BUFFER offset variant (WebGL2): can't farble GPU memory.
       if (typeof pixels !== "object" || !pixels || typeof pixels.length !== "number") {
@@ -343,7 +343,7 @@
   var origCreateImageBitmap = window.createImageBitmap;
   if (typeof origCreateImageBitmap === "function") {
     window.createImageBitmap = function (image) {
-      if (farbleState() !== "off" && (isCanvas(image) || isOffscreenCanvas(image))) {
+      if (famState("canvas") !== "off" && (isCanvas(image) || isOffscreenCanvas(image))) {
         notify("createImageBitmap.canvasSrc", "fingerprint");
         DEBUG && console.log("[wh-farble] createImageBitmap canvas-source " + image.width + "x" + image.height);
         var off = farbleAnyCanvas(image, farbleSeed());
@@ -391,7 +391,7 @@
     AudioBuffer.prototype.getChannelData = function (channel) {
       if (!isAudioBuffer(this)) return origGetChannelData.apply(this, arguments);
       var data = origGetChannelData.apply(this, arguments);
-      if (farbleState() === "off" || !data || !data.length) return data;
+      if (famState("audio") === "off" || !data || !data.length) return data;
       var done = perturbedChannels.get(this);
       if (!done) { done = new Set(); perturbedChannels.set(this, done); }
       if (done.has(channel)) return data;
@@ -410,7 +410,7 @@
     AnalyserNode.prototype[name] = function (arr) {
       if (!isAnalyserNode(this)) return orig.apply(this, arguments);
       var ret = orig.apply(this, arguments);
-      if (farbleState() === "off" || !arr || !arr.length) return ret;
+      if (famState("audio") === "off" || !arr || !arr.length) return ret;
       var seed = farbleSeed();
       var flipped = perturbFn(arr, seed);
       notify("AnalyserNode." + name, "fingerprint");
@@ -529,7 +529,7 @@
     var origMeasureText = CanvasRenderingContext2D.prototype.measureText;
     CanvasRenderingContext2D.prototype.measureText = function (text) {
       if (!isCanvas2DCtx(this)) return origMeasureText.apply(this, arguments);
-      if (farbleState() === "off") return origMeasureText.apply(this, arguments);
+      if (famState("fonts") === "off") return origMeasureText.apply(this, arguments);
       var fontStr = "";
       try { fontStr = this.font || ""; } catch (e) {}
       var bucket = classifyFont(fontStr);
@@ -566,6 +566,25 @@
       return isFinite(n) ? (n >>> 0) : 0;
     } catch (e) { return 0; }
   }
+  // Per-family disable. detect-watched.js writes data-wh-farble-disable=
+  // "canvas,webgl,audio,fonts,screennav" (subset) from the farbleDisable-
+  // Families storage key — a diagnostic + the foundation for per-site
+  // surface relaxing (some sites break under one surface; we can ease just
+  // that one instead of the user fully trusting the site). famState()
+  // returns "off" for a disabled family so every wrapper's existing
+  // off-path handles it with no per-call logic change. Family names don't
+  // substring-collide, so an indexOf check is safe.
+  function famDisabled(fam) {
+    try {
+      var el = document.documentElement;
+      if (!el) return false;
+      var d = el.getAttribute("data-wh-farble-disable");
+      return !!d && d.indexOf(fam) !== -1;
+    } catch (e) { return false; }
+  }
+  function famState(fam) {
+    return famDisabled(fam) ? "off" : farbleState();
+  }
 
   // 4. navigator.hardwareConcurrency
   var origConcurrency = Object.getOwnPropertyDescriptor(Navigator.prototype, "hardwareConcurrency");
@@ -573,7 +592,7 @@
     Object.defineProperty(Navigator.prototype, "hardwareConcurrency", {
       get: function () {
         notify("Navigator.hardwareConcurrency", "fingerprint");
-        if (farbleState() !== "off") return 4;
+        if (famState("screennav") !== "off") return 4;
         return origConcurrency.get.call(this);
       },
       configurable: true,
@@ -588,7 +607,7 @@
     Object.defineProperty(Navigator.prototype, "languages", {
       get: function () {
         notify("Navigator.languages", "fingerprint");
-        if (farbleState() !== "off") return FARBLED_LANGUAGES;
+        if (famState("screennav") !== "off") return FARBLED_LANGUAGES;
         return origLanguages.get.call(this);
       },
       configurable: true,
@@ -647,7 +666,7 @@
     Object.defineProperty(Navigator.prototype, "deviceMemory", {
       get: function () {
         notify("Navigator.deviceMemory", "fingerprint");
-        if (farbleState() !== "off") return 8;
+        if (famState("screennav") !== "off") return 8;
         return origDeviceMemory.get.call(this);
       },
       configurable: true,
@@ -683,7 +702,7 @@
     Object.defineProperty(Screen.prototype, "width", {
       get: function () {
         notify("Screen.width", "fingerprint");
-        if (farbleState() !== "off") return snappedScreen[0];
+        if (famState("screennav") !== "off") return snappedScreen[0];
         return origScreenWidth.get.call(this);
       },
       configurable: true,
@@ -694,7 +713,7 @@
     Object.defineProperty(Screen.prototype, "height", {
       get: function () {
         notify("Screen.height", "fingerprint");
-        if (farbleState() !== "off") return snappedScreen[1];
+        if (famState("screennav") !== "off") return snappedScreen[1];
         return origScreenHeight.get.call(this);
       },
       configurable: true,
@@ -705,7 +724,7 @@
     Object.defineProperty(Screen.prototype, "colorDepth", {
       get: function () {
         notify("Screen.colorDepth", "fingerprint");
-        if (farbleState() !== "off") return 24;
+        if (famState("screennav") !== "off") return 24;
         return origScreenColorDepth.get.call(this);
       },
       configurable: true,
@@ -716,7 +735,7 @@
     Object.defineProperty(Screen.prototype, "pixelDepth", {
       get: function () {
         notify("Screen.pixelDepth", "fingerprint");
-        if (farbleState() !== "off") return 24;
+        if (famState("screennav") !== "off") return 24;
         return origScreenPixelDepth.get.call(this);
       },
       configurable: true,
@@ -734,7 +753,7 @@
     var origPerfNow = Performance.prototype.now;
     Performance.prototype.now = function () {
       var t = origPerfNow.apply(this, arguments);
-      if (farbleState() === "off") return t;
+      if (famState("screennav") === "off") return t;
       notify("Performance.now", "fingerprint");
       return Math.floor(t * 10) / 10;
     };

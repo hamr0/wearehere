@@ -316,6 +316,36 @@ function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn)
 
   renderGuardCookiesLine(etld1, capDays, isCookieTrusted, stats);
   renderGuardBlurLine(report, blurOverridden, globalOn, (override && override.mode) || null);
+  renderRelaxOffer(etld1, blurOverridden, globalOn);
+}
+
+// Rage-reload relax offer (popup fallback to the in-page banner). background.js
+// flags farbleReloadOffer[etld1] when a user hammers reload while blur is on —
+// a strong "this page is broken" signal. Rather than a duplicate action button,
+// we show a one-line hint and highlight the existing Trust ID button (which is
+// the relax action). Only when blur is actually on here and the flag is fresh.
+function renderRelaxOffer(etld1, blurOverridden, globalOn) {
+  const el = $('guard-relax-offer');
+  const trustIdBtn = $('trust-id');
+  if (!el) return;
+  const hide = () => { el.hidden = true; el.textContent = ''; if (trustIdBtn) trustIdBtn.classList.remove('pulse'); };
+  if (!etld1 || blurOverridden || !globalOn) { hide(); return; }
+  chrome.storage.local.get('farbleReloadOffer', (s) => {
+    const offer = (s.farbleReloadOffer && s.farbleReloadOffer[etld1]) || null;
+    const fresh = !!(offer && offer.at && (Date.now() - offer.at) < 10 * 60 * 1000);
+    if (!fresh) { hide(); return; }
+    el.hidden = false;
+    safeSetHTML(el, `reloading a lot? this site may not work with fingerprint blur — <strong>Trust ID</strong> turns it off here ↓`);
+    if (trustIdBtn) trustIdBtn.classList.add('pulse');
+  });
+}
+
+function clearRelaxOffer(etld1, done) {
+  chrome.storage.local.get('farbleReloadOffer', (s) => {
+    const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? Object.assign({}, s.farbleReloadOffer) : {};
+    delete offer[etld1];
+    chrome.storage.local.set({ farbleReloadOffer: offer }, done || function () {});
+  });
 }
 
 function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
@@ -443,6 +473,7 @@ function wireGuardButtons() {
         settings[currentEtld1] = { mode: 'off' };
       }
       chrome.storage.local.set({ farblerSettings: settings }, () => {
+        if (!overridden) clearRelaxOffer(currentEtld1);  // resolved via Trust ID
         chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
           renderGuardCard(
             currentEtld1,
