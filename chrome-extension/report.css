@@ -226,13 +226,13 @@ body {
 
 .block-sub::before { content: "› "; color: var(--fg-faint); }
 
-/* Plain-language explainer under a sub-header — what the control is for. */
+/* Plain-language explainer under a sub-header — what the control is for.
+   Full page width (no max-width clamp). */
 .block-help {
   color: var(--fg-mute);
   font-size: 11px;
   line-height: 1.5;
   margin: 0 0 8px;
-  max-width: 60ch;
 }
 
 .dim { color: var(--fg-mute); }
