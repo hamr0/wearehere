@@ -76,11 +76,12 @@ function incrementFarblerCounter(delta) {
 // observed company with that visit's unique-API count. Lives in
 // chrome.storage.local under farblerBlurredByCompany; the Watchers
 // tab joins by lowercased company name.
+const MAX_BLURRED_COMPANIES = 300;
 async function recordBlurredByCompany(perCompany) {
   if (!perCompany) return;
   try {
     const { farblerBlurredByCompany } = await chrome.storage.local.get('farblerBlurredByCompany');
-    const next = (farblerBlurredByCompany && typeof farblerBlurredByCompany === 'object')
+    let next = (farblerBlurredByCompany && typeof farblerBlurredByCompany === 'object')
       ? Object.assign({}, farblerBlurredByCompany) : {};
     for (const [name, n] of Object.entries(perCompany)) {
       if (!name || !n || n < 0) continue;
@@ -89,6 +90,18 @@ async function recordBlurredByCompany(perCompany) {
       cur.name = name;
       cur.count = (cur.count || 0) + n;
       next[k] = cur;
+    }
+    // Company names can include detect-cooked's raw-domain fallback, so
+    // the key space isn't strictly bounded. Keep the highest-count
+    // companies — the Watchers table only renders the top 12, so dropping
+    // the long tail is invisible. Counters, unlike the domain map, can't
+    // evict by age without losing lifetime totals, hence by-count.
+    const keys = Object.keys(next);
+    if (keys.length > MAX_BLURRED_COMPANIES) {
+      keys.sort((a, b) => (next[b].count || 0) - (next[a].count || 0));
+      const trimmed = {};
+      for (let i = 0; i < MAX_BLURRED_COMPANIES; i++) trimmed[keys[i]] = next[keys[i]];
+      next = trimmed;
     }
     await chrome.storage.local.set({ farblerBlurredByCompany: next });
   } catch {}
@@ -109,6 +122,19 @@ function harvestEtld1(host) {
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   return labels.slice(-2).join('.');
+}
+// Hard cap on map size. The vast majority of entries are the ~250 named
+// trackers in COMPANY_MAP, but pattern-matched generic names (e.g.
+// "Tracking Pixel") attach to arbitrary domains, so the eTLD+1 key space
+// is not strictly bounded. Cap with insertion-order eviction (string keys
+// iterate in insertion order; first-writer-wins below means insertion
+// order ≈ first-learned, so we drop the oldest-learned domains first).
+const MAX_DOMAIN_COMPANY_ENTRIES = 1000;
+function capDomainCompanyMap(map) {
+  const keys = Object.keys(map);
+  const excess = keys.length - MAX_DOMAIN_COMPANY_ENTRIES;
+  if (excess <= 0) return;
+  for (let i = 0; i < excess; i++) delete map[keys[i]];
 }
 let _domainCompanyDirty = false;
 let _domainCompanyPersistTimer = null;
@@ -131,15 +157,29 @@ async function harvestCookieDomainCompanyMap(data) {
     const company = it && it.company;
     const domain  = it && it.domain;
     if (!company || !domain) continue;
+    // detect-cooked falls back to the raw domain as the "company" for
+    // trackers it can't name (company === domain). Those aren't real
+    // identities, never join cleanly against a named watcher, and — one
+    // unique value per domain — are the only unbounded growth vector.
+    // Skip them.
+    if (company === domain) continue;
     const e = harvestEtld1(domain);
     if (!e) continue;
-    if (map[e] !== company) { map[e] = company; _domainCompanyDirty = true; }
+    // First-writer-wins per eTLD+1. Sibling subdomains can resolve to
+    // different company names (baidu.com → "Baidu" vs hm.baidu.com →
+    // "Baidu Analytics"); overwriting made the stored name depend on
+    // observation order. Keeping the first seen is deterministic and
+    // stable across SW restarts — the persisted entry is never clobbered.
+    if (e in map) continue;
+    map[e] = company;
+    _domainCompanyDirty = true;
   }
   if (_domainCompanyDirty && !_domainCompanyPersistTimer) {
     _domainCompanyPersistTimer = setTimeout(() => {
       _domainCompanyPersistTimer = null;
       if (!_domainCompanyDirty) return;
       _domainCompanyDirty = false;
+      capDomainCompanyMap(map);
       try { chrome.storage.local.set({ cookieDomainCompanyMap: map }); } catch {}
     }, 2000);
   }
