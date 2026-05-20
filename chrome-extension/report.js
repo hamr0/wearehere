@@ -1163,6 +1163,7 @@ function renderScoper(_report) {
     <div id="scoper-period-status" class="callout"></div>
     <div class="block-sub">default blur</div>
     <div class="window-sel" id="guard-blur-default"></div>
+    <div id="guard-blur-status" class="callout"></div>
 
     <div class="frame-title">recent activity</div>
     <div id="scoper-history"></div>
@@ -1184,6 +1185,22 @@ const BLUR_MODE_CHOICES = [
   { mode: 'per-tab', label: 'per-tab seed' },
 ];
 
+// Steady-state line under the radio so a mode change is visibly confirmed
+// (unlike the sweep period, blur applies on the next page load, not live).
+const BLUR_MODE_DESC = {
+  off: 'blur off — sites can fingerprint unless a per-site override says otherwise',
+  stable: 'stable seed — one consistent fingerprint per origin',
+  'per-tab': 'per-tab seed — a fresh fingerprint each tab (default)',
+};
+
+function setBlurStatusSteady(mode) {
+  const status = $('guard-blur-status');
+  // Don't clobber the transient "saved ✓" flash; it settles to steady itself.
+  if (status && !status.classList.contains('saved-flash')) {
+    status.textContent = BLUR_MODE_DESC[mode] || '';
+  }
+}
+
 function renderDefaultBlurRadio() {
   const el = $('guard-blur-default');
   if (!el) return;
@@ -1192,9 +1209,23 @@ function renderDefaultBlurRadio() {
     safeSetHTML(el, `<span class="lbl">mode</span>` + BLUR_MODE_CHOICES
       .map((c) => `<span class="opt${c.mode === current ? ' active' : ''}" data-mode="${escapeText(c.mode)}">${escapeText(c.label)}</span>`)
       .join(''));
+    setBlurStatusSteady(current);
     el.querySelectorAll('.opt').forEach((opt) => {
       opt.onclick = () => {
-        chrome.storage.local.set({ defaultBlurMode: opt.dataset.mode }, renderDefaultBlurRadio);
+        const m = opt.dataset.mode;
+        const status = $('guard-blur-status');
+        if (status) {
+          status.textContent = 'saved ✓ · applies on the next page load';
+          status.classList.add('saved-flash');
+        }
+        chrome.storage.local.set({ defaultBlurMode: m }, () => {
+          renderDefaultBlurRadio();
+          setTimeout(() => {
+            const st = $('guard-blur-status');
+            if (st) st.classList.remove('saved-flash');
+            setBlurStatusSteady(m);
+          }, 1500);
+        });
       };
     });
   });

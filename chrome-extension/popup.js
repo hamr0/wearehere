@@ -304,12 +304,14 @@ function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn)
   safeSetHTML(siteEl, `<span class="host">${escapeText(etld1)}</span>`);
 
   trustBtn.textContent = isCookieTrusted ? '[ untrust cookies ]' : '[ trust cookies 30d ]';
+  trustBtn.classList.toggle('trusted', isCookieTrusted);
   trustBtn.disabled = false;
 
   // Blur state for this origin
   const override = farblerSettings[etld1];
   const blurOverridden = !!(override && override.mode === 'off');
   trustIdBtn.textContent = blurOverridden ? '[ untrust ID ]' : '[ trust ID ]';
+  trustIdBtn.classList.toggle('trusted', blurOverridden);
   trustIdBtn.disabled = !globalOn && !blurOverridden;
 
   renderGuardCookiesLine(etld1, capDays, isCookieTrusted, stats);

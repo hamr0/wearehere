@@ -291,6 +291,19 @@ body {
   background: var(--fg-bright);
 }
 
+/* Active/trusted state — protection is intentionally lowered for this
+   site, so the [untrust …] buttons read in caution amber to mark the
+   live exception (vs the neutral default outline of [trust …]). */
+.btn.trusted {
+  border-color: var(--warn);
+  color: var(--warn);
+}
+
+.btn.trusted:hover {
+  background: var(--warn);
+  color: var(--bg);
+}
+
 #guard-status {
   color: var(--fg-mute);
   font-size: 11px;
