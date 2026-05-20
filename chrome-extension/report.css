@@ -639,6 +639,25 @@ input[type="text"].mono-input {
   border-color: var(--fg);
 }
 
+/* cookies/blur axis picker on the per-site add row */
+.rule-radio {
+  display: inline-flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fg-mute);
+}
+.rule-radio label {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  cursor: pointer;
+}
+.rule-radio input {
+  accent-color: var(--brand);
+  cursor: pointer;
+}
+
 .btn-mini {
   padding: 4px 8px;
   border: 1px solid var(--fg);

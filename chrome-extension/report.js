@@ -171,10 +171,11 @@ function watchScoperStorage() {
       loadScoperState();
       renderCoverage();
     }
-    // Blur overrides live in farblerSettings, also written by the popup's
-    // Trust ID button — keep the table in sync without a manual reload.
+    // Per-site rules read farblerSettings (blur, also written by the popup's
+    // Trust ID button) and cookieScopeTrust (handled via loadScoperState in
+    // the scoperKeys branch above) — keep the table in sync without a reload.
     if ('farblerSettings' in changes) {
-      renderBlurOverrides();
+      renderPerSiteRules();
     }
     if ('defaultBlurMode' in changes) {
       renderDefaultBlurRadio();
@@ -1151,11 +1152,9 @@ function renderScoper(_report) {
     <div class="frame-title">surfaces blurred</div>
     <div id="guard-surfaces"></div>
 
-    <div class="frame-title">trusted sites · cookies pass through</div>
-    <div id="scoper-trust"></div>
-
-    <div class="frame-title">blur overrides</div>
-    <div id="guard-blur-overrides"></div>
+    <div class="frame-title">per-site rules</div>
+    <div class="block-help">Exceptions to the defaults, per site. Trust a site's cookies (kept longer than 7 days) or change how it's blurred. Add a site as a cookie or a blur rule — then fine-tune either column on its row.</div>
+    <div id="guard-rules"></div>
 
     <div class="frame-title">settings</div>
     <div class="block-sub">cookie sweep</div>
@@ -1174,7 +1173,6 @@ function renderScoper(_report) {
   loadScoperState();
   renderCoverage();
   renderSurfacesBlurred();
-  renderBlurOverrides();
   renderDefaultBlurRadio();
 }
 
@@ -1302,84 +1300,111 @@ function renderSurfacesBlurred() {
   });
 }
 
-// Blur overrides — per-site exceptions to the default blur mode, backed by
-// farblerSettings[etld1].mode. Only "off" and "stable" are stored as
-// overrides; "per-tab" is the absence of an entry (the default), so the
-// toggle steps off → stable → per-tab(removed) and [✕] removes outright.
-// The popup's Trust ID writes the same key (mode "off"), so this table and
-// the popup stay in sync via the storage watcher.
-function renderBlurOverrides() {
-  const el = $('guard-blur-overrides');
+// Per-site rules — one table merging cookie trust + blur overrides, keyed by
+// eTLD+1. Cookie trust lives in cookieScopeTrust (via scoper:* messages); blur
+// overrides in farblerSettings[etld1].mode. A site shows here if it has a
+// non-default rule on either axis. The popup's Trust ID writes the same blur
+// key (mode "off"), so this table stays in sync via the storage watcher.
+//
+//   cookie cell cycles  7d (default/untrusted) → 30d → 90d → 7d
+//   blur cell cycles    per-tab (default) → stable → off → per-tab
+//   [✕] clears the whole site on both axes
+function renderPerSiteRules() {
+  const el = $('guard-rules');
   if (!el) return;
-  chrome.storage.local.get('farblerSettings', (s) => {
-    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
-    const entries = Object.entries(settings)
-      .filter(([, v]) => v && (v.mode === 'off' || v.mode === 'stable'))
-      .sort((a, b) => a[0].localeCompare(b[0]));
+  chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
+    const trust = (state && state.cookieScopeTrust) || {};
+    chrome.storage.local.get('farblerSettings', (s) => {
+      const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+      const domains = new Set();
+      Object.keys(trust).forEach((d) => domains.add(d));
+      Object.keys(settings).forEach((d) => {
+        if (settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable')) domains.add(d);
+      });
+      const sorted = [...domains].sort();
 
-    const addRow = `
-      <div class="trust-add">
-        <input type="text" id="blur-input" placeholder="example.com" autocomplete="off">
-        <select id="blur-mode-sel" aria-label="override mode">
-          <option value="off">off</option>
-          <option value="stable">stable</option>
-        </select>
-        <button class="btn-mini" id="blur-add-btn">[ add ]</button>
-      </div>
-    `;
+      const addRow = `
+        <div class="trust-add">
+          <input type="text" id="rule-input" placeholder="example.com" autocomplete="off">
+          <span class="rule-radio">
+            <label><input type="radio" name="rule-kind" value="cookies" checked> cookies</label>
+            <label><input type="radio" name="rule-kind" value="blur"> blur</label>
+          </span>
+          <button class="btn-mini" id="rule-add-btn">[ add ]</button>
+        </div>
+      `;
 
-    if (entries.length === 0) {
-      safeSetHTML(el, `${addRow}<div class="placeholder"><div>no blur overrides — every site uses your default blur mode.</div></div>`);
-      wireBlurOverrideControls();
-      return;
-    }
+      if (sorted.length === 0) {
+        safeSetHTML(el, `${addRow}<div class="placeholder"><div>no per-site rules yet — every site uses the defaults (cookies capped at 7d · blur per-tab).</div></div>`);
+        wirePerSiteControls();
+        return;
+      }
 
-    const rows = entries.map(([etld1, v]) => {
-      const next = v.mode === 'off' ? 'stable' : 'per-tab';
-      return `
-        <tr>
-          <td>${escapeText(etld1)}</td>
-          <td class="num">${escapeText(v.mode)}</td>
-          <td>
-            <button class="btn-mini" data-action="next" data-next="${next}" data-etld1="${escapeText(etld1)}">[ → ${next} ]</button>
-            <button class="btn-mini" data-action="remove" data-etld1="${escapeText(etld1)}">[ ✕ ]</button>
-          </td>
-        </tr>`;
-    }).join('');
+      const rows = sorted.map((d) => {
+        const cap = trust[d] ? trust[d].capDays : 0;            // 0 = untrusted (7d default)
+        const cookieLabel = cap ? `${cap}d` : '7d';
+        const cookieNext = cap === 30 ? 90 : cap === 90 ? 0 : 30; // 7d→30→90→7d
+        const cookieNextLabel = cookieNext ? `${cookieNext}d` : '7d';
 
-    safeSetHTML(el, `
-      ${addRow}
-      <table class="table" style="margin-top:10px">
-        <thead><tr><th>domain</th><th>mode</th><th>actions</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-    `);
-    wireBlurOverrideControls();
+        const mode = (settings[d] && settings[d].mode) || 'per-tab';
+        const blurNext = mode === 'per-tab' ? 'stable' : mode === 'stable' ? 'off' : 'per-tab';
+
+        return `
+          <tr>
+            <td>${escapeText(d)}</td>
+            <td class="num">${cookieLabel} <button class="btn-mini" data-act="cookie" data-d="${escapeText(d)}" data-cap="${cookieNext}">[ → ${cookieNextLabel} ]</button></td>
+            <td class="num">${escapeText(mode)} <button class="btn-mini" data-act="blur" data-d="${escapeText(d)}" data-mode="${escapeText(blurNext)}">[ → ${escapeText(blurNext)} ]</button></td>
+            <td><button class="btn-mini" data-act="remove" data-d="${escapeText(d)}">[ ✕ ]</button></td>
+          </tr>`;
+      }).join('');
+
+      safeSetHTML(el, `
+        ${addRow}
+        <table class="table" style="margin-top:10px">
+          <thead><tr><th>domain</th><th>cookies</th><th>blur</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      `);
+      wirePerSiteControls();
+    });
   });
 }
 
-function wireBlurOverrideControls() {
-  const addBtn = $('blur-add-btn');
-  const input = $('blur-input');
-  const modeSel = $('blur-mode-sel');
-  if (addBtn && input && modeSel) {
+function wirePerSiteControls() {
+  const addBtn = $('rule-add-btn');
+  const input = $('rule-input');
+  if (addBtn && input) {
     addBtn.onclick = () => {
       const v = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
       if (!v || !v.includes('.')) return;
-      const mode = modeSel.value === 'stable' ? 'stable' : 'off';
-      setBlurOverride(v, mode, () => { input.value = ''; });
+      const kindEl = document.querySelector('input[name="rule-kind"]:checked');
+      const kind = kindEl ? kindEl.value : 'cookies';
+      if (kind === 'blur') {
+        // Blur add defaults to off (the common "this site breaks" exception);
+        // tune to stable / per-tab on the row.
+        setBlurOverride(v, 'off', () => { input.value = ''; });
+      } else {
+        chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: v, cap: 30 }, () => {
+          input.value = '';
+          renderPerSiteRules();
+        });
+      }
     };
     input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click(); };
   }
-  document.querySelectorAll('#guard-blur-overrides [data-action]').forEach((btn) => {
+  document.querySelectorAll('#guard-rules [data-act]').forEach((btn) => {
     btn.onclick = () => {
-      const etld1 = btn.dataset.etld1;
-      // "next" on a stable row targets per-tab, which is removal of the
-      // override; "next" on an off row sets stable; [✕] always removes.
-      if (btn.dataset.action === 'next' && btn.dataset.next === 'stable') {
-        setBlurOverride(etld1, 'stable');
-      } else {
-        removeBlurOverride(etld1);
+      const d = btn.dataset.d;
+      const act = btn.dataset.act;
+      if (act === 'cookie') {
+        const cap = parseInt(btn.dataset.cap, 10) || 0; // 0/30/90; 0 removes trust
+        chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: d, cap }, renderPerSiteRules);
+      } else if (act === 'blur') {
+        const mode = btn.dataset.mode; // per-tab/stable/off
+        if (mode === 'per-tab') removeBlurOverride(d);
+        else setBlurOverride(d, mode);
+      } else { // remove the whole site on both axes
+        chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: d, cap: 0 }, () => removeBlurOverride(d));
       }
     };
   });
@@ -1391,7 +1416,7 @@ function setBlurOverride(etld1, mode, done) {
     settings[etld1] = { mode };
     chrome.storage.local.set({ farblerSettings: settings }, () => {
       if (done) done();
-      renderBlurOverrides();
+      renderPerSiteRules();
     });
   });
 }
@@ -1400,7 +1425,7 @@ function removeBlurOverride(etld1) {
   chrome.storage.local.get('farblerSettings', (s) => {
     const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? Object.assign({}, s.farblerSettings) : {};
     delete settings[etld1];
-    chrome.storage.local.set({ farblerSettings: settings }, renderBlurOverrides);
+    chrome.storage.local.set({ farblerSettings: settings }, renderPerSiteRules);
   });
 }
 
@@ -1408,7 +1433,7 @@ function loadScoperState() {
   chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
     state = state || {};
     renderScoperHero(state);
-    renderTrustList(state.cookieScopeTrust || {});
+    renderPerSiteRules();
     renderPeriodRadio(state.cookieScopeSettings || {});
     renderHistoryList(state.cookieScopeHistory || []);
   });
@@ -1487,68 +1512,6 @@ function renderCoverage() {
         <div class="callout" style="margin-top:10px">top owners: ${topOwners.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${n})`).join(' · ') || '—'}</div>
       `);
     });
-  });
-}
-
-function renderTrustList(trust) {
-  const el = $('scoper-trust');
-  const entries = Object.entries(trust).sort((a, b) => (b[1].addedAt || 0) - (a[1].addedAt || 0));
-
-  const addRow = `
-    <div class="trust-add">
-      <input type="text" id="trust-input" placeholder="example.com" autocomplete="off">
-      <button class="btn-mini" id="trust-add-btn">[ add 30d ]</button>
-    </div>
-  `;
-
-  if (entries.length === 0) {
-    safeSetHTML(el, `${addRow}<div class="placeholder"><div>no trusted sites yet — trust a site to keep its cookies past 7 days.</div></div>`);
-    wireTrustControls();
-    return;
-  }
-
-  const rows = entries.map(([etld1, t]) => `
-    <tr>
-      <td>${escapeText(etld1)}</td>
-      <td class="num">${t.capDays}d</td>
-      <td>
-        <button class="btn-mini" data-action="toggle" data-etld1="${escapeText(etld1)}" data-cap="${t.capDays === 30 ? 90 : 30}">[ ${t.capDays === 30 ? 'extend 90d' : 'shorten 30d'} ]</button>
-        <button class="btn-mini" data-action="remove" data-etld1="${escapeText(etld1)}">[ remove ]</button>
-      </td>
-    </tr>
-  `).join('');
-
-  safeSetHTML(el, `
-    ${addRow}
-    <table class="table" style="margin-top:10px">
-      <thead><tr><th>domain</th><th>cap</th><th>actions</th></tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  `);
-  wireTrustControls();
-}
-
-function wireTrustControls() {
-  const addBtn = $('trust-add-btn');
-  const input = $('trust-input');
-  if (addBtn && input) {
-    addBtn.onclick = () => {
-      const v = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-      if (!v || !v.includes('.')) return;
-      chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: v, cap: 30 }, () => {
-        input.value = '';
-        loadScoperState();
-      });
-    };
-    input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click(); };
-  }
-  document.querySelectorAll('#scoper-trust [data-action]').forEach((btn) => {
-    btn.onclick = () => {
-      const etld1 = btn.dataset.etld1;
-      const action = btn.dataset.action;
-      const cap = action === 'remove' ? 0 : parseInt(btn.dataset.cap, 10);
-      chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1, cap }, () => loadScoperState());
-    };
   });
 }
 
