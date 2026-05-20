@@ -330,6 +330,22 @@ Reading flow: lifetime impact → current cookie state → cumulative blur work 
 
 **Trust durations:** popup offers `30d` only; tab offers `30d` and `90d`. Bumping from 30d to 90d is a considered action and belongs on the management surface.
 
+### v5.0.0 dashboard UI revisions (decided 2026-05-20)
+
+Built on the specs above; these supersede specific points as the dashboard shipped. The originals are kept for decision history.
+
+**Privacy guard tab — merged per-site rules.** The two separate per-site blocks (**Trusted sites** + **Blur overrides**) merge into one **per-site rules** table keyed by eTLD+1, so a site's cookie *and* blur exception live on one row. Rationale: they share a key and a mental model ("exceptions for this site"); two tables meant two add-rows and scanning twice.
+- Add row: `[domain] (•) cookies ( ) blur [add]` — the radio picks which axis the add touches (defaults to **cookies**). A cookies-add trusts `30d`; a blur-add sets `off` (the common "this site breaks under farbling" reason). Neither touches the other axis — adding a blur exception never silently trusts cookies.
+- Each row fine-tunes both columns independently: cookies cycle `7d (default) → 30d → 90d → 7d`; blur cycle `per-tab (default) → stable → off → per-tab`. `[✕]` clears the whole site on both axes; cycling a cell to its default removes only that axis. Storage stays split (`cookieScopeTrust` + `farblerSettings`) — the table is the union and live-syncs with the popup's Trust ID.
+
+**Privacy guard tab — Settings + telemetry.** Settings gains a **Default blur** radio (off / stable per origin / **per-tab** seed, default), retiring the `farbleDevMode` SW-console toggle — blur now ships ON by default. Each Settings control carries a plain-language explainer. The **Surfaces blurred** block is now backed by real per-family (`farblerCounters.byFamily`) + per-site (`farblerBlurredBySite`) telemetry; **by mode** is derived from the overrides + default. **Recent activity** is a unified sweeps+blur log (`cookieScopeHistory` + a capped `farblerHistory`). The lifetime hero is `trimmed · blurred · sweeps run · last active`.
+
+**Watchers tab — mechanism readability.** The cryptic `C · P · ID` mech column is replaced by a plain `via cookies · pixels · clicks · device-id` line under each company name (all four mechanisms surface, not three). Nonzero **Trimmed** / **Blurred** counts render in warn-yellow so real protection activity stands out from the zeros.
+
+**Overview tab — protection-first.** The hero's 4th cell switches from "most exposed" (it duplicated the most-watched line) to **cookies trimmed** this window. The protection line is promoted above most-watched and spans both mechanisms (windowed cookies + windowed surfaces blurred, the latter summed from a per-visit `blurredSurfaces` field). First-visit events collapse into one "N new sites" summary so notable diffs lead **what changed**. The per-visit **score trend** chart is replaced by a **browsing exposure** distribution — sites bucketed clean (`<30`) / mixed (`30–60`) / hostile (`60+`) by average score — a truer at-a-glance read than a zigzag of per-site scores.
+
+**Popup — guard buttons.** Buttons name their target (`[ trust cookies 30d ]` / `[ trust ID ]`, becoming `[ untrust … ]` when active) and the active/trusted state renders in caution amber so the lowered-protection exception reads at a glance.
+
 #### Cookie scoper tab — Cookies-in-browser block (decided 2026-05-12)
 
 The old `Cookies` tab (browser-wide 967-cookie dashboard with 10-category legacy classification + Clean Cookies CTA) folds into Cookie scoper as a new block titled **"Cookies in your browser"**. Tab name stays `Cookie scoper`; the block sits **after** the lifetime hero and **before** Trusted sites. Reading flow: *impact → population → management → tune → audit*.
