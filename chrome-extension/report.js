@@ -232,6 +232,13 @@ const WINDOW_OPTIONS = ['today', 'week', 'month', 'all'];
 let overviewWindow = 'week';
 let watchersWindow = 'week';
 
+// The protection line combines two async sources: windowed cookie impact
+// (impact:get-window) and windowed blur (summed from visits). Each setter
+// stashes its half here and re-renders the line, so whichever resolves
+// second paints the complete sentence. Reset at the start of each load.
+let _ovImpact = null;
+let _ovBlurred = 0;
+
 function renderOverview() {
   const panel = $('panel-overview');
   safeSetHTML(panel, `
@@ -240,10 +247,10 @@ function renderOverview() {
       <div class="cell"><div class="num" id="ov-sites">—</div><div class="lbl">sites visited</div></div>
       <div class="cell"><div class="num" id="ov-score">—</div><div class="lbl">avg score</div></div>
       <div class="cell"><div class="num" id="ov-watchers">—</div><div class="lbl">unique watchers</div></div>
-      <div class="cell"><div class="num" id="ov-most-exposed">—</div><div class="lbl">most exposed</div></div>
+      <div class="cell"><div class="num" id="ov-trimmed">—</div><div class="lbl">cookies trimmed</div></div>
     </div>
-    <div class="callout" id="ov-callout"></div>
     <div class="callout impact" id="ov-impact" hidden></div>
+    <div class="callout" id="ov-callout"></div>
 
     <div class="window-sel" id="ov-window" style="margin-top:14px"></div>
 
@@ -287,6 +294,8 @@ function renderWindowSelector(id, active, onChange) {
 }
 
 function loadOverview() {
+  _ovImpact = null;
+  _ovBlurred = 0;
   loadOverviewAggregates();
   loadOverviewRawVisits();
 }
@@ -303,29 +312,43 @@ function loadOverviewAggregates() {
 }
 
 function renderImpactLine(impact) {
+  _ovImpact = impact || { tightened: 0, demotions: 0 };
+  const cell = $('ov-trimmed');
+  if (cell) cell.textContent = (_ovImpact.tightened || 0).toLocaleString();
+  renderProtectionLine();
+}
+
+// The promoted protection story: what the guard DID this window across both
+// mechanisms. Tells the story, not the mechanics. Hidden when nothing fired.
+function renderProtectionLine() {
   const el = $('ov-impact');
   if (!el) return;
-  if (!impact || (impact.tightened === 0 && impact.demotions === 0)) {
+  const trimmed = (_ovImpact && _ovImpact.tightened) || 0;
+  const demoted = (_ovImpact && _ovImpact.demotions) || 0;
+  const blurred = _ovBlurred || 0;
+  if (!trimmed && !demoted && !blurred) {
     el.hidden = true;
     el.textContent = '';
     return;
   }
-  // Tell the story, not the mechanics: "this <window>, wearehere did X".
-  // Hide demotion count when zero (sites with only first-party caps).
   const win = overviewWindow === 'all' ? 'all time' : `this ${overviewWindow}`;
-  const cookieClause = impact.tightened
-    ? `shortened ${impact.tightened.toLocaleString()} cookie${impact.tightened === 1 ? '' : 's'}`
-    : '';
-  const demoteClause = impact.demotions
-    ? `${cookieClause ? ' and ' : ''}demoted ${impact.demotions.toLocaleString()} tracker${impact.demotions === 1 ? '' : 's'} to session-only`
-    : '';
+  const parts = [];
+  if (trimmed) parts.push(`shortened ${trimmed.toLocaleString()} cookie${trimmed === 1 ? '' : 's'}`);
+  if (demoted) parts.push(`demoted ${demoted.toLocaleString()} tracker${demoted === 1 ? '' : 's'} to session-only`);
+  if (blurred) parts.push(`blurred ${blurred.toLocaleString()} fingerprint surface${blurred === 1 ? '' : 's'}`);
+  const phrase = parts.length > 1
+    ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]
+    : parts[0];
   el.hidden = false;
-  safeSetHTML(el, `${win}: wearehere ${escapeText(cookieClause + demoteClause)} so they can't recognise you tomorrow.`);
+  safeSetHTML(el, `✓ ${escapeText(win)} wearehere ${escapeText(phrase)} — so trackers can't recognise you tomorrow.`);
 }
 
 function loadOverviewRawVisits() {
   chrome.runtime.sendMessage({ type: 'visits:get', window: overviewWindow }, (visits) => {
-    renderScoreTrend(Array.isArray(visits) ? visits : []);
+    const arr = Array.isArray(visits) ? visits : [];
+    _ovBlurred = arr.reduce((n, v) => n + (v.blurredSurfaces || 0), 0);
+    renderProtectionLine();
+    renderScoreTrend(arr);
   });
 }
 
@@ -334,24 +357,22 @@ function renderOverviewHero(snap) {
     $('ov-sites').textContent = '0';
     $('ov-score').textContent = '—';
     $('ov-watchers').textContent = '0';
-    $('ov-most-exposed').textContent = '—';
+    $('ov-trimmed').textContent = '0';
     safeSetHTML($('ov-callout'), `<span class="dim">no visits in this window yet — keep browsing and come back.</span>`);
     return;
   }
 
-  // Most-exposed shifts from "site with highest single-visit score" to
-  // "site with highest average score across the window". Average is a
-  // truer read of consistent exposure; the previous max-score variant
-  // could be biased by a single outlier visit.
+  // Most-watched sites — ranked by average score across the window (a truer
+  // read of consistent exposure than a single-visit max). The hero's 4th cell
+  // is now "cookies trimmed" (set by renderImpactLine); these top sites live
+  // in the callout line below so there's no duplication.
   const ranked = Object.entries(snap.avgScoreBySite || {})
     .map(([etld1, avg]) => ({ etld1, avg }))
     .sort((a, b) => (b.avg || 0) - (a.avg || 0));
-  const mostExposed = ranked[0];
 
   $('ov-sites').textContent = (snap.sites || []).length.toLocaleString();
   $('ov-score').textContent = snap.avgScore;
   $('ov-watchers').textContent = Object.keys(snap.watchers || {}).length.toLocaleString();
-  $('ov-most-exposed').textContent = mostExposed ? mostExposed.etld1 : '—';
 
   const top3 = ranked.slice(0, 3).map((v) => v.etld1).filter(Boolean);
   safeSetHTML($('ov-callout'), top3.length

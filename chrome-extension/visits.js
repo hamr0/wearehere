@@ -17,6 +17,7 @@
 //       watchers:    [name, ...] (top 10 company names)
 //       mechanisms:  { cookies, pixels, deviceId, typing, clicks } counts
 //       storedIds:   int (localData.suspicious)
+//       blurredSurfaces: int (fingerprint surfaces blurred this visit; 0 if off)
 //     }, ...
 //   ]
 //
@@ -151,6 +152,10 @@ async function appendVisit(report) {
         const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
         const ov = farblerSettings && farblerSettings[record.etld1];
         const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'per-tab');
+        // Stash the windowed-blur input on the visit record (0 when blur was
+        // off here) so Overview can sum surfaces blurred per time window from
+        // visitHistory — more accurate than the 50-capped farblerHistory.
+        record.blurredSurfaces = (mode !== 'off') ? apis.length : 0;
         if (mode !== 'off') {
           const fam = {};
           for (const a of apis) {
