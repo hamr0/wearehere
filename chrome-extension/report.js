@@ -171,6 +171,11 @@ function watchScoperStorage() {
       loadScoperState();
       renderCoverage();
     }
+    // Blur overrides live in farblerSettings, also written by the popup's
+    // Trust ID button — keep the table in sync without a manual reload.
+    if ('farblerSettings' in changes) {
+      renderBlurOverrides();
+    }
   });
 }
 
@@ -1170,11 +1175,105 @@ function renderSurfacesBlurred() {
 }
 
 // Blur overrides — per-site exceptions to the default blur mode, backed by
-// farblerSettings[etld1].mode. Filled in Slice 3b commit 3; empty-state here.
+// farblerSettings[etld1].mode. Only "off" and "stable" are stored as
+// overrides; "per-tab" is the absence of an entry (the default), so the
+// toggle steps off → stable → per-tab(removed) and [✕] removes outright.
+// The popup's Trust ID writes the same key (mode "off"), so this table and
+// the popup stay in sync via the storage watcher.
 function renderBlurOverrides() {
   const el = $('guard-blur-overrides');
   if (!el) return;
-  safeSetHTML(el, `<div class="placeholder"><div>no blur overrides — every site uses your default blur mode.</div></div>`);
+  chrome.storage.local.get('farblerSettings', (s) => {
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+    const entries = Object.entries(settings)
+      .filter(([, v]) => v && (v.mode === 'off' || v.mode === 'stable'))
+      .sort((a, b) => a[0].localeCompare(b[0]));
+
+    const addRow = `
+      <div class="trust-add">
+        <input type="text" id="blur-input" placeholder="example.com" autocomplete="off">
+        <select id="blur-mode-sel" aria-label="override mode">
+          <option value="off">off</option>
+          <option value="stable">stable</option>
+        </select>
+        <button class="btn-mini" id="blur-add-btn">[ add ]</button>
+      </div>
+    `;
+
+    if (entries.length === 0) {
+      safeSetHTML(el, `${addRow}<div class="placeholder"><div>no blur overrides — every site uses your default blur mode.</div></div>`);
+      wireBlurOverrideControls();
+      return;
+    }
+
+    const rows = entries.map(([etld1, v]) => {
+      const next = v.mode === 'off' ? 'stable' : 'per-tab';
+      return `
+        <tr>
+          <td>${escapeText(etld1)}</td>
+          <td class="num">${escapeText(v.mode)}</td>
+          <td>
+            <button class="btn-mini" data-action="next" data-next="${next}" data-etld1="${escapeText(etld1)}">[ → ${next} ]</button>
+            <button class="btn-mini" data-action="remove" data-etld1="${escapeText(etld1)}">[ ✕ ]</button>
+          </td>
+        </tr>`;
+    }).join('');
+
+    safeSetHTML(el, `
+      ${addRow}
+      <table class="table" style="margin-top:10px">
+        <thead><tr><th>domain</th><th>mode</th><th>actions</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    `);
+    wireBlurOverrideControls();
+  });
+}
+
+function wireBlurOverrideControls() {
+  const addBtn = $('blur-add-btn');
+  const input = $('blur-input');
+  const modeSel = $('blur-mode-sel');
+  if (addBtn && input && modeSel) {
+    addBtn.onclick = () => {
+      const v = (input.value || '').trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
+      if (!v || !v.includes('.')) return;
+      const mode = modeSel.value === 'stable' ? 'stable' : 'off';
+      setBlurOverride(v, mode, () => { input.value = ''; });
+    };
+    input.onkeydown = (e) => { if (e.key === 'Enter') addBtn.click(); };
+  }
+  document.querySelectorAll('#guard-blur-overrides [data-action]').forEach((btn) => {
+    btn.onclick = () => {
+      const etld1 = btn.dataset.etld1;
+      // "next" on a stable row targets per-tab, which is removal of the
+      // override; "next" on an off row sets stable; [✕] always removes.
+      if (btn.dataset.action === 'next' && btn.dataset.next === 'stable') {
+        setBlurOverride(etld1, 'stable');
+      } else {
+        removeBlurOverride(etld1);
+      }
+    };
+  });
+}
+
+function setBlurOverride(etld1, mode, done) {
+  chrome.storage.local.get('farblerSettings', (s) => {
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? Object.assign({}, s.farblerSettings) : {};
+    settings[etld1] = { mode };
+    chrome.storage.local.set({ farblerSettings: settings }, () => {
+      if (done) done();
+      renderBlurOverrides();
+    });
+  });
+}
+
+function removeBlurOverride(etld1) {
+  chrome.storage.local.get('farblerSettings', (s) => {
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? Object.assign({}, s.farblerSettings) : {};
+    delete settings[etld1];
+    chrome.storage.local.set({ farblerSettings: settings }, renderBlurOverrides);
+  });
 }
 
 function loadScoperState() {

@@ -615,6 +615,21 @@ input[type="text"].mono-input {
   border-color: var(--fg);
 }
 
+.trust-add select {
+  background: var(--bg);
+  color: var(--fg-bright);
+  border: 1px solid var(--line);
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.trust-add select:focus {
+  outline: none;
+  border-color: var(--fg);
+}
+
 .btn-mini {
   padding: 4px 8px;
   border: 1px solid var(--fg);
