@@ -42,9 +42,34 @@ async function bootstrapFarblerSecret() {
     await chrome.storage.local.set({ farblerSecret: _farblerBytesToHex(fresh) });
   } catch (e) { /* content script falls back to state=off if missing */ }
 }
-chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); });
-chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); });
+// Rotation salt for the "rotation" blur mode. Folded into the seed label
+// (`rotation|<salt>|<origin>`) so a site's farbled identity rotates on a time
+// window — denying long-term fingerprint linkage without ever changing within
+// a window. Rotation is keyed on time (not browser-session), because tab
+// groups / session-restore mean browsers rarely close, which would otherwise
+// make a per-session salt effectively permanent. "stable" mode omits the salt
+// (persistent per-origin) for sites the user pins. Single-writer (SW only);
+// detect-watched.js reads it and fails safe to "off" if absent.
+const FARBLE_SALT_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // rotate weekly
+async function bootstrapFarbleSalt() {
+  try {
+    const v = await chrome.storage.local.get(['farblerSessionSalt', 'farblerSaltIssuedAt']);
+    const fresh = typeof v.farblerSessionSalt === 'string' && v.farblerSessionSalt.length === 32
+      && typeof v.farblerSaltIssuedAt === 'number'
+      && (Date.now() - v.farblerSaltIssuedAt) < FARBLE_SALT_TTL_MS;
+    if (fresh) return;
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    await chrome.storage.local.set({
+      farblerSessionSalt: _farblerBytesToHex(bytes),
+      farblerSaltIssuedAt: Date.now(),
+    });
+  } catch (e) { /* content script falls back to state=off if salt missing */ }
+}
+chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); });
+chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); });
 bootstrapFarblerSecret();
+bootstrapFarbleSalt();
 
 // Lifetime surfaces-blurred counters. Reads on init, increments in
 // memory on each `watched` detection delta (unique APIs, not call
@@ -157,7 +182,7 @@ function creditFarblerIfActive(delta, famDelta, etld1) {
   if (!delta || delta < 0) return;
   chrome.storage.local.get(['farblerSettings', 'defaultBlurMode'], (s) => {
     const ov = s.farblerSettings && etld1 ? s.farblerSettings[etld1] : null;
-    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'per-tab');
+    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
     if (mode === 'off') return;
     recordFarblerBlur(delta, famDelta, etld1);
   });
@@ -1697,7 +1722,7 @@ function maybeOfferRelax(etld1) {
   if (!etld1) return;
   chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer'], (s) => {
     const ov = s.farblerSettings && s.farblerSettings[etld1];
-    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'per-tab');
+    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
     if (mode === 'off') return;  // blur already off here — nothing to offer
     const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
     offer[etld1] = { at: Date.now() };

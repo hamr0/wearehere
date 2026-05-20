@@ -151,7 +151,7 @@ async function appendVisit(report) {
       if (apis.length) {
         const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
         const ov = farblerSettings && farblerSettings[record.etld1];
-        const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'per-tab');
+        const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'rotation');
         // Stash the windowed-blur input on the visit record (0 when blur was
         // off here) so Overview can sum surfaces blurred per time window from
         // visitHistory — more accurate than the 50-capped farblerHistory.

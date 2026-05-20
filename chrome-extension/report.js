@@ -1200,20 +1200,20 @@ function renderScoper(_report) {
 }
 
 // Default blur mode — applies to any site without a per-site override in
-// the Blur overrides block. "per-tab" is the shipped default. Writing it
+// the Blur overrides block. "rotation" is the shipped default. Writing it
 // here is what new page loads read in detect-watched.js to resolve state.
 const BLUR_MODE_CHOICES = [
   { mode: 'off', label: 'off' },
+  { mode: 'rotation', label: 'rotation' },
   { mode: 'stable', label: 'stable per origin' },
-  { mode: 'per-tab', label: 'per-tab seed' },
 ];
 
 // Steady-state line under the radio so a mode change is visibly confirmed
 // (unlike the sweep period, blur applies on the next page load, not live).
 const BLUR_MODE_DESC = {
   off: 'blur off — sites can fingerprint unless a per-site override says otherwise',
-  stable: 'stable seed — one consistent fingerprint per origin',
-  'per-tab': 'per-tab seed — a fresh fingerprint each tab (default)',
+  rotation: 'rotation — a different fingerprint per site, rotating weekly (default)',
+  stable: 'stable seed — one persistent fingerprint per origin (no rotation; best for sites you log into)',
 };
 
 function setBlurStatusSteady(mode) {
@@ -1228,7 +1228,7 @@ function renderDefaultBlurRadio() {
   const el = $('guard-blur-default');
   if (!el) return;
   chrome.storage.local.get('defaultBlurMode', (s) => {
-    const current = BLUR_MODE_CHOICES.find((c) => c.mode === s.defaultBlurMode) ? s.defaultBlurMode : 'per-tab';
+    const current = BLUR_MODE_CHOICES.find((c) => c.mode === s.defaultBlurMode) ? s.defaultBlurMode : 'rotation';
     safeSetHTML(el, `<span class="lbl">mode</span>` + BLUR_MODE_CHOICES
       .map((c) => `<span class="opt${c.mode === current ? ' active' : ''}" data-mode="${escapeText(c.mode)}">${escapeText(c.label)}</span>`)
       .join(''));
@@ -1273,7 +1273,7 @@ function renderSurfacesBlurred() {
     const byFamily = (s.farblerCounters && s.farblerCounters.byFamily) || {};
     const bySite = (s.farblerBlurredBySite && typeof s.farblerBlurredBySite === 'object') ? s.farblerBlurredBySite : {};
     const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
-    const defaultMode = s.defaultBlurMode || 'per-tab';
+    const defaultMode = s.defaultBlurMode === 'per-tab' ? 'rotation' : (s.defaultBlurMode || 'rotation');
 
     const famEntries = Object.entries(byFamily).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
     const siteEntries = Object.entries(bySite).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
@@ -1287,7 +1287,7 @@ function renderSurfacesBlurred() {
 
     // By mode: off/stable counts come straight from the per-site overrides;
     // sites without an override run whatever the default mode is, so they
-    // land in the default's bucket (per-tab or stable).
+    // land in the default's bucket (rotation or stable).
     let offCount = 0;
     let stableOverrides = 0;
     for (const k in settings) {
@@ -1296,11 +1296,11 @@ function renderSurfacesBlurred() {
       else if (settings[k].mode === 'stable') stableOverrides++;
     }
     const noOverrideBlurred = siteEntries.filter(([etld1]) => !settings[etld1]).length;
-    const perTabCount = defaultMode === 'per-tab' ? noOverrideBlurred : 0;
+    const rotationCount = defaultMode === 'rotation' ? noOverrideBlurred : 0;
     const stableCount = stableOverrides + (defaultMode === 'stable' ? noOverrideBlurred : 0);
 
     const maxFam = Math.max(1, ...famEntries.map(([, n]) => n));
-    const maxMode = Math.max(1, perTabCount, stableCount, offCount);
+    const maxMode = Math.max(1, rotationCount, stableCount, offCount);
     const bar = (n, max) => `<span class="bar" style="width:${Math.round((n / max) * 60)}%"></span>`;
 
     const famRows = famEntries.map(([fam, n]) =>
@@ -1314,7 +1314,7 @@ function renderSurfacesBlurred() {
       ${famRows}
 
       <div class="block-sub">by mode</div>
-      <div class="bar-row"><span class="nval">${perTabCount}</span> ${bar(perTabCount, maxMode)} <span class="nlbl">per-tab (default)</span></div>
+      <div class="bar-row"><span class="nval">${rotationCount}</span> ${bar(rotationCount, maxMode)} <span class="nlbl">rotation (default)</span></div>
       <div class="bar-row"><span class="nval">${stableCount}</span> ${bar(stableCount, maxMode)} <span class="nlbl">stable (per-site)</span></div>
       <div class="bar-row"><span class="nval">${offCount}</span> ${bar(offCount, maxMode)} <span class="nlbl">off (allowlisted)</span></div>
 
@@ -1330,7 +1330,7 @@ function renderSurfacesBlurred() {
 // key (mode "off"), so this table stays in sync via the storage watcher.
 //
 //   cookie cell cycles  7d (default/untrusted) → 30d → 90d → 7d
-//   blur cell cycles    per-tab (default) → stable → off → per-tab
+//   blur cell cycles    rotation (default) → stable → off → rotation
 //   [✕] clears the whole site on both axes
 function renderPerSiteRules() {
   const el = $('guard-rules');
@@ -1358,14 +1358,14 @@ function renderPerSiteRules() {
       `;
 
       if (sorted.length === 0) {
-        safeSetHTML(el, `${addRow}<div class="placeholder"><div>no per-site rules yet — every site uses the defaults (cookies capped at 7d · blur per-tab).</div></div>`);
+        safeSetHTML(el, `${addRow}<div class="placeholder"><div>no per-site rules yet — every site uses the defaults (cookies capped at 7d · blur rotates weekly).</div></div>`);
         wirePerSiteControls();
         return;
       }
 
       // Mark the axis the user hasn't set as "(default)" (dimmed) so a
       // cookie-only row doesn't read as if it also has a blur rule, and
-      // vice-versa. Only stable/off are real blur exceptions; per-tab is
+      // vice-versa. Only stable/off are real blur exceptions; rotation is
       // the default. cap 0 = untrusted = the 7d default.
       const rows = sorted.map((d) => {
         const cap = trust[d] ? trust[d].capDays : 0;            // 0 = untrusted (7d default)
@@ -1374,8 +1374,9 @@ function renderPerSiteRules() {
         const cookieNextLabel = cookieNext ? `${cookieNext}d` : '7d';
         const cookieText = cap ? cookieLabel : `<span class="dim">${cookieLabel} (default)</span>`;
 
-        const mode = (settings[d] && settings[d].mode) || 'per-tab';
-        const blurNext = mode === 'per-tab' ? 'stable' : mode === 'stable' ? 'off' : 'per-tab';
+        const rawMode = (settings[d] && settings[d].mode) || 'rotation';
+        const mode = rawMode === 'per-tab' ? 'rotation' : rawMode;  // fold legacy stub
+        const blurNext = mode === 'rotation' ? 'stable' : mode === 'stable' ? 'off' : 'rotation';
         const blurSet = !!(settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable'));
         const blurText = blurSet ? escapeText(mode) : `<span class="dim">${escapeText(mode)} (default)</span>`;
 
@@ -1394,7 +1395,7 @@ function renderPerSiteRules() {
           <thead><tr><th>domain</th><th>cookies</th><th>blur</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-        <div class="block-help"><span class="dim">(default)</span> = no rule set on that axis — the site just uses the global default (cookies 7d · blur per-tab). Use the <strong>[ → ]</strong> button to set an exception.</div>
+        <div class="block-help"><span class="dim">(default)</span> = no rule set on that axis — the site just uses the global default (cookies 7d · blur rotates weekly). Use the <strong>[ → ]</strong> button to set an exception.</div>
       `);
       wirePerSiteControls();
     });
@@ -1416,7 +1417,7 @@ function wirePerSiteControls() {
       const kind = kindEl ? kindEl.value : 'cookies';
       if (kind === 'blur') {
         // Blur add defaults to off (the common "this site breaks" exception);
-        // tune to stable / per-tab on the row.
+        // tune to stable / rotation on the row.
         setBlurOverride(v, 'off', () => { input.value = ''; });
       } else {
         chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: v, cap: 30 }, () => {
@@ -1435,8 +1436,8 @@ function wirePerSiteControls() {
         const cap = parseInt(btn.dataset.cap, 10) || 0; // 0/30/90; 0 removes trust
         chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: d, cap }, renderPerSiteRules);
       } else if (act === 'blur') {
-        const mode = btn.dataset.mode; // per-tab/stable/off
-        if (mode === 'per-tab') removeBlurOverride(d);
+        const mode = btn.dataset.mode; // rotation/stable/off
+        if (mode === 'rotation') removeBlurOverride(d);  // back to the default = no override
         else setBlurOverride(d, mode);
       } else { // remove the whole site on both axes
         chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: d, cap: 0 }, () => removeBlurOverride(d));

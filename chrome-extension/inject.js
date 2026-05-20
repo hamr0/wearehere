@@ -544,7 +544,7 @@
 
   // Phase 2 Slice 2 step 1: per-origin farble contract. detect-watched.js
   // (ISOLATED world) writes two attributes on <html>:
-  //   data-wh-farble-state = "off" | "stable" | "per-tab"
+  //   data-wh-farble-state = "off" | "stable" | "rotation"
   //   data-wh-farble-seed  = 8-char hex int
   // Read at call-time, not install-time, so the async storage round-trip
   // has until the page's first probe to land. Unknown / missing state
@@ -554,7 +554,7 @@
       var el = document.documentElement;
       if (!el) return "off";
       var s = el.getAttribute("data-wh-farble-state");
-      return (s === "stable" || s === "per-tab") ? s : "off";
+      return (s === "stable" || s === "rotation") ? s : "off";
     } catch (e) { return "off"; }
   }
   function farbleSeed() {

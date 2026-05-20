@@ -261,7 +261,7 @@ function renderGuard(report) {
     const stats = (state && state.cookieScopeCounters) || null;
     chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farblerCounters'], (s) => {
       const farblerSettings = s.farblerSettings || {};
-      const globalOn = (s.defaultBlurMode || 'per-tab') !== 'off';
+      const globalOn = (s.defaultBlurMode || 'rotation') !== 'off';
       const farblerCounters = s.farblerCounters || { totalCalls: 0 };
       renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn);
       renderGuardCounters(stats, farblerCounters);
@@ -453,7 +453,7 @@ function wireGuardButtons() {
               (s2 && s2.cookieScopeCounters) || null,
               currentReport,
               st.farblerSettings || {},
-              (st.defaultBlurMode || 'per-tab') !== 'off'
+              (st.defaultBlurMode || 'rotation') !== 'off'
             );
             renderGuardCounters((s2 && s2.cookieScopeCounters) || null, st.farblerCounters || null);
           });
@@ -481,7 +481,7 @@ function wireGuardButtons() {
             (state && state.cookieScopeCounters) || null,
             currentReport,
             settings,
-            (s.defaultBlurMode || 'per-tab') !== 'off'
+            (s.defaultBlurMode || 'rotation') !== 'off'
           );
         });
         status.className = 'ok';
