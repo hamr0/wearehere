@@ -164,7 +164,7 @@ const WINDOW_SNAPSHOTS_KEY = 'windowSnapshots';
 // the popup or the alarm write counters/history independently; the open
 // dashboard tab needs to mirror those updates without a manual reload.
 function watchScoperStorage() {
-  const keys = ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory'];
+  const keys = ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory', 'farblerCounters'];
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (keys.some((k) => k in changes)) {
@@ -1126,10 +1126,10 @@ function renderScoper(_report) {
   safeSetHTML(panel, `
     <div class="frame-title">privacy guard</div>
     <div class="hero" id="scoper-hero">
-      <div class="cell"><div class="num" id="scoper-tightened">—</div><div class="lbl">tightened (lifetime)</div></div>
-      <div class="cell"><div class="num" id="scoper-killed">—</div><div class="lbl">trackers killed (lifetime)</div></div>
+      <div class="cell"><div class="num" id="scoper-tightened">—</div><div class="lbl">trimmed (lifetime)</div></div>
+      <div class="cell"><div class="num" id="scoper-blurred">—</div><div class="lbl">blurred (lifetime)</div></div>
       <div class="cell"><div class="num" id="scoper-sweeps">—</div><div class="lbl">sweeps run (lifetime)</div></div>
-      <div class="cell"><div class="num" id="scoper-last">never</div><div class="lbl">last sweep</div></div>
+      <div class="cell"><div class="num" id="scoper-last">never</div><div class="lbl">last active</div></div>
     </div>
 
     <div class="frame-title">cookies in your browser</div>
@@ -1190,9 +1190,19 @@ function loadScoperState() {
 function renderScoperHero(state) {
   const stats = state.cookieScopeCounters || {};
   $('scoper-tightened').textContent = (stats.tightened || 0).toLocaleString();
-  $('scoper-killed').textContent = (stats.demotions || 0).toLocaleString();
   $('scoper-sweeps').textContent = (stats.sweeps || 0).toLocaleString();
+  // "last active" = most-recent guard event. Blur has no persisted timestamp
+  // yet (lands with blur telemetry in 3b-2), so the cookie sweep — the
+  // always-on hourly heartbeat — stands in as the activity marker.
   $('scoper-last').textContent = stats.lastSweep ? relativeTimeShort(stats.lastSweep) : 'never';
+  // Blurred lifetime total comes from farblerCounters.totalCalls — the same
+  // unique-surface counter the popup footer shows (kept consistent since the
+  // Slice 3a delta fix). Separate storage key from the cookie scoper state.
+  chrome.storage.local.get('farblerCounters', (s) => {
+    const blurred = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
+    const el = $('scoper-blurred');
+    if (el) el.textContent = blurred.toLocaleString();
+  });
 }
 
 function relativeTimeShort(ms) {
