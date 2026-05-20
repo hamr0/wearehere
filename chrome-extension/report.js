@@ -257,7 +257,7 @@ function renderOverview() {
     <div class="frame-title">what changed</div>
     <div id="ov-changed"></div>
 
-    <div class="frame-title">score trend</div>
+    <div class="frame-title">browsing exposure</div>
     <div id="ov-trend"></div>
   `);
 
@@ -348,7 +348,7 @@ function loadOverviewRawVisits() {
     const arr = Array.isArray(visits) ? visits : [];
     _ovBlurred = arr.reduce((n, v) => n + (v.blurredSurfaces || 0), 0);
     renderProtectionLine();
-    renderScoreTrend(arr);
+    renderBrowsingExposure(arr);
   });
 }
 
@@ -556,88 +556,38 @@ function renderRecentVisits(visits) {
   `);
 }
 
-function renderScoreTrend(visits) {
+// Browsing exposure — sites this window bucketed by risk tier. Buckets by
+// SITE (average score across its visits) not by visit, so a heavily-
+// revisited site doesn't dominate the shape. Tiers match the dashboard's
+// scoring vocabulary (30 fair/mixed, 60 mixed/hostile).
+function renderBrowsingExposure(visits) {
   const el = $('ov-trend');
-  if (visits.length < 2) {
-    safeSetHTML(el, `<div class="placeholder"><div>need at least 2 visits to draw a trend.</div></div>`);
+  if (!visits.length) {
+    safeSetHTML(el, `<div class="placeholder"><div>no visits in this window yet.</div></div>`);
     return;
   }
-  // Order chronologically, oldest first.
-  const series = visits.slice().sort((a, b) => a.at - b.at);
-
-  // Generous left gutter for the Y-axis labels (0 / 30 / 60 / 100).
-  // Tier dividers at 30 (fair/mixed) and 60 (mixed/hostile) match the
-  // scoring vocabulary used elsewhere in the dashboard.
-  const W = 720, H = 180, PL = 30, PR = 12, PT = 14, PB = 24;
-  const plotW = W - PL - PR;
-  const plotH = H - PT - PB;
-  const minAt = series[0].at, maxAt = series[series.length - 1].at;
-  const span = Math.max(1, maxAt - minAt);
-
-  const xFor = (at) => PL + ((at - minAt) / span) * plotW;
-  const yFor = (score) => PT + (1 - (score || 0) / 100) * plotH;
-
-  const points = series.map((v) => `${xFor(v.at).toFixed(1)},${yFor(v.score).toFixed(1)}`).join(' ');
-
-  const dotFor = (v) => {
-    const s = v.score || 0;
-    const cls = s >= 60 ? 'bad' : s >= 30 ? 'warn' : 'ok';
-    const tip = `${v.etld1 || 'unknown'} · score ${s} · ${relativeTimeShort(v.at)}`;
-    return `<circle class="trend-dot ${cls}" cx="${xFor(v.at).toFixed(1)}" cy="${yFor(v.score).toFixed(1)}" r="3"><title>${escapeText(tip)}</title></circle>`;
-  };
-
-  // Friendly time axis: first label, midpoint, last.
-  const midAt = minAt + span / 2;
-  const xLabels = [
-    { x: PL, label: relativeTimeShort(minAt), anchor: 'start' },
-    { x: PL + plotW / 2, label: relativeTimeShort(midAt), anchor: 'middle' },
-    { x: PL + plotW, label: relativeTimeShort(maxAt), anchor: 'end' },
-  ];
-
-  const yTicks = [
-    { v: 0,   y: yFor(0)   },
-    { v: 30,  y: yFor(30)  },
-    { v: 60,  y: yFor(60)  },
-    { v: 100, y: yFor(100) },
-  ];
-
-  const scores = series.map((v) => v.score || 0);
-  const avg = Math.round(scores.reduce((a, b) => a + b, 0) / scores.length);
-  const avgCls = avg >= 60 ? 'bad' : avg >= 30 ? 'warn' : 'ok';
-
+  const bySite = {};
+  for (const v of visits) {
+    if (!v.etld1) continue;
+    const e = bySite[v.etld1] || (bySite[v.etld1] = { sum: 0, n: 0 });
+    e.sum += v.score || 0;
+    e.n++;
+  }
+  let clean = 0, mixed = 0, hostile = 0;
+  for (const k in bySite) {
+    const avg = bySite[k].sum / bySite[k].n;
+    if (avg >= 60) hostile++;
+    else if (avg >= 30) mixed++;
+    else clean++;
+  }
+  const total = clean + mixed + hostile;
+  const max = Math.max(1, clean, mixed, hostile);
+  const bar = (n, cls) => `<span class="bar ${cls}" style="width:${Math.round((n / max) * 60)}%"></span>`;
   safeSetHTML(el, `
-    <div class="trend-caption dim">score over time · each dot is one visit · lower is better</div>
-    <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" class="trend-svg" role="img" aria-label="score over time">
-      <!-- Tier bands -->
-      <rect x="${PL}" y="${yFor(100)}" width="${plotW}" height="${yFor(60) - yFor(100)}" class="trend-band ok"/>
-      <rect x="${PL}" y="${yFor(60)}"  width="${plotW}" height="${yFor(30) - yFor(60)}"  class="trend-band warn"/>
-      <rect x="${PL}" y="${yFor(30)}"  width="${plotW}" height="${yFor(0)  - yFor(30)}"  class="trend-band bad"/>
-
-      <!-- Y-axis grid + labels -->
-      ${yTicks.map((t) => `
-        <line x1="${PL}" y1="${t.y.toFixed(1)}" x2="${W - PR}" y2="${t.y.toFixed(1)}" class="trend-grid"/>
-        <text x="${PL - 6}" y="${(t.y + 3).toFixed(1)}" text-anchor="end" class="trend-axis">${t.v}</text>
-      `).join('')}
-
-      <!-- Series line + dots -->
-      <polyline class="trend-line" points="${points}"/>
-      ${series.map(dotFor).join('')}
-
-      <!-- X-axis time labels -->
-      ${xLabels.map((l) => `<text x="${l.x.toFixed(1)}" y="${H - 6}" text-anchor="${l.anchor}" class="trend-axis">${escapeText(l.label)}</text>`).join('')}
-    </svg>
-    <div class="trend-legend">
-      <span class="dim">${series.length} visits</span>
-      <span class="dim">·</span>
-      <span class="dim">avg <span class="${avgCls}">${avg}</span></span>
-      <span class="dim">·</span>
-      <span class="dim">range ${Math.min(...scores)} → ${Math.max(...scores)}</span>
-      <span class="dim" style="margin-left:auto">
-        <span class="ok">▮</span> fair
-        <span class="warn">▮</span> mixed
-        <span class="bad">▮</span> hostile
-      </span>
-    </div>
+    <div class="trend-caption dim">${total} site${total === 1 ? '' : 's'} this window · by risk tier · lower is better</div>
+    <div class="bar-row"><span class="nval">${clean}</span> ${bar(clean, 'ok')} <span class="nlbl">clean <span class="dim">(&lt; 30)</span></span></div>
+    <div class="bar-row"><span class="nval">${mixed}</span> ${bar(mixed, 'warn')} <span class="nlbl">mixed <span class="dim">(30–60)</span></span></div>
+    <div class="bar-row"><span class="nval">${hostile}</span> ${bar(hostile, 'bad')} <span class="nlbl">hostile <span class="dim">(60+)</span></span></div>
   `);
 }
 

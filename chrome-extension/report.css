@@ -386,33 +386,8 @@ body {
 .mech-on { color: var(--fg-bright); }
 .mech-words .mech-on + .mech-on { margin-left: 0; }
 
-/* Score-trend (Overview tab) */
+/* Browsing-exposure caption (Overview tab) */
 .trend-caption { font-size: 11px; margin-bottom: 6px; }
-.trend-svg {
-  width: 100%;
-  height: 200px;
-  display: block;
-  background: var(--bg);
-  border: 1px solid var(--line);
-}
-.trend-line { fill: none; stroke: var(--fg-bright); stroke-width: 1.5; }
-.trend-grid { stroke: var(--line); stroke-dasharray: 2 3; stroke-width: 1; }
-.trend-axis { fill: var(--fg-mute); font-size: 10px; font-family: inherit; }
-.trend-band { opacity: 0.06; }
-.trend-band.ok   { fill: var(--ok); }
-.trend-band.warn { fill: var(--warn); }
-.trend-band.bad  { fill: var(--bad); }
-.trend-dot.ok   { fill: var(--ok); stroke: var(--bg); stroke-width: 1; }
-.trend-dot.warn { fill: var(--warn); stroke: var(--bg); stroke-width: 1; }
-.trend-dot.bad  { fill: var(--bad); stroke: var(--bg); stroke-width: 1; }
-.trend-legend {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  margin-top: 6px;
-}
-.trend-legend .ok, .trend-legend .warn, .trend-legend .bad { font-size: 12px; }
 
 /* Bars (in-row) */
 .bar-row {
@@ -443,6 +418,9 @@ body {
 }
 .bar.dim { background: var(--fg-mute); }
 .bar.faint { background: var(--fg-faint); }
+.bar.ok   { background: var(--ok); }
+.bar.warn { background: var(--warn); }
+.bar.bad  { background: var(--bad); }
 
 /* Event list */
 .event {
