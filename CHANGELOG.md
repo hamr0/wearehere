@@ -2,11 +2,47 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
-## [Unreleased]
+## [5.0.0] — Unreleased
+
+Phase 2: **fingerprint farbling.** Up to now wearehere *observed* fingerprinting — it counted which APIs a tracker read and surfaced that as "device-id" exposure. v5 adds the active arm: a per-origin deterministic noise layer that corrupts the fingerprint surfaces themselves, so the same browser reads as a different device on every distinct site while staying internally consistent within a site (a fingerprinter that re-reads to detect tampering sees stable values). The popup's cookie card grows a merged **Privacy guard** that reports blurring alongside cookie trimming, and the Watchers dashboard ties protection counts to each company.
+
+### Added
+
+- **Per-origin farble seed pipeline.** Each origin gets a deterministic 32-bit seed = first 4 bytes of `HMAC-SHA256(farblerSecret, "<state>|<origin>")`, written by `detect-watched.js` onto `<html data-wh-farble-seed>` for the MAIN-world wrappers in `inject.js` to read at call time. `farblerSecret` (64 random bytes) is generated once by the service worker (`onInstalled`) so there's no first-load race. Same site → same noise (a fingerprinter can't average it out); different sites → uncorrelated identities. A three-state model — `off` / `stable` (per-origin) / `per-tab` — is wired through, with per-origin overrides beating the global default.
+- **Canvas farbling (M3, M4.x).** `toDataURL` / `getImageData` readbacks are perturbed at 100 pseudo-random pixel positions chosen by an **xorshift32** chain seeded from the per-origin seed. The random positions are the anti-averaging hardening: a tracker doing N readbacks and taking the median can't recover the truth because the perturbed positions are unpredictable. Deterministic per seed, so A/B reads within a site match.
+- **WebGL constant farbling (M4.1, M4.3–M4.5).** `getParameter` returns canonical lies for the high-entropy identity constants (vendor/renderer and friends), brand-true receiver-guarded.
+- **Audio farbling (M5).** `AudioBuffer.getChannelData` gets ±0.0001 additive noise at 100 xorshift positions, with a `WeakMap<AudioBuffer, Set<channel>>` dedup so repeated reads return an identical reference — closing the additive-accumulation detection vector (additive noise doesn't self-cancel the way canvas XOR does). `AnalyserNode.get{Float,Byte}{Frequency,TimeDomain}Data` perturb the caller-owned buffer in place.
+- **Font-enumeration cap (M6).** `CanvasRenderingContext2D.measureText` classifies any font into one of 11 buckets (10 canonical Win32 faces + fallback) and returns canonical metrics, so font-probing can't fingerprint the installed-font set.
+- **Tier A constant spoofing (Slice 1).** Property-getter lies gated on farble state: `navigator.languages` → `["en-US","en"]`, `navigator.deviceMemory` → `8`, `screen.width/height` snapped to the nearest common resolution (cached at install), `screen.colorDepth/pixelDepth` → `24`, and `Performance.now()` floored to 100µs precision (timing-attack resolution reduction). `navigator.hardwareConcurrency` → `4` (pre-existing, now state-gated).
+- **Privacy guard popup card.** The former cookie-scoper card is now a merged **Privacy guard** showing both mechanisms: `✓ Cookies expire in N days · X trimmed` and `✓ Tracking blurred · N surfaces`, with a `[Trust 30d]` (cookies) + `[Trust ID]` (blur) pair. `[Trust ID]` is a per-origin binary toggle that writes `farblerSettings[etld1].mode = "off"`. Footer reframed to the symmetric `N cookies trimmed · N surfaces blurred · <when>`.
+- **Watchers tab — per-watcher protection columns.** Each company row in "who follows you" now carries lifetime **Trimmed** (cookies) and **Blurred** (surfaces) counts plus a compact `C · P · ID` mechanism chip (C=cookies, P=pixels, ID=device ID) — proving not just *who* follows you but *how much* was shielded against them. Trimmed-per-company is attributed at sweep time via a harvested cookie-domain→company map; Blurred-per-company is credited at visit append from unique-API-per-company counts.
+
+### Changed
+
+- **`navigator.platform` is NOT spoofed (deliberate revert).** Spoofing main-thread `navigator.platform` to `"Win32"` while `navigator.userAgentData.platform` (UA client hints) and Worker-scope `navigator.platform` — both unreachable from a content-script extension — keep returning the real OS created a *detection signal*: a fingerprinter trivially cross-checks the three and concludes "this user runs a platform-spoofing extension." Partial coverage is anti-defense; `platform` is now notify-only (reads counted, value passes through). Pattern locked for all future Tier A constants: before farbling a value, audit whether the same identity leaks via UAch / UA string / Worker scope, and don't farble if you can't cover all surfaces. (`deviceMemory` / `hardwareConcurrency` / `languages` carry the same Worker-leak in principle but aren't cross-checked by mainstream FP libraries today; risk acknowledged.)
+
+### Fixed
+
+- **"Tracking blurred · N surfaces" always read 1.** The popup blur line counted notify *categories* (always 0 or 1, since every FP wrapper tags under one "fingerprint" category) instead of unique APIs. Now sums distinct fingerprint APIs — reads ~1–3 on ordinary sites, 14 on creepjs.
+- **Lifetime "surfaces blurred" counter inflated by call volume.** The footer counted every FP-wrapper *invocation*, so framework `Performance.now()` polling pushed the lifetime number into the tens of thousands. Now counts unique fingerprint surfaces per detection, matching the per-site reading.
+- **Cookie-scope counter race lost up to half the trims.** `cookieScopeCounters` was read-modify-written by both the periodic sweep and the realtime retrim flush; a manual "sweep now" overlapping the alarm sweep interleaved get→set and the second writer clobbered the first. All merges now serialize through a write chain (verified with a concurrency harness: two simultaneous sweeps preserved 4/4 trims, was 2/4).
+- **Per-watcher Trimmed showed 0 until the first sweep.** The realtime-retrim path couldn't attribute a company because the domain→company cache was cold until a sweep warmed it; the cache is now loaded at service-worker start.
+- **Misleading "N calls" suffix** dropped from the popup fingerprint line — 10k+ calls on creepjs is mostly framework `Performance.now()` polling, not 10k tracking attempts. Surfaces (breadth) is the honest signal.
+
+### Internal
+
+- **`manifest.json`:** `all_frames: true` + `match_origin_as_fallback: true` on `inject.js` and `detect-watched.js` so farbling reaches same-origin iframes and `about:blank`/`srcdoc` frames (sandboxed cross-origin frames remain a documented ceiling).
+- **Receiver-guard pattern** locked for every prototype-method wrapper (brand checks via `Object.prototype.toString`); Tier A property descriptors are auto-protected.
+- **`detect-watched.js` `byScript`** now tracks unique APIs per caller host (Set) instead of call counts, so per-company attribution measures surface breadth, not polling volume.
+- **Bounded per-company state:** `cookieDomainCompanyMap` capped at 1000 entries (insertion-order eviction; raw-domain fallbacks skipped, first-writer-wins per eTLD+1 for determinism) and `farblerBlurredByCompany` capped at 300 (highest-count kept). Dashboard "who follows you" guards its async render with a token and live-refreshes on the new counter keys.
+- Lifetime per-company counters start from zero on this version; they accumulate as the user browses.
 
 ### Docs
 
 - **README rewrite.** Restructured around the current UI: popup section plus the three dashboard tabs (overview, watchers, cookie scoper), each documented with the metrics, controls, and panels it actually contains. Dropped origin/history copy and replaced abstract framing with the in-product vocabulary (score, hidden contacts, most exposed, sweep, trust 30d, capped, demoted to session). Install steps for Chrome/Firefox kept verbatim.
+- **Phase 2 PRD** (`docs/01-product/PRD-phase2-farbler.md`) — full farbling design, the "not feasible from an extension" surface table, the `navigator.platform` cross-surface finding, and Phase 3 candidates. Main PRD updated with the Privacy guard popup card, dashboard tab (7-block layout), and Watchers protection-column specs.
+
+[5.0.0]: https://github.com/hamr0/wearehere/compare/v4.1.4...phase2-fingerprint-farbler
 
 ## [4.1.4] — 2026-05-14
 
