@@ -28,6 +28,10 @@
 const VISIT_HISTORY_MAX = 1000;
 const VISIT_HISTORY_KEY = 'visitHistory';
 
+// Blur-firing activity log for the privacy guard "Recent activity" block.
+// One event per visit where blur was active and surfaces were touched.
+const FARBLER_HISTORY_MAX = 50;
+
 // Same simple eTLD+1 as the scoper — last two labels. Good enough for
 // per-visit keying. PSL would be more precise but the visit timeline is
 // user-curated context, not policy; a slightly imprecise group is fine.
@@ -131,6 +135,35 @@ async function appendVisit(report) {
           if (m && m.deviceId > 0) perCompany[name] = m.deviceId;
         }
         if (Object.keys(perCompany).length) await self.recordBlurredByCompany(perCompany);
+      }
+    } catch (e) { /* best-effort */ }
+
+    // Blur-firing event for the Recent activity log. Gated on blur actually
+    // being active for this site — notify() fires on detection regardless of
+    // farble state, so resolve the effective mode (override beats default)
+    // and skip logging "blur active" when the site is off. Serialized in the
+    // append chain, so no race on farblerHistory.
+    try {
+      const fpMethod = ((report.fingerprinting && report.fingerprinting.methods) || [])
+        .find((m) => m.technique === 'fingerprint');
+      const apis = (fpMethod && fpMethod.apis) || [];
+      if (apis.length) {
+        const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
+        const ov = farblerSettings && farblerSettings[record.etld1];
+        const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'per-tab');
+        if (mode !== 'off') {
+          const fam = {};
+          for (const a of apis) {
+            const f = (typeof self.farbleFamilyOf === 'function') ? self.farbleFamilyOf(a) : 'screennav';
+            fam[f] = (fam[f] || 0) + 1;
+          }
+          const families = Object.keys(fam).sort((x, y) => fam[y] - fam[x]);
+          const { farblerHistory } = await chrome.storage.local.get('farblerHistory');
+          const arr = Array.isArray(farblerHistory) ? farblerHistory.slice() : [];
+          arr.unshift({ at: record.at, site: record.etld1, surfaces: apis.length, families, mode });
+          if (arr.length > FARBLER_HISTORY_MAX) arr.length = FARBLER_HISTORY_MAX;
+          await chrome.storage.local.set({ farblerHistory: arr });
+        }
       }
     } catch (e) { /* best-effort */ }
 

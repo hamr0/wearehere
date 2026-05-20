@@ -164,7 +164,7 @@ const WINDOW_SNAPSHOTS_KEY = 'windowSnapshots';
 // the popup or the alarm write counters/history independently; the open
 // dashboard tab needs to mirror those updates without a manual reload.
 function watchScoperStorage() {
-  const keys = ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory', 'farblerCounters'];
+  const keys = ['cookieScopeCounters', 'cookieScopeTrust', 'cookieScopeSettings', 'cookieScopeHistory', 'farblerCounters', 'farblerHistory'];
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== 'local') return;
     if (keys.some((k) => k in changes)) {
@@ -1565,21 +1565,34 @@ function renderAlarmStatus() {
   });
 }
 
+// Unified activity log: cookie sweeps (cookieScopeHistory) + blur firings
+// (farblerHistory), interleaved by time. The sweep history arrives via
+// scoper:get-state; blur history is fetched here.
 function renderHistoryList(history) {
   const el = $('scoper-history');
-  if (!history.length) {
-    safeSetHTML(el, `<div class="placeholder"><div>no sweeps yet — the first one fires shortly after install.</div></div>`);
-    return;
-  }
-  safeSetHTML(el, history.slice(0, 20).map((h) => {
-    const when = relativeTimeShort(h.at);
-    return `
+  const sweeps = (Array.isArray(history) ? history : []).map((h) => ({
+    at: h.at,
+    label: 'cookie sweep',
+    detail: `scanned ${h.scanned} · rewrote ${h.rewrote}${h.demotions ? ` · demoted ${h.demotions}` : ''}`,
+  }));
+  chrome.storage.local.get('farblerHistory', (s) => {
+    const blur = (Array.isArray(s.farblerHistory) ? s.farblerHistory : []).map((b) => ({
+      at: b.at,
+      label: 'blur active',
+      detail: `${b.site ? b.site + ' · ' : ''}${(b.families || []).join(', ')}${b.surfaces ? ` · ${b.surfaces} surface${b.surfaces === 1 ? '' : 's'}` : ''}`,
+    }));
+    const merged = sweeps.concat(blur).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 20);
+    if (!merged.length) {
+      safeSetHTML(el, `<div class="placeholder"><div>no activity yet — the first cookie sweep fires shortly after install; blur events log as you browse.</div></div>`);
+      return;
+    }
+    safeSetHTML(el, merged.map((e) => `
       <div class="event">
         <span class="event-icon ok">[ok]</span>
-        <span class="event-kind">${escapeText(h.trigger)} · ${escapeText(when)}</span>
-        <span class="event-text">scanned ${h.scanned} · rewrote ${h.rewrote}${h.demotions ? ` · demoted ${h.demotions}` : ''}</span>
-      </div>`;
-  }).join(''));
+        <span class="event-kind">${escapeText(e.label)} · ${escapeText(relativeTimeShort(e.at))}</span>
+        <span class="event-text">${escapeText(e.detail)}</span>
+      </div>`).join(''));
+  });
 }
 
 // =========================================================================
