@@ -280,6 +280,10 @@ function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn)
   cookiesEl.classList.remove('unwired', 'ok', 'warn');
   blurEl.classList.remove('unwired', 'ok', 'warn');
 
+  // Button strip visible by default; the not-a-site branch hides it.
+  const actionsRow = $('guard-actions');
+  if (actionsRow) actionsRow.hidden = false;
+
   if (!etld1) {
     siteEl.textContent = '—';
     cookiesEl.textContent = 'not a regular site — guard inactive here';
@@ -287,6 +291,9 @@ function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn)
     blurEl.textContent = '';
     trustBtn.disabled = true;
     trustIdBtn.disabled = true;
+    // No origin to act on — hide the button strip so the inactive message
+    // stands alone instead of leaving disabled buttons floating.
+    if (actionsRow) actionsRow.hidden = true;
     return;
   }
 
@@ -296,13 +303,13 @@ function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn)
 
   safeSetHTML(siteEl, `<span class="host">${escapeText(etld1)}</span>`);
 
-  trustBtn.textContent = isCookieTrusted ? '[ remove cookie trust ]' : '[ trust 30d ]';
+  trustBtn.textContent = isCookieTrusted ? '[ untrust cookies ]' : '[ trust cookies 30d ]';
   trustBtn.disabled = false;
 
   // Blur state for this origin
   const override = farblerSettings[etld1];
   const blurOverridden = !!(override && override.mode === 'off');
-  trustIdBtn.textContent = blurOverridden ? '[ remove ID trust ]' : '[ trust ID ]';
+  trustIdBtn.textContent = blurOverridden ? '[ untrust ID ]' : '[ trust ID ]';
   trustIdBtn.disabled = !globalOn && !blurOverridden;
 
   renderGuardCookiesLine(etld1, capDays, isCookieTrusted, stats);
