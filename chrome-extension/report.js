@@ -1159,9 +1159,11 @@ function renderScoper(_report) {
 
     <div class="frame-title">settings</div>
     <div class="block-sub">cookie sweep</div>
+    <div class="block-help">Shortens long-lived tracker cookies to about 7 days, so sites can't use them to recognise you days later. Runs automatically in the background — this just sets how often.</div>
     <div class="window-sel" id="scoper-period"></div>
     <div id="scoper-period-status" class="callout"></div>
     <div class="block-sub">default blur</div>
+    <div class="block-help">Scrambles the canvas, audio and font signals sites read to fingerprint your device, so the same browser looks different to each site — harder to track without logins or cookies.</div>
     <div class="window-sel" id="guard-blur-default"></div>
     <div id="guard-blur-status" class="callout"></div>
 
