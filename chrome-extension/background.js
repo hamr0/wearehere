@@ -46,28 +46,105 @@ chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); });
 chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); });
 bootstrapFarblerSecret();
 
-// Lifetime surfaces-blurred counter. Reads on init, increments in
+// Lifetime surfaces-blurred counters. Reads on init, increments in
 // memory on each `watched` detection delta (unique APIs, not call
 // sums), persists via debounced write to keep chrome.storage churn
-// low. SW recycle reloads from storage. Popup reads
+// low. SW recycle reloads from storage. Popup + dashboard read
 // chrome.storage.local.farblerCounters directly for display.
-let _farblerCountersMem = { totalCalls: 0 };
+//
+//   farblerCounters      = { totalCalls, byFamily: { canvas, audio, … } }
+//   farblerBlurredBySite = { [etld1]: surfaces }   (capped, Top sites)
+//
+// Both keys are written ONLY from this debounced path, so the in-memory
+// copy is authoritative — no read-modify-write race (unlike the byCompany
+// counter, which is serialized through visits.js's appendChain instead).
+const FARBLE_FAMILIES = ['canvas', 'audio', 'fonts', 'screennav', 'webgl'];
+function farbleFamilyOf(api) {
+  if (typeof api !== 'string') return 'screennav';
+  if (api.indexOf('Canvas.') === 0 || api === 'createImageBitmap.canvasSrc') return 'canvas';
+  if (api.indexOf('WebGL.') === 0) return 'webgl';
+  if (api.indexOf('Audio') === 0 || api.indexOf('AnalyserNode.') === 0) return 'audio';
+  if (api === 'CanvasRenderingContext2D.measureText') return 'fonts';
+  return 'screennav'; // Navigator.* / Screen.* / Performance.now
+}
+self.farbleFamilyOf = farbleFamilyOf;
+
+// Unique fingerprint APIs per family in an items array (one count per
+// distinct API — surface breadth, matching the totalCalls semantics).
+function farbleFamilyCounts(items) {
+  const m = {};
+  for (const it of items || []) {
+    if (!it || it.category !== 'fingerprint') continue;
+    const fam = farbleFamilyOf(it.api);
+    m[fam] = (m[fam] || 0) + 1;
+  }
+  return m;
+}
+// Per-family positive delta between prior and current item snapshots.
+// On navigation detect-watched.js resets its counts, so cur < prev for a
+// family — treat the current value as that page's fresh contribution
+// (same rule the total used). Sum of family deltas == the total delta.
+function farbleFamilyDelta(prevItems, curItems) {
+  const prev = farbleFamilyCounts(prevItems);
+  const cur = farbleFamilyCounts(curItems);
+  const out = {};
+  for (const fam of FARBLE_FAMILIES) {
+    const p = prev[fam] || 0;
+    const c = cur[fam] || 0;
+    const d = c >= p ? c - p : c;
+    if (d > 0) out[fam] = d;
+  }
+  return out;
+}
+
+const MAX_BLURRED_SITES = 300;
+let _farblerCountersMem = { totalCalls: 0, byFamily: {} };
+let _farblerBlurredBySiteMem = {};
 let _farblerCountersPersistTimer = null;
 (async function loadFarblerCounters() {
   try {
-    const v = await chrome.storage.local.get('farblerCounters');
+    const v = await chrome.storage.local.get(['farblerCounters', 'farblerBlurredBySite']);
     if (v && v.farblerCounters && typeof v.farblerCounters.totalCalls === 'number') {
-      _farblerCountersMem = { totalCalls: v.farblerCounters.totalCalls };
+      _farblerCountersMem = {
+        totalCalls: v.farblerCounters.totalCalls,
+        byFamily: (v.farblerCounters.byFamily && typeof v.farblerCounters.byFamily === 'object')
+          ? Object.assign({}, v.farblerCounters.byFamily) : {},
+      };
+    }
+    if (v && v.farblerBlurredBySite && typeof v.farblerBlurredBySite === 'object') {
+      _farblerBlurredBySiteMem = Object.assign({}, v.farblerBlurredBySite);
     }
   } catch {}
 })();
-function incrementFarblerCounter(delta) {
+function recordFarblerBlur(delta, famDelta, etld1) {
   if (!delta || delta < 0) return;
   _farblerCountersMem.totalCalls += delta;
+  if (famDelta) {
+    for (const fam in famDelta) {
+      _farblerCountersMem.byFamily[fam] = (_farblerCountersMem.byFamily[fam] || 0) + famDelta[fam];
+    }
+  }
+  if (etld1) {
+    _farblerBlurredBySiteMem[etld1] = (_farblerBlurredBySiteMem[etld1] || 0) + delta;
+  }
   if (_farblerCountersPersistTimer) return;
   _farblerCountersPersistTimer = setTimeout(() => {
     _farblerCountersPersistTimer = null;
-    try { chrome.storage.local.set({ farblerCounters: { totalCalls: _farblerCountersMem.totalCalls } }); } catch {}
+    // Cap the per-site map to the highest-count sites (Top sites shows only
+    // a handful) and bound mem too, mirroring the byCompany cap.
+    const keys = Object.keys(_farblerBlurredBySiteMem);
+    if (keys.length > MAX_BLURRED_SITES) {
+      keys.sort((a, b) => _farblerBlurredBySiteMem[b] - _farblerBlurredBySiteMem[a]);
+      const trimmed = {};
+      for (let i = 0; i < MAX_BLURRED_SITES; i++) trimmed[keys[i]] = _farblerBlurredBySiteMem[keys[i]];
+      _farblerBlurredBySiteMem = trimmed;
+    }
+    try {
+      chrome.storage.local.set({
+        farblerCounters: { totalCalls: _farblerCountersMem.totalCalls, byFamily: _farblerCountersMem.byFamily },
+        farblerBlurredBySite: _farblerBlurredBySiteMem,
+      });
+    } catch {}
   }, 2000);
 }
 
@@ -473,14 +550,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       // the contribution since the navigation."
       try {
         const prevItems = (tab.modules.watched && tab.modules.watched.items) || [];
-        const countFp = (items) => items.reduce(
-          (n, it) => n + (it.category === 'fingerprint' ? 1 : 0),
-          0
-        );
-        const prevFp = countFp(prevItems);
-        const curFp = countFp(data.items || []);
-        const delta = curFp >= prevFp ? curFp - prevFp : curFp;
-        if (delta > 0) incrementFarblerCounter(delta);
+        const famDelta = farbleFamilyDelta(prevItems, data.items || []);
+        let delta = 0;
+        for (const fam in famDelta) delta += famDelta[fam];
+        if (delta > 0) recordFarblerBlur(delta, famDelta, harvestEtld1(tab.domain));
       } catch {}
       tab.modules.watched = data;
     } else if (mod === 'cooked') {
