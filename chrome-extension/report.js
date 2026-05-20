@@ -179,6 +179,11 @@ function watchScoperStorage() {
     if ('defaultBlurMode' in changes) {
       renderDefaultBlurRadio();
     }
+    // Surfaces-blurred block reads family/site counters plus the mode
+    // inputs; refresh on any of them.
+    if (['farblerCounters', 'farblerBlurredBySite', 'farblerSettings', 'defaultBlurMode'].some((k) => k in changes)) {
+      renderSurfacesBlurred();
+    }
   });
 }
 
@@ -1195,14 +1200,73 @@ function renderDefaultBlurRadio() {
   });
 }
 
-// Surfaces-blurred overview block. The per-family / by-mode / top-sites
-// breakdown needs new telemetry in the inject.js hot path (Slice 3b-2);
-// until that lands, the lifetime total lives in the hero above and this
-// block states what's coming rather than faking empty bars.
+// Surfaces-blurred overview block. Parallel to "cookies in your browser"
+// but on the cumulative-work axis: coverage by surface family, distribution
+// by blur mode across sites, and the sites where blur fired most. Backed by
+// farblerCounters.byFamily + farblerBlurredBySite (3b-2 telemetry).
+const FAMILY_LABELS = {
+  canvas: 'canvas',
+  audio: 'audio',
+  fonts: 'fonts',
+  screennav: 'screen + nav',
+  webgl: 'WebGL',
+};
+
 function renderSurfacesBlurred() {
   const el = $('guard-surfaces');
   if (!el) return;
-  safeSetHTML(el, `<div class="placeholder"><div>per-surface breakdown — canvas · audio · fonts · screen · WebGL — arrives in a follow-up update. lifetime total shows in the hero above.</div></div>`);
+  chrome.storage.local.get(['farblerCounters', 'farblerBlurredBySite', 'farblerSettings', 'defaultBlurMode'], (s) => {
+    const byFamily = (s.farblerCounters && s.farblerCounters.byFamily) || {};
+    const bySite = (s.farblerBlurredBySite && typeof s.farblerBlurredBySite === 'object') ? s.farblerBlurredBySite : {};
+    const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
+    const defaultMode = s.defaultBlurMode || 'per-tab';
+
+    const famEntries = Object.entries(byFamily).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+    const siteEntries = Object.entries(bySite).filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]);
+
+    if (famEntries.length === 0 && siteEntries.length === 0) {
+      el.classList.add('placeholder');
+      safeSetHTML(el, `<div>no surfaces blurred yet — browse a few sites with blur on and this fills in.</div>`);
+      return;
+    }
+    el.classList.remove('placeholder');
+
+    // By mode: off/stable counts come straight from the per-site overrides;
+    // sites without an override run whatever the default mode is, so they
+    // land in the default's bucket (per-tab or stable).
+    let offCount = 0;
+    let stableOverrides = 0;
+    for (const k in settings) {
+      if (!settings[k]) continue;
+      if (settings[k].mode === 'off') offCount++;
+      else if (settings[k].mode === 'stable') stableOverrides++;
+    }
+    const noOverrideBlurred = siteEntries.filter(([etld1]) => !settings[etld1]).length;
+    const perTabCount = defaultMode === 'per-tab' ? noOverrideBlurred : 0;
+    const stableCount = stableOverrides + (defaultMode === 'stable' ? noOverrideBlurred : 0);
+
+    const maxFam = Math.max(1, ...famEntries.map(([, n]) => n));
+    const maxMode = Math.max(1, perTabCount, stableCount, offCount);
+    const bar = (n, max) => `<span class="bar" style="width:${Math.round((n / max) * 60)}%"></span>`;
+
+    const famRows = famEntries.map(([fam, n]) =>
+      `<div class="bar-row"><span class="nval">${n.toLocaleString()}</span> ${bar(n, maxFam)} <span class="nlbl">${escapeText(FAMILY_LABELS[fam] || fam)}</span></div>`
+    ).join('');
+
+    const topSites = siteEntries.slice(0, 5);
+
+    safeSetHTML(el, `
+      <div class="block-sub">coverage · by surface family</div>
+      ${famRows}
+
+      <div class="block-sub">by mode</div>
+      <div class="bar-row"><span class="nval">${perTabCount}</span> ${bar(perTabCount, maxMode)} <span class="nlbl">per-tab (default)</span></div>
+      <div class="bar-row"><span class="nval">${stableCount}</span> ${bar(stableCount, maxMode)} <span class="nlbl">stable (per-site)</span></div>
+      <div class="bar-row"><span class="nval">${offCount}</span> ${bar(offCount, maxMode)} <span class="nlbl">off (allowlisted)</span></div>
+
+      <div class="callout" style="margin-top:10px">top sites: ${topSites.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${n.toLocaleString()})`).join(' · ') || '—'}</div>
+    `);
+  });
 }
 
 // Blur overrides — per-site exceptions to the default blur mode, backed by
