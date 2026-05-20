@@ -148,6 +148,21 @@ function recordFarblerBlur(delta, famDelta, etld1) {
   }, 2000);
 }
 
+// notify() in inject.js fires on detection regardless of farble state, so
+// gate crediting on blur actually being active for this site: resolve the
+// effective mode (per-site override beats the default) and skip when it's
+// "off". Keeps the lifetime counters honest — they count surfaces blurred,
+// not merely probed. Mirrors the resolution in detect-watched.js / visits.js.
+function creditFarblerIfActive(delta, famDelta, etld1) {
+  if (!delta || delta < 0) return;
+  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode'], (s) => {
+    const ov = s.farblerSettings && etld1 ? s.farblerSettings[etld1] : null;
+    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'per-tab');
+    if (mode === 'off') return;
+    recordFarblerBlur(delta, famDelta, etld1);
+  });
+}
+
 // Lifetime per-company surfaces-blurred counter. Populated at visit
 // append (visits.js → recordBlurredByCompany) so we credit each
 // observed company with that visit's unique-API count. Lives in
@@ -553,7 +568,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const famDelta = farbleFamilyDelta(prevItems, data.items || []);
         let delta = 0;
         for (const fam in famDelta) delta += famDelta[fam];
-        if (delta > 0) recordFarblerBlur(delta, famDelta, harvestEtld1(tab.domain));
+        if (delta > 0) creditFarblerIfActive(delta, famDelta, harvestEtld1(tab.domain));
       } catch {}
       tab.modules.watched = data;
     } else if (mod === 'cooked') {
