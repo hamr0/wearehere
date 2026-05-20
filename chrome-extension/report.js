@@ -412,11 +412,10 @@ function renderWhatChanged(cur, prev) {
 function diffAggregates(cur, prev) {
   const events = [];
 
-  // --- new site · in cur, not in prev ---
+  // --- new sites · in cur, not in prev (collapsed below into one summary
+  // event so first-visits don't drown the notable changes) ---
   const sitesPrev = new Set(prev.sites || []);
-  for (const s of (cur.sites || [])) {
-    if (!sitesPrev.has(s)) events.push({ cls: 'warn', icon: '⊕', kind: 'new site', text: `first visit to <strong>${escapeText(s)}</strong>` });
-  }
+  const newSites = (cur.sites || []).filter((s) => !sitesPrev.has(s));
 
   // --- watcher reach changes (new / gone / grew / shrank) ---
   const reachCur = cur.reachPct || {};
@@ -479,6 +478,18 @@ function diffAggregates(cur, prev) {
     if (!brokersPrev.has(k) && b.hits >= 2) {
       events.push({ cls: 'warn', icon: '⊕', kind: 'new broker', text: `<strong>${escapeText(b.name)}</strong> first seen this window` });
     }
+  }
+
+  // --- new-sites summary · pushed last so notable changes lead the feed ---
+  if (newSites.length) {
+    const shown = newSites.slice(0, 3).map(escapeText).join(', ');
+    const more = newSites.length > 3 ? ` +${newSites.length - 3} more` : '';
+    events.push({
+      cls: 'warn',
+      icon: '⊕',
+      kind: `${newSites.length} new site${newSites.length === 1 ? '' : 's'}`,
+      text: `<span title="${escapeText(newSites.join(', '))}">${shown}${more}</span>`,
+    });
   }
 
   return events;
