@@ -243,8 +243,8 @@ body {
 .watcher-header,
 .watcher-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1fr) 130px 90px 90px 90px;
-  align-items: center;
+  grid-template-columns: minmax(200px, 1fr) 130px 90px 90px;
+  align-items: baseline;
   gap: 12px;
   padding: 6px 0;
 }
@@ -262,9 +262,10 @@ body {
 }
 .watcher-row:last-child { border-bottom: 0; }
 .wt-name { color: var(--fg-bright); font-weight: 600; }
+.wt-via { display: block; color: var(--fg-mute); font-size: 11px; font-weight: normal; margin-top: 2px; }
 .wt-reach { color: var(--fg); }
 .wt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
-.wt-mech { color: var(--fg-bright); font-size: 11px; }
+.wt-num.pos { color: var(--warn); }
 
 .saved-flash {
   color: var(--ok);

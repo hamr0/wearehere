@@ -763,28 +763,28 @@ function renderWhoFollowsYou(snap) {
     const byCompanyTrimmed = (s.cookieScopeCounters && s.cookieScopeCounters.byCompany) || {};
     const byCompanyBlurred = s.farblerBlurredByCompany || {};
 
-    // Compact mech chips for the Mech column. PRD vocabulary lock:
-    //   C  = cookies, P = pixels, ID = device ID.
-    // Clicks/link-tracking exists but is dropped from the column to
-    // keep notation short — the PRD-locked example uses C·P·ID only.
-    const mechChips = (m) => {
+    // Mechanisms spelled out as a "via …" line under the company name —
+    // clearer than a cryptic chip column. All four PRD-locked mechanisms
+    // surface: cookies · pixels · clicks · device-id.
+    const mechWords = (m) => {
       const parts = [];
-      if ((m.cookies  || 0) > 0) parts.push('C');
-      if ((m.pixels   || 0) > 0) parts.push('P');
-      if ((m.deviceId || 0) > 0) parts.push('ID');
-      return parts.length ? parts.join('·') : '—';
+      if ((m.cookies  || 0) > 0) parts.push('cookies');
+      if ((m.pixels   || 0) > 0) parts.push('pixels');
+      if ((m.clicks   || 0) > 0) parts.push('clicks');
+      if ((m.deviceId || 0) > 0) parts.push('device-id');
+      return parts.length ? 'via ' + parts.join(' · ') : '';
     };
 
     const rowsHtml = ranked.map((c) => {
       const trimmed = (byCompanyTrimmed[c.key] && byCompanyTrimmed[c.key].tightened) || 0;
       const blurred = (byCompanyBlurred[c.key] && byCompanyBlurred[c.key].count) || 0;
+      const via = mechWords(c.mech || {});
       return `
         <div class="watcher-row">
-          <span class="wt-name">${escapeText(c.name)}</span>
+          <span class="wt-name">${escapeText(c.name)}${via ? `<span class="wt-via">${escapeText(via)}</span>` : ''}</span>
           <span class="wt-reach">${c.pct}% <span class="dim">(${c.hits}/${snap.visitsN})</span></span>
-          <span class="wt-num">${trimmed.toLocaleString()}</span>
-          <span class="wt-num">${blurred.toLocaleString()}</span>
-          <span class="wt-mech">${mechChips(c.mech || {})}</span>
+          <span class="wt-num${trimmed > 0 ? ' pos' : ''}">${trimmed.toLocaleString()}</span>
+          <span class="wt-num${blurred > 0 ? ' pos' : ''}">${blurred.toLocaleString()}</span>
         </div>`;
     }).join('');
 
@@ -795,7 +795,6 @@ function renderWhoFollowsYou(snap) {
           <span class="wt-reach">reach</span>
           <span class="wt-num">trimmed</span>
           <span class="wt-num">blurred</span>
-          <span class="wt-mech" title="C = cookies · P = pixels · ID = device ID">mech</span>
         </div>
         ${rowsHtml}
       </div>`);
