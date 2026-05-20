@@ -167,7 +167,23 @@ async function mergeCounters(deltaTightened, deltaDemotions, perSite, perCompany
   return mergeCountersInternal(deltaTightened, deltaDemotions, perSite, perCompany, { isSweep: true });
 }
 
-async function mergeCountersInternal(deltaTightened, deltaDemotions, perSite, perCompany, opts) {
+// Serialize all counter merges through one chain. The cookieScopeCounters
+// record is read-modify-written by both the periodic sweep and the
+// realtime-retrim flush; a manual "sweep now" overlapping the alarm sweep
+// (or a flush landing mid-sweep) otherwise interleaves get→set and the
+// second writer clobbers the first, losing up to half the increments.
+let counterWriteChain = Promise.resolve();
+function mergeCountersInternal(deltaTightened, deltaDemotions, perSite, perCompany, opts) {
+  const job = counterWriteChain.then(() =>
+    mergeCountersUnsafe(deltaTightened, deltaDemotions, perSite, perCompany, opts)
+  );
+  // Swallow rejections in the chain so one failed merge doesn't wedge all
+  // subsequent merges; the caller still sees its own rejection via job.
+  counterWriteChain = job.catch(() => {});
+  return job;
+}
+
+async function mergeCountersUnsafe(deltaTightened, deltaDemotions, perSite, perCompany, opts) {
   const isSweep = !!(opts && opts.isSweep);
   const { cookieScopeCounters } = await chrome.storage.local.get('cookieScopeCounters');
   const prev = cookieScopeCounters || { tightened: 0, demotions: 0, sweeps: 0, lastSweep: 0, bySite: {}, byCompany: {} };
@@ -222,6 +238,11 @@ chrome.storage.onChanged.addListener((changes, area) => {
     domainCompanyCache = changes.cookieDomainCompanyMap.newValue || {};
   }
 });
+// Warm the cache at load so the realtime onChanged path can attribute
+// trimmed-per-company before the first sweep runs. Without this, retrims
+// fired between SW boot and the first alarm/manual sweep land in bySite
+// but not byCompany.
+loadDomainCompanyMapForScoper();
 
 async function appendHistory(entry) {
   const { cookieScopeHistory } = await chrome.storage.local.get('cookieScopeHistory');

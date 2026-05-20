@@ -1171,13 +1171,16 @@ function buildReport(data) {
   }
 
   // Per-company device-id (fingerprinting) attribution. inject.js
-  // stack-walks the caller frame on each wrapped API hit and passes its
-  // host up via watched.byScript: { 'hotjar.com': { fingerprint: 4 }}.
-  // Resolve script host → company via the cooked-items map (which
-  // already pairs script domains with company names from detect-cooked.
-  // js's COMPANY_MAP). Scripts whose host doesn't appear in any cooked
-  // item stay unattributed — they'll fall back to the site-level
-  // "device-id reads" summary.
+  // stack-walks the caller frame on each wrapped API hit; detect-watched
+  // dedups to UNIQUE APIs per caller host and passes them up via
+  // watched.byScript: { 'hotjar.com': { fingerprint: 4 } } where 4 = the
+  // count of distinct fingerprint surfaces that script touched, NOT call
+  // volume. Summing it credits a company with surface breadth, matching
+  // the per-site "N surfaces" display. Resolve script host → company via
+  // the cooked-items map (which already pairs script domains with company
+  // names from detect-cooked.js's COMPANY_MAP). Scripts whose host
+  // doesn't appear in any cooked item stay unattributed — they fall back
+  // to the site-level "device-id reads" summary.
   const hostToCompany = {};
   for (const item of cookedItems) {
     if (item.domain && item.company) hostToCompany[item.domain] = item.company;

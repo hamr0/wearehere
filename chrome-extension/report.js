@@ -142,6 +142,13 @@ function watchVisitsStorage() {
     if (changes[VISIT_HISTORY_STORAGE_KEY]) {
       refreshRawVisitConsumers();
     }
+    // The Watchers "who follows you" table reads lifetime per-company
+    // Trimmed/Blurred from these keys. They change on sweeps + visit
+    // appends independently of the snapshot recompute, so refresh the
+    // table when they move (it re-reads both keys from storage itself).
+    if (changes.cookieScopeCounters || changes.farblerBlurredByCompany) {
+      loadWatchersAggregates();
+    }
   });
 }
 
@@ -703,7 +710,11 @@ function renderWatchersHero(snap) {
   $('w-amp').textContent = `${amp}×`;
 }
 
+let whoFollowsRenderToken = 0;
 function renderWhoFollowsYou(snap) {
+  // Invalidate any in-flight async render from a prior call (see token
+  // check before the storage callback below).
+  whoFollowsRenderToken++;
   const el = $('w-who');
   if (!snap || !snap.visitsN) {
     safeSetHTML(el, `<div class="placeholder"><div>no visits yet — once you've browsed, this fills in.</div></div>`);
@@ -729,7 +740,12 @@ function renderWhoFollowsYou(snap) {
   // ByCompany is written at visit append from watcherMech.deviceId. Both
   // are "lifetime regardless of window" — the Reach column above respects
   // the window selector, these don't.
+  // Render token: this read is async, so a rapid window flip (week→today→
+  // week) can land an older callback after a newer one and paint stale
+  // rows. Bail if a newer render started while we were waiting on storage.
+  const myToken = whoFollowsRenderToken;
   chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany'], (s) => {
+    if (myToken !== whoFollowsRenderToken) return;
     const byCompanyTrimmed = (s.cookieScopeCounters && s.cookieScopeCounters.byCompany) || {};
     const byCompanyBlurred = s.farblerBlurredByCompany || {};
 
