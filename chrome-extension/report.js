@@ -1344,11 +1344,14 @@ function renderPerSiteRules() {
       Object.keys(settings).forEach((d) => {
         if (settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable')) domains.add(d);
       });
-      // Newest-added blur rule floats to the top (so an add is visibly
-      // confirmed); rows without an add timestamp fall back to alphabetical.
+      // Newest-added rule floats to the top (so an add is visibly confirmed).
+      // Either axis can anchor a row, so use the newer of the blur override's
+      // and the cookie trust's addedAt — otherwise a cookie-anchored row (e.g.
+      // after blur is cycled back to the rotation default, deleting its blur
+      // entry) collapses to 0 and sinks into the alphabetical block.
       const sorted = [...domains].sort((a, b) => {
-        const ta = (settings[a] && settings[a].addedAt) || 0;
-        const tb = (settings[b] && settings[b].addedAt) || 0;
+        const ta = Math.max((settings[a] && settings[a].addedAt) || 0, (trust[a] && trust[a].addedAt) || 0);
+        const tb = Math.max((settings[b] && settings[b].addedAt) || 0, (trust[b] && trust[b].addedAt) || 0);
         if (tb !== ta) return tb - ta;
         return a < b ? -1 : a > b ? 1 : 0;
       });
