@@ -259,9 +259,9 @@ function renderGuard(report) {
   chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
     const trust = (state && state.cookieScopeTrust) || {};
     const stats = (state && state.cookieScopeCounters) || null;
-    chrome.storage.local.get(['farblerSettings', 'farbleDevMode', 'farblerCounters'], (s) => {
+    chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farblerCounters'], (s) => {
       const farblerSettings = s.farblerSettings || {};
-      const globalOn = !!s.farbleDevMode;
+      const globalOn = (s.defaultBlurMode || 'per-tab') !== 'off';
       const farblerCounters = s.farblerCounters || { totalCalls: 0 };
       renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn);
       renderGuardCounters(stats, farblerCounters);
@@ -414,14 +414,14 @@ function wireGuardButtons() {
       const cap = isTrusted ? 0 : 30;
       chrome.runtime.sendMessage({ type: 'scoper:set-trust', etld1: currentEtld1, cap }, () => {
         chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (s2) => {
-          chrome.storage.local.get(['farblerSettings', 'farbleDevMode', 'farblerCounters'], (st) => {
+          chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farblerCounters'], (st) => {
             renderGuardCard(
               currentEtld1,
               (s2 && s2.cookieScopeTrust) || {},
               (s2 && s2.cookieScopeCounters) || null,
               currentReport,
               st.farblerSettings || {},
-              !!st.farbleDevMode
+              (st.defaultBlurMode || 'per-tab') !== 'off'
             );
             renderGuardCounters((s2 && s2.cookieScopeCounters) || null, st.farblerCounters || null);
           });
@@ -432,7 +432,7 @@ function wireGuardButtons() {
 
   trustIdBtn.onclick = () => {
     if (!currentEtld1) return;
-    chrome.storage.local.get(['farblerSettings', 'farbleDevMode'], (s) => {
+    chrome.storage.local.get(['farblerSettings', 'defaultBlurMode'], (s) => {
       const settings = s.farblerSettings || {};
       const overridden = !!(settings[currentEtld1] && settings[currentEtld1].mode === 'off');
       if (overridden) {
@@ -448,7 +448,7 @@ function wireGuardButtons() {
             (state && state.cookieScopeCounters) || null,
             currentReport,
             settings,
-            !!s.farbleDevMode
+            (s.defaultBlurMode || 'per-tab') !== 'off'
           );
         });
         status.className = 'ok';

@@ -36,9 +36,10 @@
   // canvas calls per fresh install before this module moved the
   // generation up to the SW.
   //
-  // Toggle from DevTools service worker console:
-  //   chrome.storage.local.set({ farbleDevMode: true })  // turn ON
-  //   chrome.storage.local.remove("farbleDevMode")       // turn OFF
+  // Default blur mode is set from the dashboard Settings radio:
+  //   chrome.storage.local.defaultBlurMode = "off" | "stable" | "per-tab"
+  // Defaults to "per-tab" when unset. Per-site overrides in farblerSettings
+  // win over the default. (Replaces the old farbleDevMode boolean toggle.)
 
   var PER_TAB_NONCE_PLACEHOLDER = "PLACEHOLDER_TABNONCE";
 
@@ -99,7 +100,7 @@
   (async function () {
     try {
       var stored = await new Promise(function (resolve) {
-        chrome.storage.local.get(["farbleDevMode", "farblerSettings"], resolve);
+        chrome.storage.local.get(["defaultBlurMode", "farblerSettings"], resolve);
       });
       DEBUG && console.log("[wh-farble:dw] storage →", JSON.stringify(stored), "hasDoc=" + !!document.documentElement);
       if (!document.documentElement) return;
@@ -108,19 +109,23 @@
       var etld1 = etld1FromHost(origin);
       var settings = (stored && stored.farblerSettings) || {};
       var override = settings[etld1] || null;
-      var globalOn = !!(stored && stored.farbleDevMode);
+      var defaultMode = (stored && stored.defaultBlurMode) || "per-tab";
 
-      // Per-origin override beats global. Modes:
+      // Per-origin override wins over the default, unconditionally. Modes:
       //   override.mode === "off"     → blur disabled here (user trusted ID)
-      //   override.mode === "stable"  → stable per-origin seed
-      //   (no override)               → globalOn ? "per-tab" : "off"
+      //   override.mode === "stable"  → stable per-origin seed here
+      //   (no override)               → the default mode (off/stable/per-tab)
       var state;
       if (override && override.mode === "off") {
         state = "off";
       } else if (override && override.mode === "stable") {
-        state = globalOn ? "stable" : "off";
+        state = "stable";
+      } else if (defaultMode === "off") {
+        state = "off";
+      } else if (defaultMode === "stable") {
+        state = "stable";
       } else {
-        state = globalOn ? "per-tab" : "off";
+        state = "per-tab";
       }
 
       var seed = "";

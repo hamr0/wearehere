@@ -176,6 +176,9 @@ function watchScoperStorage() {
     if ('farblerSettings' in changes) {
       renderBlurOverrides();
     }
+    if ('defaultBlurMode' in changes) {
+      renderDefaultBlurRadio();
+    }
   });
 }
 
@@ -1153,6 +1156,8 @@ function renderScoper(_report) {
     <div class="block-sub">cookie sweep</div>
     <div class="window-sel" id="scoper-period"></div>
     <div id="scoper-period-status" class="callout"></div>
+    <div class="block-sub">default blur</div>
+    <div class="window-sel" id="guard-blur-default"></div>
 
     <div class="frame-title">recent activity</div>
     <div id="scoper-history"></div>
@@ -1162,6 +1167,32 @@ function renderScoper(_report) {
   renderCoverage();
   renderSurfacesBlurred();
   renderBlurOverrides();
+  renderDefaultBlurRadio();
+}
+
+// Default blur mode — applies to any site without a per-site override in
+// the Blur overrides block. "per-tab" is the shipped default. Writing it
+// here is what new page loads read in detect-watched.js to resolve state.
+const BLUR_MODE_CHOICES = [
+  { mode: 'off', label: 'off' },
+  { mode: 'stable', label: 'stable per origin' },
+  { mode: 'per-tab', label: 'per-tab seed' },
+];
+
+function renderDefaultBlurRadio() {
+  const el = $('guard-blur-default');
+  if (!el) return;
+  chrome.storage.local.get('defaultBlurMode', (s) => {
+    const current = BLUR_MODE_CHOICES.find((c) => c.mode === s.defaultBlurMode) ? s.defaultBlurMode : 'per-tab';
+    safeSetHTML(el, `<span class="lbl">mode</span>` + BLUR_MODE_CHOICES
+      .map((c) => `<span class="opt${c.mode === current ? ' active' : ''}" data-mode="${escapeText(c.mode)}">${escapeText(c.label)}</span>`)
+      .join(''));
+    el.querySelectorAll('.opt').forEach((opt) => {
+      opt.onclick = () => {
+        chrome.storage.local.set({ defaultBlurMode: opt.dataset.mode }, renderDefaultBlurRadio);
+      };
+    });
+  });
 }
 
 // Surfaces-blurred overview block. The per-family / by-mode / top-sites
