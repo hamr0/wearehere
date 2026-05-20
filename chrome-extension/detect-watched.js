@@ -29,7 +29,7 @@
   // Labels:
   //   stable   → "stable|<origin>"            persistent per-origin (pinned)
   //   rotation → "rotation|<salt>|<origin>"   per-origin, rotates with the salt
-  // The salt (farblerSessionSalt) is rotated weekly by the SW, so "rotation"
+  // The salt (farblerRotationSalt) is rotated weekly by the SW, so "rotation"
   // gives a per-origin identity that's stable within a window but unlinkable
   // across windows. "stable" omits the salt for sites the user pins (e.g. ones
   // they log into often) where rotation would just cause re-auth friction.
@@ -106,7 +106,7 @@
   (async function () {
     try {
       var stored = await new Promise(function (resolve) {
-        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies", "farblerSessionSalt"], resolve);
+        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies", "farblerRotationSalt"], resolve);
       });
       DEBUG && console.log("[wh-farble:dw] storage →", JSON.stringify(stored), "hasDoc=" + !!document.documentElement);
       if (!document.documentElement) return;
@@ -148,7 +148,7 @@
         } else if (state === "stable") {
           seed = await hmacSeed8(secret, "stable|" + origin);
         } else { // rotation
-          var salt = stored && stored.farblerSessionSalt;
+          var salt = stored && stored.farblerRotationSalt;
           if (typeof salt !== "string" || !salt) {
             state = "off";  // salt not seeded yet; fail safe rather than use a constant label
           } else {

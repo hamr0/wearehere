@@ -53,15 +53,15 @@ async function bootstrapFarblerSecret() {
 const FARBLE_SALT_TTL_MS = 7 * 24 * 60 * 60 * 1000;  // rotate weekly
 async function bootstrapFarbleSalt() {
   try {
-    const v = await chrome.storage.local.get(['farblerSessionSalt', 'farblerSaltIssuedAt']);
-    const fresh = typeof v.farblerSessionSalt === 'string' && v.farblerSessionSalt.length === 32
+    const v = await chrome.storage.local.get(['farblerRotationSalt', 'farblerSaltIssuedAt']);
+    const fresh = typeof v.farblerRotationSalt === 'string' && v.farblerRotationSalt.length === 32
       && typeof v.farblerSaltIssuedAt === 'number'
       && (Date.now() - v.farblerSaltIssuedAt) < FARBLE_SALT_TTL_MS;
     if (fresh) return;
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
     await chrome.storage.local.set({
-      farblerSessionSalt: _farblerBytesToHex(bytes),
+      farblerRotationSalt: _farblerBytesToHex(bytes),
       farblerSaltIssuedAt: Date.now(),
     });
   } catch (e) { /* content script falls back to state=off if salt missing */ }

@@ -1344,7 +1344,14 @@ function renderPerSiteRules() {
       Object.keys(settings).forEach((d) => {
         if (settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable')) domains.add(d);
       });
-      const sorted = [...domains].sort();
+      // Newest-added blur rule floats to the top (so an add is visibly
+      // confirmed); rows without an add timestamp fall back to alphabetical.
+      const sorted = [...domains].sort((a, b) => {
+        const ta = (settings[a] && settings[a].addedAt) || 0;
+        const tb = (settings[b] && settings[b].addedAt) || 0;
+        if (tb !== ta) return tb - ta;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
 
       const addRow = `
         <div class="trust-add">
@@ -1376,7 +1383,7 @@ function renderPerSiteRules() {
 
         const rawMode = (settings[d] && settings[d].mode) || 'rotation';
         const mode = rawMode === 'per-tab' ? 'rotation' : rawMode;  // fold legacy stub
-        const blurNext = mode === 'rotation' ? 'stable' : mode === 'stable' ? 'off' : 'rotation';
+        const blurNext = mode === 'rotation' ? 'off' : mode === 'off' ? 'stable' : 'rotation';
         const blurSet = !!(settings[d] && (settings[d].mode === 'off' || settings[d].mode === 'stable'));
         const blurText = blurSet ? escapeText(mode) : `<span class="dim">${escapeText(mode)} (default)</span>`;
 
@@ -1449,7 +1456,10 @@ function wirePerSiteControls() {
 function setBlurOverride(etld1, mode, done) {
   chrome.storage.local.get('farblerSettings', (s) => {
     const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? Object.assign({}, s.farblerSettings) : {};
-    settings[etld1] = { mode };
+    // Stamp the add time on first set, preserve it on a cycle, so the row keeps
+    // its newest-first position instead of jumping on every mode change.
+    const addedAt = (settings[etld1] && settings[etld1].addedAt) || Date.now();
+    settings[etld1] = { mode, addedAt };
     chrome.storage.local.set({ farblerSettings: settings }, () => {
       if (done) done();
       renderPerSiteRules();
