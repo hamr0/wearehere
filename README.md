@@ -11,6 +11,10 @@ Every site you open is quietly watched — by the site, and by a crowd of compan
 
 It lives in your toolbar. One click shows you the page you're on. Everything happens on your machine.
 
+<p align="center">
+  <img src="store-assets/store-screenshots/readme-popup.png" alt="wearehere popup on linkedin.com — score 48/HIGH, who's watching, and the Privacy guard card" width="360">
+</p>
+
 ## What it does for you
 
 - **Tells you who's watching.** Every site gets a plain-English read and a score out of 100. You see the actual companies following you — by name — and how they're doing it: cookies, tracking pixels, click tagging, device fingerprinting.
