@@ -92,14 +92,28 @@
     return bytesToHex(new Uint8Array(sig).slice(0, 4));
   }
 
-  // Match the popup's etld1 derivation (last two labels) for per-site
-  // override lookup. Crude but matches the existing scoper convention.
-  // Keep in sync with background.js `harvestEtld1` — the relax-offer key is
-  // written there and read here, so they must agree.
+  // Registrable domain for per-site override + relax-offer lookup. KEEP THIS
+  // SUFFIX LIST IN SYNC with background.js `self.WH_PUBLIC_SUFFIX` (and
+  // scoper.js / popup.js / report.js) — the key is written in the SW/pages and
+  // read here; a mismatch silently drops rules.
+  var WH_PUBLIC_SUFFIX = {
+    "co.uk": 1, "org.uk": 1, "me.uk": 1, "gov.uk": 1, "ac.uk": 1, "net.uk": 1,
+    "com.au": 1, "net.au": 1, "org.au": 1, "gov.au": 1, "edu.au": 1,
+    "co.jp": 1, "or.jp": 1, "ne.jp": 1, "co.nz": 1, "co.za": 1, "co.in": 1,
+    "co.kr": 1, "co.il": 1, "co.th": 1, "co.id": 1,
+    "com.br": 1, "com.cn": 1, "com.mx": 1, "com.tr": 1, "com.sg": 1, "com.hk": 1,
+    "com.tw": 1, "com.ar": 1, "com.co": 1, "com.ua": 1,
+    "github.io": 1, "gitlab.io": 1, "blogspot.com": 1, "wordpress.com": 1,
+    "herokuapp.com": 1, "vercel.app": 1, "netlify.app": 1, "pages.dev": 1,
+    "workers.dev": 1, "web.app": 1, "firebaseapp.com": 1, "glitch.me": 1,
+    "now.sh": 1, "surge.sh": 1
+  };
   function etld1FromHost(host) {
     if (!host) return "";
     var labels = String(host).split(".").filter(Boolean);
     if (labels.length < 2) return host;
+    var lastTwo = labels.slice(-2).join(".").toLowerCase();
+    if (WH_PUBLIC_SUFFIX[lastTwo] && labels.length >= 3) return labels.slice(-3).join(".");
     return labels.slice(-2).join(".");
   }
 

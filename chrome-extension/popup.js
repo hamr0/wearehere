@@ -233,12 +233,29 @@ function renderFooterChips(report) {
 
 // --- Scoper card ----------------------------------------------------------
 
+// KEEP IN SYNC with background.js `self.WH_PUBLIC_SUFFIX` (+ detect-watched.js /
+// report.js / scoper.js). Multi-label suffixes whose registrable domain is
+// suffix + 1 label; a writer/reader mismatch silently drops per-site rules.
+const WH_PUBLIC_SUFFIX = {
+  'co.uk': 1, 'org.uk': 1, 'me.uk': 1, 'gov.uk': 1, 'ac.uk': 1, 'net.uk': 1,
+  'com.au': 1, 'net.au': 1, 'org.au': 1, 'gov.au': 1, 'edu.au': 1,
+  'co.jp': 1, 'or.jp': 1, 'ne.jp': 1, 'co.nz': 1, 'co.za': 1, 'co.in': 1,
+  'co.kr': 1, 'co.il': 1, 'co.th': 1, 'co.id': 1,
+  'com.br': 1, 'com.cn': 1, 'com.mx': 1, 'com.tr': 1, 'com.sg': 1, 'com.hk': 1,
+  'com.tw': 1, 'com.ar': 1, 'com.co': 1, 'com.ua': 1,
+  'github.io': 1, 'gitlab.io': 1, 'blogspot.com': 1, 'wordpress.com': 1,
+  'herokuapp.com': 1, 'vercel.app': 1, 'netlify.app': 1, 'pages.dev': 1,
+  'workers.dev': 1, 'web.app': 1, 'firebaseapp.com': 1, 'glitch.me': 1,
+  'now.sh': 1, 'surge.sh': 1,
+};
 function etld1FromHost(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
-  return labels.slice(-2).join('.');
+  const lastTwo = labels.slice(-2).join('.');
+  if (WH_PUBLIC_SUFFIX[lastTwo] && labels.length >= 3) return labels.slice(-3).join('.');
+  return lastTwo;
 }
 
 function relativeTime(ms) {

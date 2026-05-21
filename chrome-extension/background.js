@@ -66,10 +66,22 @@ async function bootstrapFarbleSalt() {
     });
   } catch (e) { /* content script falls back to state=off if salt missing */ }
 }
-chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); });
-chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); });
+// Legacy default `per-tab` (an unwired stub, removed in the seed-scope rework)
+// folds to `rotation` at read-time everywhere; rewrite the stored value once so
+// the dashboard radio and any direct reads reflect the current model.
+async function migrateLegacyBlurDefault() {
+  try {
+    const v = await chrome.storage.local.get('defaultBlurMode');
+    if (v.defaultBlurMode === 'per-tab') {
+      await chrome.storage.local.set({ defaultBlurMode: 'rotation' });
+    }
+  } catch (e) { /* read-time folding still covers it */ }
+}
+chrome.runtime.onInstalled.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); migrateLegacyBlurDefault(); });
+chrome.runtime.onStartup.addListener(() => { bootstrapFarblerSecret(); bootstrapFarbleSalt(); migrateLegacyBlurDefault(); });
 bootstrapFarblerSecret();
 bootstrapFarbleSalt();
+migrateLegacyBlurDefault();
 
 // Lifetime surfaces-blurred counters. Reads on init, increments in
 // memory on each `watched` detection delta (unique APIs, not call
@@ -233,15 +245,38 @@ self.recordBlurredByCompany = recordBlurredByCompany;
 // to match the scoper's bySite convention. Cookies whose domain hasn't
 // been observed via cooked yet stay unattributed; map fills in as the
 // user browses.
-// Crude eTLD+1 = last two labels. Keep in sync with detect-watched.js
-// `etld1FromHost` — the relax-offer key is written here and read there, so they
-// must agree. (Both share the multi-part-TLD limitation, e.g. "a.co.uk" → "co.uk".)
+// Curated subset of the Public Suffix List — multi-label suffixes under which
+// each registration is a DIFFERENT owner, so the registrable domain is the
+// suffix + one more label (vodafone.co.uk, abrahamjuliot.github.io). Plain
+// last-two-labels is correct for everything else. KEEP IN SYNC across
+// background.js, scoper/scoper.js, detect-watched.js, popup.js, report.js — the
+// per-site rule key is written in some and read in others; a mismatch silently
+// drops rules. No structural rule (dot/char/label count) can derive this:
+// github.io and sentry.io are identical in shape but opposite in answer, because
+// it's a registry decision, not something the string encodes.
+self.WH_PUBLIC_SUFFIX = self.WH_PUBLIC_SUFFIX || {
+  'co.uk': 1, 'org.uk': 1, 'me.uk': 1, 'gov.uk': 1, 'ac.uk': 1, 'net.uk': 1,
+  'com.au': 1, 'net.au': 1, 'org.au': 1, 'gov.au': 1, 'edu.au': 1,
+  'co.jp': 1, 'or.jp': 1, 'ne.jp': 1, 'co.nz': 1, 'co.za': 1, 'co.in': 1,
+  'co.kr': 1, 'co.il': 1, 'co.th': 1, 'co.id': 1,
+  'com.br': 1, 'com.cn': 1, 'com.mx': 1, 'com.tr': 1, 'com.sg': 1, 'com.hk': 1,
+  'com.tw': 1, 'com.ar': 1, 'com.co': 1, 'com.ua': 1,
+  'github.io': 1, 'gitlab.io': 1, 'blogspot.com': 1, 'wordpress.com': 1,
+  'herokuapp.com': 1, 'vercel.app': 1, 'netlify.app': 1, 'pages.dev': 1,
+  'workers.dev': 1, 'web.app': 1, 'firebaseapp.com': 1, 'glitch.me': 1,
+  'now.sh': 1, 'surge.sh': 1,
+};
+// Registrable domain. Keep in sync with detect-watched.js `etld1FromHost`,
+// popup.js, report.js, scoper/scoper.js — the relax/per-site rule key is written
+// in some and read in others, so all must compute the same thing.
 function harvestEtld1(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
-  return labels.slice(-2).join('.');
+  const lastTwo = labels.slice(-2).join('.');
+  if (self.WH_PUBLIC_SUFFIX[lastTwo] && labels.length >= 3) return labels.slice(-3).join('.');
+  return lastTwo;
 }
 // Hard cap on map size. The vast majority of entries are the ~250 named
 // trackers in COMPANY_MAP, but pattern-matched generic names (e.g.
@@ -307,7 +342,49 @@ async function harvestCookieDomainCompanyMap(data) {
 
 // --- Per-tab state ---
 const tabData = {};
-const domainTosCache = {};
+// ToS scan cache. Persisted to storage.local so it survives SW/event-page
+// recycle — an in-memory-only object evaporated on every recycle, so a
+// once-found terms page would flip back to "couldn't find a terms page" the
+// next time the popup opened cold. Keyed by domain; merge-keeps known axes
+// (never clobbers a found page with a later null); capped + TTL'd.
+let domainTosCache = {};
+const TOS_CACHE_KEY = 'tosCacheV1';
+const TOS_CACHE_MAX = 500;
+const TOS_TTL_FOUND_MS = 30 * 864e5;  // 30d once we've found a policy/terms page
+const TOS_TTL_MISS_MS = 1 * 864e5;    // 1d for a miss, so re-discovery still runs
+let tosWriteChain = Promise.resolve();
+
+function tosEntryFresh(e) {
+  if (!e || typeof e.at !== 'number') return false;
+  const found = !!(e.privacy || e.terms);
+  return Date.now() - e.at <= (found ? TOS_TTL_FOUND_MS : TOS_TTL_MISS_MS);
+}
+
+const tosCacheReady = chrome.storage.local.get(TOS_CACHE_KEY).then((o) => {
+  const stored = (o && o[TOS_CACHE_KEY] && typeof o[TOS_CACHE_KEY] === 'object') ? o[TOS_CACHE_KEY] : {};
+  domainTosCache = stored;
+}).catch(() => {});
+
+// Write-through, serialized so concurrent detections can't clobber. Merges with
+// the stored entry so a directScan that only has one axis (e.g. terms) doesn't
+// wipe a previously-found privacy result.
+function persistTosEntry(domain, next) {
+  tosWriteChain = tosWriteChain.then(async () => {
+    const o = await chrome.storage.local.get(TOS_CACHE_KEY);
+    const map = (o && o[TOS_CACHE_KEY] && typeof o[TOS_CACHE_KEY] === 'object') ? o[TOS_CACHE_KEY] : {};
+    const prev = map[domain] || {};
+    map[domain] = {
+      privacy: next.privacy || prev.privacy || null,
+      terms: next.terms || prev.terms || null,
+      at: Date.now(),
+    };
+    const keys = Object.keys(map);
+    for (let i = 0; i < keys.length - TOS_CACHE_MAX; i++) delete map[keys[i]];
+    await chrome.storage.local.set({ [TOS_CACHE_KEY]: map });
+    domainTosCache = map;
+  }).catch(() => {});
+  return tosWriteChain;
+}
 let dashboardTabId = null;
 // Serialize trust-list writes so rapid add/remove from the dashboard
 // can't lose updates via read-modify-write clobber.
@@ -689,17 +766,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // --- ToS: checkCache from detect-tosed.js ---
   if (msg.type === 'checkCache' && sender.tab) {
     const domain = msg.domain;
-    const cached = domainTosCache[domain] || null;
-    if (cached && cached.privacy && cached.terms) {
-      // Full cache — set tab data
-      const tabId = sender.tab.id;
-      const tab = ensureTab(tabId);
-      if (tab) {
-        tab.modules.tosed = buildTosModuleData(domain, cached.privacy, cached.terms);
-        updateBadge(tabId);
+    const tabId = sender.tab.id;
+    (async () => {
+      try {
+        await tosCacheReady;  // SW may have just cold-started; ensure hydration landed
+        const e = domainTosCache[domain];
+        if (!e || !tosEntryFresh(e)) { sendResponse(null); return; }
+        if (e.privacy && e.terms) {
+          // Full cache — set tab data so the badge/popup reflect it immediately
+          const tab = ensureTab(tabId);
+          if (tab) {
+            tab.modules.tosed = buildTosModuleData(domain, e.privacy, e.terms);
+            updateBadge(tabId);
+          }
+        }
+        sendResponse({ privacy: e.privacy || null, terms: e.terms || null });
+      } catch (err) {
+        // Always answer — a missed response hangs detect-tosed's callback and
+        // the page never gets a terms scan. Null = "no cache, go discover".
+        try { sendResponse(null); } catch {}
       }
-    }
-    sendResponse(cached);
+    })();
     return true;
   }
 
@@ -1126,18 +1213,13 @@ function handleTosedDetection(tabId, tab, data) {
 
     tab.modules.tosed = buildTosModuleData(data.domain, privacyResult, termsResult);
 
-    // Update cache
-    domainTosCache[data.domain] = {
-      privacy: privacyResult,
-      terms: termsResult,
-    };
+    domainTosCache[data.domain] = { privacy: privacyResult, terms: termsResult, at: Date.now() };
+    persistTosEntry(data.domain, { privacy: privacyResult, terms: termsResult });
   } else if (data.subtype === 'fetchedResults') {
     tab.modules.tosed = buildTosModuleData(data.domain, data.privacy, data.terms);
 
-    domainTosCache[data.domain] = {
-      privacy: data.privacy,
-      terms: data.terms,
-    };
+    domainTosCache[data.domain] = { privacy: data.privacy, terms: data.terms, at: Date.now() };
+    persistTosEntry(data.domain, { privacy: data.privacy, terms: data.terms });
   }
 }
 
@@ -1692,27 +1774,48 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 });
 
 // --- rage-reload relax offer ------------------------------------------------
-// If a user reloads the same URL several times in a short window while blur is
-// ON for that site, surface a one-click "relax fingerprint protection here"
+// If a user *reloads the same page* several times in a short window while blur
+// is ON for that site, surface a one-click "relax fingerprint protection here"
 // offer in the popup (read from farbleReloadOffer). The popup is where the fix
 // lives (Trust ID); we just flag that this site is a likely candidate.
+//
+// Telling a reload apart from a navigation, from chrome.tabs.onUpdated alone
+// (verified against real captured event streams):
+//   • a NAVIGATION's load cycle contains a 'loading' event WITH changeInfo.url
+//     — and ALSO emits later url-less 'loading' sub-events, so a url-less
+//     'loading' is NOT by itself a reload.
+//   • a RELOAD's load cycle has NO url-bearing 'loading' event at all.
+// So: stamp navAt when a 'loading'+url (navigation) arrives and reset the
+// streak; a url-less 'loading' is a reload UNLESS it lands within
+// NAV_SUBEVENT_MS of that stamp (i.e. it's one of the navigation's own
+// sub-events). Time-based, not 'complete'-based, so a stuck page that never
+// fires 'complete' (the anti-bot case relax exists for) is still counted.
 const RELAX_WINDOW_MS = 25000;
-const RELAX_MIN_LOADS = 2;     // initial load + 1 reload
-const RELAX_DEDUPE_MS = 1500;  // collapse the multiple 'loading' fires per reload
-const reloadTrack = {};        // tabId -> { url, times: [] }
+const RELAX_MIN_RELOADS = 2;    // fire on the 2nd reload within the window
+const RELAX_DEDUPE_MS = 1500;   // collapse the burst of url-less 'loading' fires within one reload
+const NAV_SUBEVENT_MS = 2500;   // url-less 'loading' this soon after a nav's url-loading = sub-event, not a reload
+const reloadTrack = {};         // tabId -> { times: [], navAt: number }
+
+// A navigation (a 'loading' event carrying a new URL): the user left the page,
+// so any rage-reload streak is moot — reset it, and stamp navAt so this cycle's
+// later url-less 'loading' sub-events aren't mistaken for reloads.
+function noteNavigation(tabId) {
+  reloadTrack[tabId] = { times: [], navAt: Date.now() };
+}
 
 function trackReloadForRelaxOffer(tabId, url) {
   if (!url || !/^https?:/.test(url)) return;
   let etld1;
   try { etld1 = harvestEtld1(new URL(url).hostname); } catch { return; }
   if (!etld1) return;
-  const now = Date.now();
   let t = reloadTrack[tabId];
-  if (!t || t.url !== url) { t = reloadTrack[tabId] = { url, times: [] }; }
-  if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;
+  if (!t) t = reloadTrack[tabId] = { times: [], navAt: 0 };
+  const now = Date.now();
+  if (now - t.navAt < NAV_SUBEVENT_MS) return;  // a navigation's own sub-event, not a reload
+  if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;  // same reload's burst
   t.times.push(now);
   t.times = t.times.filter((x) => now - x <= RELAX_WINDOW_MS);
-  if (t.times.length >= RELAX_MIN_LOADS) {
+  if (t.times.length >= RELAX_MIN_RELOADS) {
     t.times = [];  // reset so we don't re-fire on every later reload
     maybeOfferRelax(etld1);
   }
@@ -1732,6 +1835,8 @@ function maybeOfferRelax(etld1) {
 }
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
+    // Navigation (carries a new URL): snapshot on domain change, then mark it a
+    // navigation so the rage-reload tracker resets and ignores its sub-events.
     const oldDomain = tabData[tabId]?.domain;
     try {
       const newDomain = new URL(changeInfo.url).hostname;
@@ -1741,11 +1846,14 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     } catch {
       snapshotAndEvict(tabId);
     }
+    noteNavigation(tabId);
+    return;
   }
-  // Rage-reload → relax offer. A user hammering reload on the same URL is the
-  // most reliable "this page is broken" signal we have (render heuristics are
-  // unreliable and our content script gets torn down on stuck SPAs). Observed
-  // at the SW level so it survives that teardown.
+  // A url-less 'loading' event is a candidate reload (a user hammering reload on
+  // a page that's broken under blur is the most reliable "this is broken" cue;
+  // render heuristics are unreliable and our content script gets torn down on
+  // stuck SPAs, so we watch at the SW level to survive that). tab.url is the
+  // stable current URL here, since the URL isn't changing.
   if (changeInfo.status === 'loading') trackReloadForRelaxOffer(tabId, tab && tab.url);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {

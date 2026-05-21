@@ -51,7 +51,11 @@ function etld1Of(host) {
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
-  return labels.slice(-2).join('.');
+  const lastTwo = labels.slice(-2).join('.');
+  // self.WH_PUBLIC_SUFFIX defined in background.js (shared SW global); guard in
+  // case load order ever changes — falls back to last-two-labels.
+  if ((self.WH_PUBLIC_SUFFIX || {})[lastTwo] && labels.length >= 3) return labels.slice(-3).join('.');
+  return lastTwo;
 }
 
 function buildSetDetails(cookie, capDays) {
