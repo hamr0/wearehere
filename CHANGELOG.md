@@ -2,6 +2,12 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [Unreleased]
+
+### Changed
+
+- **Agent/IDE scratch gitignored and de-tracked.** `.gitignore` now default-denies every dot-directory (`.*/`), re-admitting only what ships (`.github/`). Per-machine agent/IDE state (`.claude/`, `.litectx/`, `.idea/`, …) regenerates locally and only added noise and churn; any already-committed copies are removed from tracking (local files kept on disk). Repo hygiene only.
+
 ## [5.0.0] — Unreleased
 
 Phase 2: **fingerprint farbling.** Up to now wearehere *observed* fingerprinting — it counted which APIs a tracker read and surfaced that as "device-id" exposure. v5 adds the active arm: a per-origin deterministic noise layer that corrupts the fingerprint surfaces themselves, so the same browser reads as a different device on every distinct site while staying internally consistent within a site (a fingerprinter that re-reads to detect tampering sees stable values). The popup's cookie card grows a merged **Privacy guard** that reports blurring alongside cookie trimming, and the Watchers dashboard ties protection counts to each company.
