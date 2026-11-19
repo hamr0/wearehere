@@ -27,11 +27,12 @@ Binding requirements for wearehere. Rationale and history live in [decisions.md]
 
 - Requested: `storage`, `alarms`, `cookies`, `<all_urls>` host permissions. (docs/archive/PRD.md:30-30)
 - Deliberately **not** requested: `webNavigation` (its "Read your browsing history" warning is bad optics and forces a re-grant on update), `declarativeNetRequest` (see section 1), `activeTab` (redundant with `<all_urls>`, dropped pre-AMO). (docs/archive/PRD.md:30-30)
-- `webRequest.onCompleted` is used **observe-only** (main-frame 403 leads to a relax offer), never to block. (docs/archive/PRD.md:30-30)
+- `webRequest` is not used to block. The 403-triggered relax offer is removed (2026-11-19).
+- Never rewrite headers on vendor/anti-bot frames: a DNR Trust-ID frame marker (sentinel `Last-Modified` on sub_frames) broke Stytch magic-link sign-in and was reverted; `declarativeNetRequestWithHostAccess` dropped. `scripting` (registerContentScripts `excludeMatches`) needs store re-review at the next release.
 
 ### Registrable-domain keying (eTLD+1)
 
-- Per-site rules (cookie trust, blur overrides, relax offers) key on the registrable domain. A **curated ~45-entry subset of the Public Suffix List** (`WH_PUBLIC_SUFFIX`) resolves `*.co.uk` / `*.github.io` to three labels. (docs/archive/PRD.md:32-32)
+- Per-site rules (cookie trust, blur overrides) key on the registrable domain. A **curated ~45-entry subset of the Public Suffix List** (`WH_PUBLIC_SUFFIX`) resolves `*.co.uk` / `*.github.io` to three labels. (docs/archive/PRD.md:32-32)
 - It **must stay byte-identical across five writer/reader sites**; a mismatch silently drops rules (docs/archive/PRD.md:32-37):
   - `background.js` `harvestEtld1` (defines canonical `self.WH_PUBLIC_SUFFIX`)
   - `scoper/scoper.js` `etld1Of` (reuses `self.WH_PUBLIC_SUFFIX`)
@@ -72,8 +73,7 @@ Fingerprint farbler (docs/archive/PRD.md:56-66):
 | `farblerCounters` | `{byFamily:{}, ...}`; surfaces-blurred telemetry |
 | `farblerBlurredBySite` | `{[etld1]: count}` |
 | `farblerHistory` | capped blur-event log |
-| `farbleReloadOffer` | `{[etld1]: {at}}`; rage-reload relax offer |
-| `farbleDisableFamilies` | `['canvas'\|'webgl'\|'audio'\|'fonts'\|'screennav']`; per-family kill (diagnostic + per-site relax foundation) |
+| `farbleDisableFamilies` | `['canvas'\|'webgl'\|'audio'\|'fonts'\|'screennav']`; per-family kill (diagnostic) |
 
 - **Superseded:** the original `farblerStats` and per-tab nonces in `chrome.storage.session` (`farblerTabNonces`) are gone; the `per-tab` seed mode was dropped and rotation uses the time-keyed `farblerRotationSalt`. (docs/archive/PRD.md:69-69)
 
@@ -94,7 +94,8 @@ Background cleaner that rewrites tracker-cookie lifetimes. Transplanted from the
 
 - **7-day cap, locked:** first-party cookies capped to 7d expiry; **not user-tunable**. (docs/archive/PRD.md:144-144)
 - **Third-party demotion:** 3p tracker cookies demoted to **session** (killed on *browser* close). (docs/archive/PRD.md:145-145)
-- **Trust list:** sites the user "lives in" pass through; tiers **30d / 90d**, user-removed, no auto-expiry. (docs/archive/PRD.md:146-146)
+- **Trust list:** sites the user "lives in" cap at **30d / 90d**, user-removed, no auto-expiry. No cookie "off" option; untrusted sites 7d; trackers demoted to session. (docs/archive/PRD.md:146-146)
+- **Skipped everywhere (default rule, 2026-11-19):** partitioned cookies (`partitionKey` / `firstPartyDomain`) and challenge-host cookies (`WH_CHALLENGE_EXCLUDES`), in sweep and `onChanged`. Cause: `cookies.set` without the partition key duplicated Cloudflare `cf_clearance` and Turnstile failed ("Couldn't verify your browser"). In Firefox (Total Cookie Protection) this means no third-party cookie is trimmed.
 - **Sweep alarm:** periodic background sweep; period `15min / hourly (default) / 4hr / 12hr`. (docs/archive/PRD.md:147-147)
 - **Spec correction (known limit):** shipped behaviour is session-on-browser-close, not "kill on tab close"; UI copy reads "demoted to session." Per-tab attribution is a large effort and not the common mental model. See section 8 for the `partitionKey` (CHIPS) gap. (docs/archive/PRD.md:149-149)
 
@@ -140,13 +141,15 @@ Promotes the existing notify-only `inject.js` wrappers from "log" to "lie," gate
   - Size gates: skip < 1024 px (32x32 font probes) and > 1024x1024 px (legit exports).
   - **Receiver-guard** (`Object.prototype.toString` brand-true) on every prototype-method wrapper; **WeakMap dedup** on `getChannelData` so additive noise does not accumulate.
 - **Sub-frame coverage:** `match_origin_as_fallback: true` on `inject.js` + `detect-watched.js` only. (docs/archive/PRD.md:197-197)
-- **Per-family kill (`famState` / `farbleDisableFamilies`):** every wrapper routes through `famState(fam)`; built as a diagnostic and kept as the foundation for per-site surface relaxing. (docs/archive/PRD.md:198-198)
+- **Per-family kill (`famState` / `farbleDisableFamilies`):** every wrapper routes through `famState(fam)`; built as a diagnostic and kept as a diagnostic. (docs/archive/PRD.md:198-198)
 
-### Relax offer (rage-reload to one-click pass-through)
+### Escape hatch: Trust ID (relax offer removed 2026-11-19)
 
-- When a user hammers reload on a page broken under blur, surface a one-click "relax fingerprint protection here." The **human is the sensor**; in-page auto-detection was rejected as unreliable. (docs/archive/PRD.md:202-202)
-- Two SW-level signals (surviving content-script teardown): `chrome.tabs.onUpdated` showing a genuine **2nd reload** within 25s while blur is on, and a main-frame **403** in `webRequest.onCompleted`. Detection is time-based, not `complete`-based, so stuck anti-bot pages count. (docs/archive/PRD.md:202-202)
-- An in-page top banner (shadow-DOM + CSSOM styles, CSP-safe, top frame only) offers **relax & reload**; persist/reload/dismiss route through the SW (`wh-relax-site` sets `farblerSettings[etld1]={mode:'off',auto:true}`). Pairs with a future curated default-relax list (seed: nike.com). (docs/archive/PRD.md:202-202)
+- **Trust ID = blur completely off** for that site: top frame, same-site frames, blank/srcdoc frames. Registered via `excludeMatches` so no wrappers install. Challenge-provider frames are never wrapped.
+- **Accepted gap:** third-party frames inside a trusted site stay blurred. A frame-marker approach was tried and reverted (see section 2 Permissions).
+- `stable` still blurs (fixed seed); it is a per-site pin, **not** an escape hatch.
+- The rage-reload / 403 relax offer (reload streak, banner, popup hint, `farbleReloadOffer`, `wh-relax-site`) is **removed**; one-time storage cleanup. Reason: the reload heuristic never fired in Firefox 160 and the user base is small. Trust ID + trusted cookies are the only whitelist.
+- **Login guidance:** device-fingerprint auth (e.g. Stytch magic links, typesafe.ai) needs Trust ID on the site you log into; trusting the provider is not needed.
 
 ## 6. UX surfaces
 
@@ -192,7 +195,7 @@ Cut from 6 to 3 (decided 2026-05-12): **Overview**, **Watchers**, **Privacy guar
 
 ## 7. Known limits (summary)
 
-See section 8 for the full table; the headline gaps are `partitionKey` loss on cookie rewrite, Worker/OffscreenCanvas fingerprinting, SPA `pushState` counted as one visit, and the curated-not-full PSL. (docs/archive/PRD.md:366-373)
+See section 8 for the full table; the headline gaps are Worker/OffscreenCanvas fingerprinting, SPA `pushState` counted as one visit, and the curated-not-full PSL. (docs/archive/PRD.md:366-373)
 
 ## 8. Known issues and deferred work (docs/archive/PRD.md:364-388)
 
@@ -200,9 +203,8 @@ See section 8 for the full table; the headline gaps are `partitionKey` loss on c
 |---|---|---|---|
 | `measureText` all-zero bounding boxes | correctness bug | `inject.js` `fakeTextMetrics` | Return non-zero metrics (ascent ~0.8x size, descent ~0.2x size), keep canonical width; layout code dividing by ascent can break. |
 | Full PSL vs curated ~45-entry subset | deferred | the five eTLD+1 sites | ~10k list needs an update story + key migration. |
-| Curated default-relax list (seed nike.com) | optional | `background.js` | Keeps biggest anti-bot offenders off the relax wall. |
 | Tab-close 3p deletion not implemented | spec correction | scoper | No `tabs.onRemoved` handler; "demoted to session" matches actual behaviour. |
-| `partitionKey` (CHIPS) not preserved on rewrite | Critical (edge) | scoper | `chrome.cookies.set` drops `partitionKey`; partitioned trackers collapse to one unpartitioned cookie. Track separately. |
+| `partitionKey` (CHIPS) not preserved on rewrite | resolved 2026-11-19 | scoper | Partitioned and challenge-host cookies are now skipped (9d47c5a). |
 | Worker / OffscreenCanvas fingerprinting | acknowledged gap | farbler | Content-script wrappers do not reach Worker globals; rare in mainstream FP libs. |
 | `persistPendingVisit` writes session-storage per `detection` | Important | `background.js` | Heavy SPAs may approach per-minute write cap; one-line debounce deferred until observed. |
 | SPA `pushState` yields one visit record | Important | `tabs.onUpdated` | Fix needs `webNavigation` (extra AMO ask); accepted trade-off. |
@@ -219,12 +221,17 @@ See section 8 for the full table; the headline gaps are `partitionKey` loss on c
 | Stack-walk wrap set in `inject.js` minimal | Minor | `inject.js` | No `getImageData`/`toBlob`/`OffscreenCanvas`/WebGL2 stack-walk surfaces; tests for the locked set do not exist yet. |
 | `compactVisit` brokerCount fallback | Minor | `report.js` | Can show "5 brokers" with zero names; one-line fix. |
 | Test-coverage gaps | Minor | suite | `safeBgFetch` redirect chain, `removedTabs` LRU eviction, `snapshotAndEvict` recovery, `cookieScopeCounters.bySite`, `buildSetDetails` `__Host-` violations, message-handler cross-check; add post-FF-mirror. |
+| Report-only scanners run after page settle | in progress, uncommitted | `settle.js`, `detect-*.js` | Run after load + ~2 s quiet (max wait 5 s), idle work sliced <~16 ms, pending work flushed on tab hide/leave and popup open. Visits under ~2 s may go uncounted (accepted). Before: detect-played 0.3-1 s CPU/page on ad-heavy sites, long tasks 60-920 ms; step-1 build removed >50 ms extension tasks in Chromium, Fox News load-window CPU 214 to 67 ms (FF). |
+| Watchers per-company Trimmed/Blurred mostly 0 | fix agreed, not built | `report.js`, `background.js` | Cookie-to-company map is learned only from on-page tracker elements (4 domains in user data); sub-brands (Google Ads/Analytics) never match "Google"; blur from first-party/CDN scripts dropped. Fix: seed map from built-in tracker list, match by registrable domain, credit sub-brands to parent, one "everything else" row for unattributed. |
+| Unpartitioned `__cf_bm` with extension loaded | open, unexplained | scoper/inject | Appears on typesafe.ai even with scoper disabled; absent no-ext. Not the login cause. |
+| `data-wh-farble-seed` readable by page on untrusted sites | open, redesign pending | `detect-watched.js` | Attribute handshake exposes the seed. |
 | Add the `vm` stress harness to the repo | offered | `/tmp/wh-stress/stress.js` | 47/47 over real extracted source; uncommitted; would be a regression guard. |
 | Phase 6 cleanup: dead CSS / retired-tab images | pending | repo | Remove dead CSS, retired-tab PNGs (`baked/cooked/played/linked/silent/tosed/watched/leaking.png`), unreachable manifest permissions; single commit. |
 
 ## 9. References
 
 - **Build sequence and dependency graph:** `docs/logs/01-product/PLAN.md` (what is here; how/in-what-order is there). Chrome first, Firefox mirror last. (docs/archive/PRD.md:394-394)
+- **Release:** next version 6.0.0, bump at release only. Store v5.0.0 still has the cookie bug until then.
 - **Changelog:** `CHANGELOG.md` `## [5.0.0]`. (docs/archive/PRD.md:395-395)
 - JShelter wrappers list vendored at `chrome-extension/fingerprint-surfaces.js` (149 surfaces, 12 categories); Open Cookie Database vendored at `chrome-extension/cookie-database.js`. (docs/archive/PRD.md:396-397)
 - POC validation transcript, 2026-05-18: `data-wh-farble="on"` gives `navigator.hardwareConcurrency === 4`. (docs/archive/PRD.md:398-398)

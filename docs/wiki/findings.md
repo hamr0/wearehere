@@ -53,7 +53,7 @@ Feasible from an extension (docs/archive/PRD.md:84-84):
 ## Threat model
 
 - Farbling targets the commodity surveillance economy (FingerprintJS-class libraries that hash-and-join, no spoof-detection). There it reliably denies the cross-site/longitudinal join key (docs/archive/PRD.md:107-107).
-- Against determined adversaries (bank fraud, Akamai-class anti-bot) it is detectable and routed around via un-farbled signals (IP, login, network layer). Those are not the threat model and get the `off`/relax escape hatch (docs/archive/PRD.md:107-107).
+- Against determined adversaries (bank fraud, Akamai-class anti-bot) it is detectable and routed around via un-farbled signals (IP, login, network layer). Those are not the threat model and get the Trust ID (`off`) escape hatch (docs/archive/PRD.md:107-107).
 
 ## The differentiator
 
@@ -94,3 +94,25 @@ Coverage parity with Brave/Firefox-RFP/JShelter is cheap, so there is no moat th
 - all-frames change: no measurable effect (3 frames).
 - User reports it loads fine with AdGuard off and cache disabled, even with wearehere; likely AdGuard/cache interplay.
 - Revisit only if Firefox's "wearehere is slowing down this page" banner recurs; note AdGuard state and page.
+
+## Login with device-fingerprint auth (2026-11-19)
+
+- Stytch magic links (typesafe.ai): with blur on, the fingerprint at email request differs from the one at link click, giving `redirect-error`.
+- Verified: nothing trusted = fail; Trust ID on typesafe.ai only = works; trusting the provider (stytch.com) is not needed.
+- A DNR frame marker meant to fix third-party frames broke this flow and was reverted (decisions.md). Accepted gap: third-party frames inside a trusted site stay blurred.
+
+## Watchers Trimmed/Blurred attribution (2026-11-19)
+
+- Per-company columns are mostly 0: the cookie-to-company map is learned only from on-page tracker elements (4 domains in the user's data), sub-brands (Google Ads/Analytics) never match "Google", and blur from first-party/CDN scripts is dropped.
+- The earlier explanation ("Google tracks across sites") was wrong.
+- Agreed fix, not built: seed the map from the built-in tracker list, match by registrable domain, credit sub-brands to the parent, one "everything else" row for unattributed.
+
+## Perf: report-only scanners (2026-11-19)
+
+- Measured before: detect-played up to 0.3-1 s CPU/page on ad-heavy sites, long tasks 60-920 ms.
+- Step-1 build removed >50 ms extension tasks in Chromium and cut load-window CPU (Fox News 214 to 67 ms in FF).
+- Plan: scanners run after settle (load + ~2 s quiet, max 5 s, sliced idle work, flush on hide/leave/popup open). In progress, uncommitted.
+
+## Dev Firefox build id (2026-11-19)
+
+- Dev/test builds must use gecko id `wearehere-dev@extension`; sharing the store id wiped the user's Firefox v5 history (unrecoverable; Chromium intact).

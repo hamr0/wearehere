@@ -117,6 +117,12 @@ In the Full Report, go to the **Cookies** tab. You will find two buttons:
 
 ---
 
+## Logging in to a site that keeps failing
+
+Some sites recognise your device when you sign in (for example, magic links sent by email). wearehere changes your device's fingerprint, so the site may see two different devices and reject the login. Fix: open the popup on that site and click `[ trust ID ]`, then try again. Trust the site you log into, not the login provider behind it.
+
+---
+
 ## Tips
 
 - **Check unfamiliar sites before entering personal information.** Open the popup before typing anything into a form.
