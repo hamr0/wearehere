@@ -275,9 +275,16 @@ self.WH_PUBLIC_SUFFIX = self.WH_PUBLIC_SUFFIX || {
 // Registrable domain. Keep in sync with detect-watched.js `etld1FromHost`,
 // popup.js, report.js, scoper/scoper.js — the relax/per-site rule key is written
 // in some and read in others, so all must compute the same thing.
+// IP literals (IPv4 dotted quad, or IPv6 — URL.hostname gives '[::1]') have no
+// eTLD+1: every helper returns them whole instead of splitting on '.'.
+// Keep in sync with the inline checks in popup.js / report.js / scoper.js etc.
+function whIsIpHost(h) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') !== -1;
+}
 function harvestEtld1(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (whIsIpHost(cleaned)) return cleaned.toLowerCase();
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join('.');
@@ -654,6 +661,151 @@ chrome.webRequest.onErrorOccurred.addListener(
 );
 
 // =============================================================================
+// inject.js registration (Trust ID = hands-off)
+// =============================================================================
+// inject.js wraps fingerprint APIs in the page MAIN world. MAIN world cannot
+// read extension storage, so it can't know a site is trusted: with blur "off"
+// the wrappers still got installed and merely returned native values, but
+// Function.prototype.toString no longer showed [native code]. Anti-bot /
+// device-fingerprinting (Stytch DFP, Cloudflare Turnstile) flags that as a
+// tampered browser and logins fail. So inject.js is registered dynamically
+// here and every farblerSettings site with mode 'off' is put in
+// excludeMatches: trusted sites get no wrappers at all. Accepted trade-off:
+// no fingerprint / permission / beacon detection on trusted sites.
+// Note: '*.x' also matches bare 'x'.
+const WH_INJECT_ID = 'wh-inject';
+const WH_HOST_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const WH_IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+let _injectSyncChain = Promise.resolve();
+
+// Challenge / CAPTCHA / anti-bot frames are NEVER wrapped, on any site. Wrapping
+// them breaks logins (the vendor sees a tampered browser, or its challenge
+// fails outright), and solving one identifies you to the vendor anyway, so
+// blur gains little there. inject.js runs in all frames, so these frame hosts
+// must be excluded explicitly. Each pattern is taken from the vendor's own
+// frame-src / CSP docs; keep new entries confirmed too.
+//   Cloudflare Turnstile  frame-src https://challenges.cloudflare.com
+//   hCaptcha              frame-src https://hcaptcha.com https://*.hcaptcha.com
+//   Google reCAPTCHA      frame-src https://www.google.com/recaptcha/
+//                         https://recaptcha.google.com/recaptcha/ ; recaptcha.net
+//                         is the documented www.google.com substitute
+//   Arkose Labs           frame-src *.arkoselabs.com (vendor-recommended wildcard)
+//   DataDome              frame-src *.captcha-delivery.com
+//   HUMAN / PerimeterX    frame-src *.px-cloud.net ; captcha.px-cdn.net is the
+//                         documented CAPTCHA first-party route host
+//   funcaptcha.com        legacy Arkose domain (pre-rebrand)
+// Limitation: vendors served from the customer's own domain (first-party routes,
+// CNAME hosts such as /cdn-cgi/challenge-platform/ on the site itself) can't be
+// matched by frame host, so they are NOT covered here.
+const WH_CHALLENGE_EXCLUDES = [
+  '*://challenges.cloudflare.com/*',
+  '*://*.hcaptcha.com/*',
+  '*://www.google.com/recaptcha/*',
+  '*://recaptcha.google.com/recaptcha/*',
+  '*://www.recaptcha.net/recaptcha/*',
+  '*://*.arkoselabs.com/*',
+  '*://*.captcha-delivery.com/*',
+  '*://*.px-cloud.net/*',
+  '*://captcha.px-cdn.net/*',
+  '*://*.funcaptcha.com/*',  // legacy Arkose
+];
+
+function _desiredInjectScript(settings) {
+  const ex = WH_CHALLENGE_EXCLUDES.slice();
+  if (settings && typeof settings === 'object') {
+    for (const key of Object.keys(settings)) {
+      const v = settings[key];
+      if (!v || typeof v !== 'object' || v.mode !== 'off') continue;
+      if (typeof key !== 'string') continue;
+      // IPv4 key: '*.1.2.3.4' isn't a valid match host — exact host only.
+      // IPv6 keys are skipped (bracketed-host match patterns unverified).
+      const isIp4 = WH_IPV4_RE.test(key);
+      if (!isIp4 && !WH_HOST_RE.test(key)) continue;
+      const pat = (isIp4 ? '*://' : '*://*.') + key.toLowerCase() + '/*';
+      if (ex.indexOf(pat) === -1) ex.push(pat);
+    }
+  }
+  ex.sort();
+  const script = {
+    id: WH_INJECT_ID,
+    js: ['inject.js'],
+    matches: ['<all_urls>'],
+    runAt: 'document_start',
+    world: 'MAIN',
+    // Every frame, incl. about:blank/srcdoc ones a page makes to grab untouched
+    // APIs (matchOriginAsFallback: blank frames match via their creator's origin,
+    // so Trust ID excludeMatches cover them too).
+    allFrames: true,
+    matchOriginAsFallback: true,
+    persistAcrossSessions: true,
+  };
+  if (ex.length) script.excludeMatches = ex;
+  return script;
+}
+
+function _sameInjectScript(a, b) {
+  if (!a) return false;
+  const arr = (x) => JSON.stringify(Array.isArray(x) ? x.slice().sort() : []);
+  return a.runAt === b.runAt && a.world === b.world
+    && !!a.allFrames === !!b.allFrames
+    && !!a.matchOriginAsFallback === !!b.matchOriginAsFallback
+    && !!a.persistAcrossSessions === !!b.persistAcrossSessions
+    && arr(a.js) === arr(b.js)
+    && arr(a.matches) === arr(b.matches)
+    && arr(a.excludeMatches) === arr(b.excludeMatches);
+}
+
+async function _doSyncInjectRegistration() {
+  try {
+    const { farblerSettings, whChallengeExcludes } = await chrome.storage.local.get(['farblerSettings', 'whChallengeExcludes']);
+    // Publish the always-on challenge patterns for detect-watched.js (it must
+    // write no data-wh-* attributes in these frames). Idempotent.
+    if (JSON.stringify(whChallengeExcludes) !== JSON.stringify(WH_CHALLENGE_EXCLUDES)) {
+      try { await chrome.storage.local.set({ whChallengeExcludes: WH_CHALLENGE_EXCLUDES.slice() }); } catch (e) {}
+    }
+    const want = _desiredInjectScript(farblerSettings);
+    const have = await chrome.scripting.getRegisteredContentScripts({ ids: [WH_INJECT_ID] });
+    if (have && have.length && _sameInjectScript(have[0], want)) return;
+    if (have && have.length) await chrome.scripting.unregisterContentScripts({ ids: [WH_INJECT_ID] });
+    try {
+      await chrome.scripting.registerContentScripts([want]);
+    } catch (e) {
+      // Fail safe: one bad Trust ID pattern must never leave inject.js
+      // registered nowhere. Retry with only the always-on challenge excludes.
+      const dropped = (want.excludeMatches || []).filter((p) => WH_CHALLENGE_EXCLUDES.indexOf(p) === -1);
+      console.warn('[inject-reg] register failed, retrying without Trust ID patterns; dropped:',
+        dropped, e && e.message ? e.message : e);
+      await _registerInjectBase();
+    }
+  } catch (e) {
+    console.warn('[inject-reg] sync failed:', e && e.message ? e.message : e);
+    // Last resort: make sure protection is registered at all.
+    try {
+      const have = await chrome.scripting.getRegisteredContentScripts({ ids: [WH_INJECT_ID] });
+      if (!have || !have.length) await _registerInjectBase();
+    } catch (e2) {
+      console.warn('[inject-reg] base register failed:', e2 && e2.message ? e2.message : e2);
+    }
+  }
+}
+
+async function _registerInjectBase() {
+  try { await chrome.scripting.unregisterContentScripts({ ids: [WH_INJECT_ID] }); } catch (e) {}
+  await chrome.scripting.registerContentScripts([_desiredInjectScript(null)]);
+}
+
+// Serialized; never rejects. Resolves once the registration reflects storage.
+function syncInjectRegistration() {
+  _injectSyncChain = _injectSyncChain.then(_doSyncInjectRegistration, _doSyncInjectRegistration);
+  return _injectSyncChain;
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.farblerSettings) syncInjectRegistration();
+});
+syncInjectRegistration();  // install / browser startup / SW wake
+
+// =============================================================================
 // Message handler
 // =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -670,7 +822,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       settings[etld1] = { mode: 'off', auto: true };
       const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
       delete offer[etld1];
-      chrome.storage.local.set({ farblerSettings: settings, farbleReloadOffer: offer }, () => {
+      chrome.storage.local.set({ farblerSettings: settings, farbleReloadOffer: offer }, async () => {
+        // Reload only after inject.js's exclusion is registered, else the
+        // reloaded page would still get the wrappers.
+        await syncInjectRegistration();
         const tabId = sender.tab && sender.tab.id;
         if (tabId != null) { try { chrome.tabs.reload(tabId); } catch (e) {} }
         try { sendResponse({ ok: true }); } catch (e) {}
@@ -1078,7 +1233,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Simple eTLD+1 (last two labels) — matches scoper.js's etld1Of.
           const host = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
           const labels = host.toLowerCase().split('.').filter(Boolean);
-          const etld1 = labels.length >= 2 ? labels.slice(-2).join('.') : null;
+          const etld1 = whIsIpHost(host) ? host.toLowerCase()
+            : labels.length >= 2 ? labels.slice(-2).join('.') : null;
           if (etld1 && trust[etld1]) buckets.trusted++;
           else buckets.capped++;
         }
@@ -1275,6 +1431,7 @@ function buildTosModuleData(domain, privacyResult, termsResult) {
 function etld1ForCookie(host) {
   if (!host) return '';
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (whIsIpHost(cleaned)) return cleaned.toLowerCase();
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   return labels.length < 2 ? cleaned.toLowerCase() : labels.slice(-2).join('.');
 }
@@ -1480,7 +1637,7 @@ function buildReport(data) {
     if (!fp) continue;
     let name = hostToCompany[scriptHost];
     if (!name) {
-      const root = scriptHost.split('.').slice(-2).join('.');
+      const root = whIsIpHost(scriptHost) ? scriptHost : scriptHost.split('.').slice(-2).join('.');
       name = hostToCompany[root];
     }
     if (!name) continue;
@@ -1797,16 +1954,62 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // sub-events). Time-based, not 'complete'-based, so a stuck page that never
 // fires 'complete' (the anti-bot case relax exists for) is still counted.
 const RELAX_WINDOW_MS = 25000;
-const RELAX_MIN_RELOADS = 2;    // fire on the 2nd reload within the window
+// Fire on the 3rd reload within the window. 2 was too eager: people reload slow
+// pages too, and reload count alone can't tell slow from broken (see the
+// "altered something" gate below).
+const RELAX_MIN_RELOADS = 3;
 const RELAX_DEDUPE_MS = 1500;   // collapse the burst of url-less 'loading' fires within one reload
 const NAV_SUBEVENT_MS = 2500;   // url-less 'loading' this soon after a nav's url-loading = sub-event, not a reload
-const reloadTrack = {};         // tabId -> { times: [], navAt: number }
+const reloadTrack = {};         // tabId -> { times: [], navAt: number, sawBreakable: bool }
+
+// Gate: a relax offer only makes sense if blur actually altered something on the
+// page, otherwise a reload loop is just a slow page, not a page broken by blur.
+// So the offer needs at least one fingerprint API the watched module recorded
+// from THIS allowlist = APIs whose returned value inject.js really changes.
+// Deliberately an allowlist (a new API must be added on purpose) and NOT the
+// family helper alone: Performance.now (called by nearly every page; 0.1ms
+// flooring doesn't break sites, counting it would make the gate fire everywhere),
+// Navigator.platform and AudioContext.createOscillator (notify-only, value not
+// changed) and all 'permission' APIs are excluded. Navigator.* / Screen.* lies
+// (hardwareConcurrency, languages, deviceMemory, Screen.width/height/colorDepth/
+// pixelDepth) are excluded too: they're read by many ordinary pages and our
+// substitutes (en-US, 4 cores, 8 GB, snapped resolution, 24-bit) degrade pages
+// gracefully instead of breaking them, so they're noise for a "this site is
+// broken" signal. Kept: canvas readback, WebGL, audio and measureText, which
+// alter rendered output / metrics, where real breakage comes from. farbleFamilyOf is used only
+// to honour farbleDisableFamilies: an API from a disabled family wasn't altered.
+const RELAX_BREAKABLE_APIS = new Set([
+  'Canvas.toDataURL', 'Canvas.toBlob', 'Canvas.getImageData', 'createImageBitmap.canvasSrc',
+  'WebGL.getParameter', 'WebGL.readPixels',
+  'AudioBuffer.getChannelData',
+  'CanvasRenderingContext2D.measureText',
+]);
+function isBreakableApi(api) {
+  return typeof api === 'string' && (RELAX_BREAKABLE_APIS.has(api) || api.indexOf('AnalyserNode.') === 0);
+}
+// Items of the page currently held for this tab (the page that was just
+// reloaded: tabData.modules.watched is only overwritten once the NEW page's
+// content script reports, which is after this 'loading' event).
+function watchedItemsOf(tabId) {
+  const w = tabData[tabId] && tabData[tabId].modules && tabData[tabId].modules.watched;
+  return (w && Array.isArray(w.items)) ? w.items : [];
+}
+function hasBreakableItem(items, disabledFamilies) {
+  const dis = Array.isArray(disabledFamilies) ? disabledFamilies
+    : (typeof disabledFamilies === 'string' ? disabledFamilies.split(',') : []);
+  for (const it of items || []) {
+    if (!it || it.category !== 'fingerprint' || !isBreakableApi(it.api)) continue;
+    if (dis.indexOf(farbleFamilyOf(it.api)) !== -1) continue;
+    return true;
+  }
+  return false;
+}
 
 // A navigation (a 'loading' event carrying a new URL): the user left the page,
 // so any rage-reload streak is moot — reset it, and stamp navAt so this cycle's
 // later url-less 'loading' sub-events aren't mistaken for reloads.
 function noteNavigation(tabId) {
-  reloadTrack[tabId] = { times: [], navAt: Date.now() };
+  reloadTrack[tabId] = { times: [], navAt: Date.now(), sawBreakable: false };
 }
 
 function trackReloadForRelaxOffer(tabId, url) {
@@ -1815,28 +2018,47 @@ function trackReloadForRelaxOffer(tabId, url) {
   try { etld1 = harvestEtld1(new URL(url).hostname); } catch { return; }
   if (!etld1) return;
   let t = reloadTrack[tabId];
-  if (!t) t = reloadTrack[tabId] = { times: [], navAt: 0 };
+  if (!t) t = reloadTrack[tabId] = { times: [], navAt: 0, sawBreakable: false };
   const now = Date.now();
   if (now - t.navAt < NAV_SUBEVENT_MS) return;  // a navigation's own sub-event, not a reload
   if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;  // same reload's burst
+  // Streak expired (no reload inside the window): drop stale evidence.
+  if (!t.times.some((x) => now - x <= RELAX_WINDOW_MS)) { t.sawBreakable = false; t.breakableItems = []; }
+  // Stash the evidence of the page being reloaded NOW (before the new page's
+  // detection overwrites it). Streak rule: ANY reloaded page in the streak that
+  // had a breakage-capable API recorded counts (a stalled page that never
+  // reports must not cancel the evidence of an earlier one).
+  const hit = watchedItemsOf(tabId).filter((it) => it && it.category === 'fingerprint' && isBreakableApi(it.api));
+  if (hit.length) {
+    t.sawBreakable = true;
+    t.breakableItems = (t.breakableItems || []).concat(hit.map((it) => ({ api: it.api, category: it.category })));
+  }
   t.times.push(now);
   t.times = t.times.filter((x) => now - x <= RELAX_WINDOW_MS);
   if (t.times.length >= RELAX_MIN_RELOADS) {
+    const evidence = t.breakableItems || [];
     t.times = [];  // reset so we don't re-fire on every later reload
-    maybeOfferRelax(etld1);
+    t.sawBreakable = false;
+    t.breakableItems = [];
+    maybeOfferRelax(etld1, evidence);
   }
 }
 
-function maybeOfferRelax(etld1) {
+// `items` (optional): the breakage-capable items recorded across the reload
+// streak. Passed by the reload path, which is then gated on them (and on
+// farbleDisableFamilies); the 403 path omits it and stays ungated.
+function maybeOfferRelax(etld1, items) {
   if (!etld1) return;
-  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer'], (s) => {
+  const gated = Array.isArray(items);
+  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer', 'farbleDisableFamilies'], (s) => {
     const ov = s.farblerSettings && s.farblerSettings[etld1];
     const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
     if (mode === 'off') return;  // blur already off here — nothing to offer
+    if (gated && !hasBreakableItem(items, s.farbleDisableFamilies)) return;  // blur altered nothing: slow page, not a broken one
     const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
     offer[etld1] = { at: Date.now() };
     chrome.storage.local.set({ farbleReloadOffer: offer });
-    console.log('[relax-offer] rage-reload on', etld1, '→ offering blur-off in popup');
+    console.log('[relax-offer] ' + (gated ? 'rage-reload' : 'hard block') + ' on', etld1, '→ offering blur-off in popup');
   });
 }
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {

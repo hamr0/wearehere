@@ -17,6 +17,21 @@
     counts[pattern]++;
   }
 
+  // Cheap gate before innerText. innerText forces layout and serializes the
+  // element's whole rendered subtree; calling it on every span/div/p made
+  // these scans the extension's longest repeat task on large, constantly
+  // mutating pages (infinite-scroll catalogs). Every pattern below needs a
+  // digit, and innerText's characters are a subset of textContent's (it
+  // drops hidden text and only adds whitespace), so a textContent with no
+  // digit can never match: that gate is lossless. The length gate is 4-6x
+  // the visible-text caps below, so it only skips an element whose text is
+  // overwhelmingly hidden/script content: an accepted, rare miss.
+  var DIGIT_RE = /\d/;
+  function digitCandidate(el, maxLen) {
+    var tc = el.textContent;
+    return !!tc && tc.length <= maxLen && DIGIT_RE.test(tc);
+  }
+
   // --- 1. Countdown timers (structural: digits + colons, timer classes) ---
   function scanCountdowns() {
     var timerSel = "[class*='timer'],[class*='countdown'],[class*='clock'],[class*='Timer'],[class*='Countdown'],[class*='Clock'],[id*='timer'],[id*='countdown'],[data-countdown],[data-timer],[data-end],[data-expire]";
@@ -32,6 +47,7 @@
     var els = document.querySelectorAll("span, div, p");
     for (var j = 0; j < els.length; j++) {
       if (els[j].children.length > 5) continue;
+      if (!digitCandidate(els[j], 400)) continue;
       var text = (els[j].innerText || "").trim();
       if (text.length < 5 || text.length > 100) continue;
       if (timeRe.test(text)) {
@@ -48,6 +64,7 @@
 
     for (var i = 0; i < els.length; i++) {
       var el = els[i];
+      if (!digitCandidate(el, 600)) continue;
       var text = (el.innerText || "").trim();
       if (text.length < 2 || text.length > 150) continue;
 
@@ -56,12 +73,12 @@
         continue;
       }
 
+      // Price text first (a regex), computed style only for prices.
+      if (!/[\$€£¥₹]\s*\d|\d\s*[\$€£¥₹]/.test(text)) continue;
       var style = null;
       try { style = window.getComputedStyle(el); } catch (e) { continue; }
       if (style && strikeRe.test(style.textDecorationLine || style.textDecoration || "")) {
-        if (/[\$€£¥₹]\s*\d|\d\s*[\$€£¥₹]/.test(text)) {
-          hit("discount", "strike:" + text.slice(0, 30));
-        }
+        hit("discount", "strike:" + text.slice(0, 30));
       }
     }
   }
@@ -73,6 +90,7 @@
     var stockRe = /\b(only|nog|nur|seulement)\s+\d+\s/i;
 
     for (var i = 0; i < els.length; i++) {
+      if (!digitCandidate(els[i], 400)) continue;
       var text = (els[i].innerText || "").trim();
       if (text.length < 4 || text.length > 100) continue;
       if (numAction.test(text) || stockRe.test(text)) {

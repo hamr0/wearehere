@@ -39,6 +39,7 @@ const FARBLER_HISTORY_MAX = 50;
 function visitEtld1(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned) || cleaned.indexOf(':') !== -1) return cleaned.toLowerCase();  // IP literal
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   return labels.slice(-2).join('.');

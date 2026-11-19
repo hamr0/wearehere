@@ -89,7 +89,12 @@
       "HMAC", keyMat,
       new TextEncoder().encode(input)
     );
-    return bytesToHex(new Uint8Array(sig).slice(0, 4));
+    // DataView reads, not new Uint8Array(sig).slice(): Firefox content scripts
+    // throw "Permission denied to access property constructor" on typed-array
+    // methods over a page-realm ArrayBuffer from crypto.subtle, which silently
+    // killed seed derivation (no farble state/seed attributes) in Firefox.
+    var dv = new DataView(sig);
+    return bytesToHex([dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)]);
   }
 
   // Registrable domain for per-site override + relax-offer lookup. KEEP THIS
@@ -110,6 +115,7 @@
   };
   function etld1FromHost(host) {
     if (!host) return "";
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || String(host).indexOf(":") !== -1) return host;  // IP literal
     var labels = String(host).split(".").filter(Boolean);
     if (labels.length < 2) return host;
     var lastTwo = labels.slice(-2).join(".").toLowerCase();
@@ -117,15 +123,43 @@
     return labels.slice(-2).join(".");
   }
 
+  // Match location against challenge patterns of the forms actually used:
+  //   *://host/*   *://*.domain/* (incl. bare domain)   *://host/path/*
+  function whIsChallengeFrame(patterns) {
+    if (!Array.isArray(patterns)) return false;
+    var host = (location.hostname || "").toLowerCase();
+    var path = location.pathname || "/";
+    for (var i = 0; i < patterns.length; i++) {
+      var m = /^\*:\/\/([^\/]+)(\/.*)$/.exec(String(patterns[i]));
+      if (!m) continue;
+      var ph = m[1].toLowerCase(), pp = m[2];
+      var hostOk = ph.indexOf("*.") === 0
+        ? (host === ph.slice(2) || host.slice(-(ph.length - 1)) === ph.slice(1))
+        : host === ph;
+      if (!hostOk) continue;
+      if (pp === "/*") return true;
+      if (pp.slice(-1) === "*" ? path.indexOf(pp.slice(0, -1)) === 0 : path === pp) return true;
+    }
+    return false;
+  }
+
   (async function () {
     try {
       var stored = await new Promise(function (resolve) {
-        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies", "farblerRotationSalt"], resolve);
+        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies", "farblerRotationSalt", "whChallengeExcludes"], resolve);
       });
       DEBUG && console.log("[wh-farble:dw] storage →", JSON.stringify(stored), "hasDoc=" + !!document.documentElement);
       if (!document.documentElement) return;
 
       var origin = location.hostname || "";
+      if (!origin && /^(about|blob|data):$/.test(location.protocol)) {
+        // about:blank / srcdoc / blob: / data: frames inherit their creator's
+        // origin, but location.hostname is "" there (and location.origin is
+        // "null"); self.origin is the real inherited one. Without this every
+        // blank frame on every site would share one seed ("rotation|salt|") — a
+        // cross-site identifier — and ignore Trust ID / per-site overrides.
+        try { var inh = self.origin; origin = (inh && inh !== "null") ? new URL(inh).hostname : ""; } catch (e) { origin = ""; }
+      }
       var etld1 = etld1FromHost(origin);
       var settings = (stored && stored.farblerSettings) || {};
       var override = settings[etld1] || null;
@@ -154,6 +188,14 @@
         state = "rotation";
       }
 
+      // No usable origin (opaque: sandboxed / null-origin frame): fail safe, off.
+      if (!origin) state = "off";
+
+      // Challenge/CAPTCHA frames (inject.js is excluded there): write nothing.
+      // Patterns are published by background.js (whChallengeExcludes); absent on
+      // first run -> behave as before.
+      if (state !== "off" && whIsChallengeFrame(stored && stored.whChallengeExcludes)) state = "off";
+
       var seed = "";
       if (state !== "off") {
         var secret = await getSecret();
@@ -170,8 +212,17 @@
           }
         }
       }
-      document.documentElement.setAttribute("data-wh-farble-state", state);
-      document.documentElement.setAttribute("data-wh-farble-seed", seed);
+      var de = document.documentElement;
+      if (state === "off") {
+        // Leave no trace: inject.js treats a missing attribute as "off".
+        de.removeAttribute("data-wh-farble-state");
+        de.removeAttribute("data-wh-farble-seed");
+        de.removeAttribute("data-wh-farble-disable");
+        DEBUG && console.log("[wh-farble:dw] state=off, attributes removed");
+        return;
+      }
+      de.setAttribute("data-wh-farble-state", state);
+      de.setAttribute("data-wh-farble-seed", seed);
       // Per-family disable (diagnostic / per-site relax). Global list for now:
       //   chrome.storage.local.set({ farbleDisableFamilies: ["webgl"] })
       // inject.js skips farbling for any listed family (canvas|webgl|audio|
@@ -307,28 +358,40 @@
   // <script> injection that used to live here would cause double-wrap of
   // canvas APIs — XOR-based perturbation cancels itself out. Removed.
 
-  // Listen for messages from inject.js
-  window.addEventListener("message", function (event) {
-    if (event.source !== window) return;
-    if (!event.data || event.data.type !== MSG_TYPE) return;
-
-    var api = event.data.api;
-    var category = event.data.category;
-    var script = event.data.script;
+  // Listen for batched messages from inject.js. Each entry is
+  // { api, category, count, scripts: [host, ...] }: count is the exact
+  // number of calls since the last batch, scripts the caller hosts seen
+  // (stack walks are sampled in inject.js, attribution is per distinct
+  // host, so sampling loses no unique pair for anything but a late caller
+  // of an already-hot API).
+  function record(e) {
+    if (!e || typeof e.api !== "string") return;
+    var api = e.api;
+    var category = e.category;
+    var n = (typeof e.count === "number" && e.count > 0 && e.count < 1e7) ? Math.floor(e.count) : 1;
 
     if (!counts[api]) {
       counts[api] = { category: category, count: 0 };
     }
-    counts[api].count++;
+    counts[api].count += n;
 
-    if (script) {
+    var scripts = Array.isArray(e.scripts) ? e.scripts : [];
+    for (var i = 0; i < scripts.length; i++) {
+      var script = scripts[i];
+      if (typeof script !== "string" || !script) continue;
       if (!byScript[script]) byScript[script] = { fingerprintApis: {}, permissionApis: {} };
       var bucket = category === "fingerprint" ? byScript[script].fingerprintApis
                  : category === "permission"  ? byScript[script].permissionApis
                  : null;
       if (bucket) bucket[api] = true;
     }
+  }
 
+  window.addEventListener("message", function (event) {
+    if (event.source !== window) return;
+    if (!event.data || event.data.type !== MSG_TYPE || !Array.isArray(event.data.batch)) return;
+    var batch = event.data.batch;
+    for (var i = 0; i < batch.length; i++) record(batch[i]);
     scheduleSend();
   });
 

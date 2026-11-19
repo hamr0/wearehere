@@ -555,6 +555,7 @@ function extractDomain(url) {
 }
 
 function getRootDomain(hostname) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.indexOf(':') !== -1) return hostname;  // IP literal
   const parts = hostname.split('.');
   if (parts.length <= 2) return hostname;
   return parts.slice(-2).join('.');

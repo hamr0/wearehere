@@ -3,7 +3,7 @@
   "name": "wearehere",
   "version": "5.0.0",
   "description": "Privacy that acts back: full scan + cookie scoper. Cookies, trackers, fingerprinting, dark patterns, terms — all in one popup.",
-  "permissions": ["cookies", "webRequest", "alarms", "storage"],
+  "permissions": ["cookies", "webRequest", "alarms", "storage", "scripting"],
   "host_permissions": ["<all_urls>"],
   "browser_specific_settings": {
     "gecko": {
@@ -42,17 +42,11 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["inject.js"],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": false
-    },
-    {
-      "matches": ["<all_urls>"],
       "js": ["detect-watched.js"],
       "run_at": "document_start",
       "world": "ISOLATED",
-      "all_frames": false
+      "all_frames": true,
+      "match_origin_as_fallback": true
     },
     {
       "matches": ["<all_urls>"],

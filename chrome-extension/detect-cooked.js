@@ -319,13 +319,18 @@ function scanPixels() {
     var src = img.src;
     if (!src || src.startsWith("data:") || src.endsWith(".svg")) continue;
 
+    // Cheap string checks first. Both branches below need a known tracker
+    // or a pixel-ish path, so an ordinary content image (every product
+    // photo on a catalog page) exits here without the layout/style reads.
+    var pixelPath = PIXEL_PATH_PATTERNS.test(src);
+    var tracker = isKnownTracker(getDomain(src));
+    if (!tracker && !pixelPath) continue;
+
     var isSmall = (img.naturalWidth <= 1 && img.naturalHeight <= 1) ||
                   (img.width <= 1 && img.height <= 1) ||
                   img.getAttribute("width") === "0" || img.getAttribute("width") === "1" ||
                   img.getAttribute("height") === "0" || img.getAttribute("height") === "1";
     var hidden = isHidden(img);
-    var pixelPath = PIXEL_PATH_PATTERNS.test(src);
-    var tracker = isKnownTracker(getDomain(src));
 
     if (tracker && (isSmall || hidden || pixelPath)) {
       addItem("pixel", src);
@@ -344,14 +349,15 @@ function scanIframes() {
 
     var domain = getDomain(src);
     if (domain === location.hostname) continue;
+    // Only trackers count, so decide that before offsetWidth/computed style.
+    if (!isKnownTracker(domain) && !matchUrlPattern(src)) continue;
 
     var w = parseInt(iframe.getAttribute("width") || iframe.offsetWidth, 10) || 0;
     var h = parseInt(iframe.getAttribute("height") || iframe.offsetHeight, 10) || 0;
     var isSmall = w <= 1 || h <= 1;
     var hidden = isHidden(iframe);
-    var tracker = isKnownTracker(domain);
 
-    if ((isSmall || hidden) && (tracker || matchUrlPattern(src))) {
+    if (isSmall || hidden) {
       addItem("iframe", src);
     }
   }
@@ -373,11 +379,16 @@ function scanElement(el) {
   if (el.tagName === "IMG") {
     var src = el.src;
     if (!src || src.startsWith("data:") || src.endsWith(".svg")) return;
+    // Cheap checks first: el.width forces layout and getComputedStyle forces
+    // a style flush. Run on every added image during infinite scroll, those
+    // were the extension's single longest main-thread task. Neither can turn
+    // a non-tracker, non-pixel-path image into a hit, so skip them.
+    var pixelPath = PIXEL_PATH_PATTERNS.test(src);
+    var tracker = isKnownTracker(getDomain(src));
+    if (!tracker && !pixelPath) return;
     var isSmall = (el.naturalWidth <= 1 && el.naturalHeight <= 1) ||
                   (el.width <= 1 && el.height <= 1);
     var hidden = isHidden(el);
-    var pixelPath = PIXEL_PATH_PATTERNS.test(src);
-    var tracker = isKnownTracker(getDomain(src));
     var isPixel = tracker ? (isSmall || hidden || pixelPath) : ((isSmall || hidden) && pixelPath);
     if (isPixel) {
       addItem("pixel", src);
@@ -388,10 +399,10 @@ function scanElement(el) {
     if (!iframeSrc) return;
     var domain = getDomain(iframeSrc);
     if (domain === location.hostname) return;
+    if (!isKnownTracker(domain) && !matchUrlPattern(iframeSrc)) return;
     var w = parseInt(el.getAttribute("width") || el.offsetWidth, 10) || 0;
     var h = parseInt(el.getAttribute("height") || el.offsetHeight, 10) || 0;
-    var iframeTracker = isKnownTracker(domain);
-    if ((w <= 1 || h <= 1 || isHidden(el)) && (iframeTracker || matchUrlPattern(iframeSrc))) {
+    if (w <= 1 || h <= 1 || isHidden(el)) {
       addItem("iframe", iframeSrc);
       sendResults();
     }

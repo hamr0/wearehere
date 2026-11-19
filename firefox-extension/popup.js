@@ -251,6 +251,7 @@ const WH_PUBLIC_SUFFIX = {
 function etld1FromHost(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned) || cleaned.indexOf(':') !== -1) return cleaned.toLowerCase();  // IP literal
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join('.');

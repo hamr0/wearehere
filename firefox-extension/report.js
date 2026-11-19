@@ -1429,6 +1429,8 @@ const WH_PUBLIC_SUFFIX = {
   'now.sh': 1, 'surge.sh': 1,
 };
 function whEtld1(rawHost) {
+  const h = String(rawHost || '').toLowerCase();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') !== -1) return h;  // IP literal
   const labels = String(rawHost || '').toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return '';
   const lastTwo = labels.slice(-2).join('.');
@@ -1555,7 +1557,8 @@ function renderCoverage() {
         else if (days < 90) expiry['<90d']++;
         else expiry['1yr+']++;
       }
-      const host = (c.domain || '').replace(/^\./, '').split('.').slice(-2).join('.');
+      const dom = (c.domain || '').replace(/^\./, '');
+      const host = (/^\d{1,3}(\.\d{1,3}){3}$/.test(dom) || dom.indexOf(':') !== -1) ? dom : dom.split('.').slice(-2).join('.');
       if (host) owners[host] = (owners[host] || 0) + 1;
     }
     const total = (cookies || []).length;
