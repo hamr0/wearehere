@@ -355,7 +355,7 @@ const tabData = {};
 // next time the popup opened cold. Keyed by domain; merge-keeps known axes
 // (never clobbers a found page with a later null); capped + TTL'd.
 let domainTosCache = {};
-const TOS_CACHE_KEY = 'tosCacheV1';
+const TOS_CACHE_KEY = 'tosCacheV2';  // V1 held scores from the old scanner scale
 const TOS_CACHE_MAX = 500;
 const TOS_TTL_FOUND_MS = 30 * 864e5;  // 30d once we've found a policy/terms page
 const TOS_TTL_MISS_MS = 1 * 864e5;    // 1d for a miss, so re-discovery still runs
@@ -367,6 +367,7 @@ function tosEntryFresh(e) {
   return Date.now() - e.at <= (found ? TOS_TTL_FOUND_MS : TOS_TTL_MISS_MS);
 }
 
+chrome.storage.local.remove('tosCacheV1').catch(() => {});  // one-time cleanup
 const tosCacheReady = chrome.storage.local.get(TOS_CACHE_KEY).then((o) => {
   const stored = (o && o[TOS_CACHE_KEY] && typeof o[TOS_CACHE_KEY] === 'object') ? o[TOS_CACHE_KEY] : {};
   domainTosCache = stored;
@@ -939,7 +940,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           .replace(/&#39;/gi, "'")
           .replace(/\s+/g, ' ')
           .trim();
-        if (text.length < 200) throw new Error('Too short');
+        if (text.length < 4000) throw new Error('Too short');
         sendResponse(scanText(text));
       })
       .catch(() => {

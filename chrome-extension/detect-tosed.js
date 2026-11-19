@@ -38,7 +38,7 @@
     var seen = {};
 
     var privacyRe = /privacy(\s*(policy|notice|security))?|data\s*policy|cookie\s*policy|datenschutz|privacybeleid|politique\s*de\s*confidentialit/i;
-    var termsRe = /terms\s*(of\s*)?(service|use)|terms\s*(&|and)\s*conditions|conditions\s*(of\s*)?use|acceptable\s*use|eula|legal\s*notice|nutzungsbedingungen|algemene\s*voorwaarden|conditions\s*d['']utilisation|gebruiksvoorwaarden/i;
+    var termsRe = /terms\s*(of\s*)?(service|use)|terms\s*(&|and)\s*conditions|conditions\s*(of\s*)?use|acceptable\s*use|eula|user\s*agreement|service\s*agreement|\/terms(?=[\/\s.-]|$)|legal\s*notice|nutzungsbedingungen|algemene\s*voorwaarden|conditions\s*d['']utilisation|gebruiksvoorwaarden/i;
 
     var links = document.querySelectorAll("a[href]");
     for (var i = 0; i < links.length; i++) {
@@ -128,7 +128,8 @@
       if (metaRedirect && htmlToText(html).length < 500) return { redirect: metaRedirect[1] };
     }
     var text = htmlToText(html);
-    if (text.length < 200) throw new Error("Too short");
+    // A stub or cookie wall is not the policy: below this it counts as not found.
+    if (text.length < 4000) throw new Error("Too short");
     return { result: scanText(text) };
   }
 
