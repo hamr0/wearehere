@@ -163,38 +163,25 @@ function analyzeLink(href) {
 }
 
 var totalAnchors = 0;
+var dirty = false;
+var sentOnce = false;
+var forceSend = false;
+var seenAnchors = new WeakSet();
 
-function scanLinks() {
-  items = [];
-  var anchors = document.querySelectorAll("a[href]");
-  totalAnchors = anchors.length;
-  for (var i = 0; i < anchors.length; i++) {
-    var result = analyzeLink(anchors[i].href);
-    if (result) {
-      var exists = false;
-      for (var j = 0; j < items.length; j++) {
-        if (items[j].href === result.href) { exists = true; break; }
-      }
-      if (!exists) items.push(result);
-    }
-  }
-  sendResults();
-}
-
-function scanElement(el) {
-  if (el.tagName !== "A" || !el.href) return;
-  var result = analyzeLink(el.href);
+function addAnchor(a) {
+  if (!a.href) return;
+  var result = analyzeLink(a.href);
   if (!result) return;
   for (var i = 0; i < items.length; i++) {
     if (items[i].href === result.href) return;
   }
   items.push(result);
-  sendResults();
+  dirty = true;
 }
 
 function sendResults() {
   if (!chrome.runtime || !chrome.runtime.id) {
-    if (observer) observer.disconnect();
+    whSettle.stop();
     return;
   }
   totalAnchors = document.querySelectorAll("a[href]").length;
@@ -218,33 +205,47 @@ function sendResults() {
       }
     });
   } catch (e) {
-    if (observer) observer.disconnect();
+    whSettle.stop();
   }
 }
 
 // ── Init ──
+// Reporting only: URL parsing of every anchor waits for the page to settle
+// (see settle.js). Added anchors are only queued while the page is busy.
 
-scanLinks();
+var feed = whSettle.feed(function () { whSettle.schedule(linkedJob); });
+
+var linkedFinal = false;
+
+function* linkedJob() {
+  linkedFinal = false;
+  var batch = feed.take();
+  var n = 0;
+  for (var a of whSettle.matches(batch, "a[href]", seenAnchors, true)) {
+    addAnchor(a);
+    if (++n % 24 === 0) yield;
+  }
+  if (dirty || forceSend || !sentOnce) {
+    dirty = false;
+    forceSend = false;
+    sentOnce = true;
+    sendResults();
+  }
+  linkedFinal = true;
+}
+
+// Leaving: send the tracked links found so far (document order, top of page first).
+whSettle.onLeave(function () {
+  if (linkedFinal || !items.length) return;   // only report finds, never an unscanned zero
+  sentOnce = true;
+  dirty = false;
+  sendResults();
+});
 
 window.addEventListener("pageshow", function (e) {
-  if (e.persisted) sendResults();
+  if (e.persisted) { forceSend = true; whSettle.schedule(linkedJob); }
 });
 
-var observer = new MutationObserver(function (mutations) {
-  for (var i = 0; i < mutations.length; i++) {
-    var nodes = mutations[i].addedNodes;
-    for (var j = 0; j < nodes.length; j++) {
-      var node = nodes[j];
-      if (node.nodeType !== 1) continue;
-      scanElement(node);
-      var links = node.querySelectorAll ? node.querySelectorAll("a[href]") : [];
-      for (var k = 0; k < links.length; k++) {
-        scanElement(links[k]);
-      }
-    }
-  }
-});
-
-observer.observe(document.documentElement, { childList: true, subtree: true });
+whSettle.schedule(linkedJob);
 
 })();

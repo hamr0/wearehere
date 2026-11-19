@@ -264,6 +264,10 @@ var MAX_ELEMENTS = 500;
 
 var items = [];
 var totals = { pixels: 0, iframes: 0, beacons: 0, prefetches: 0, total: 0 };
+var dirty = false;
+var sentOnce = false;
+var pendingBeacons = [];
+var seenEls = new WeakSet();
 
 function getDomain(urlStr) {
   try {
@@ -312,9 +316,10 @@ function addItem(type, url) {
   totals.total++;
 }
 
-function scanPixels() {
+function* scanPixels() {
   var imgs = document.querySelectorAll("img");
   for (var i = 0; i < imgs.length; i++) {
+    if (i % 16 === 15) yield;
     var img = imgs[i];
     var src = img.src;
     if (!src || src.startsWith("data:") || src.endsWith(".svg")) continue;
@@ -340,9 +345,10 @@ function scanPixels() {
   }
 }
 
-function scanIframes() {
+function* scanIframes() {
   var iframes = document.querySelectorAll("iframe");
   for (var i = 0; i < iframes.length; i++) {
+    if (i % 16 === 15) yield;
     var iframe = iframes[i];
     var src = iframe.src;
     if (!src) continue;
@@ -392,7 +398,7 @@ function scanElement(el) {
     var isPixel = tracker ? (isSmall || hidden || pixelPath) : ((isSmall || hidden) && pixelPath);
     if (isPixel) {
       addItem("pixel", src);
-      sendResults();
+      dirty = true;
     }
   } else if (el.tagName === "IFRAME") {
     var iframeSrc = el.src;
@@ -404,7 +410,7 @@ function scanElement(el) {
     var h = parseInt(el.getAttribute("height") || el.offsetHeight, 10) || 0;
     if (w <= 1 || h <= 1 || isHidden(el)) {
       addItem("iframe", iframeSrc);
-      sendResults();
+      dirty = true;
     }
   } else if (el.tagName === "LINK") {
     var rel = (el.getAttribute("rel") || "").toLowerCase();
@@ -412,7 +418,7 @@ function scanElement(el) {
       var href = el.href;
       if (href && isKnownTracker(getDomain(href))) {
         addItem("prefetch", href);
-        sendResults();
+        dirty = true;
       }
     }
   }
@@ -432,42 +438,70 @@ function sendResults() {
       }
     });
   } catch (e) {
-    observer.disconnect();
+    whSettle.stop();
     window.removeEventListener("message", onBeaconMessage);
   }
 }
 
+// Reporting only: the listener stays immediate (inject.js posts beacons while the
+// page runs) but just queues the URL; counting and messaging wait for settle.
 function onBeaconMessage(event) {
   if (event.source !== window) return;
   if (!event.data || event.data.type !== "__wearecounted_beacon__") return;
-
-  addItem("beacon", event.data.url);
-  sendResults();
+  if (pendingBeacons.length < MAX_ELEMENTS) pendingBeacons.push(event.data.url);
+  whSettle.schedule(cookedJob);
 }
 
 window.addEventListener("message", onBeaconMessage);
 
-var observer = new MutationObserver(function (mutations) {
-  for (var i = 0; i < mutations.length; i++) {
-    var nodes = mutations[i].addedNodes;
-    for (var j = 0; j < nodes.length; j++) {
-      var node = nodes[j];
-      if (node.nodeType !== 1) continue;
-      scanElement(node);
-      var children = node.querySelectorAll ? node.querySelectorAll("img, iframe, link") : [];
-      for (var k = 0; k < children.length; k++) {
-        scanElement(children[k]);
-      }
+// Added nodes are only queued while the page is busy; scanned at settle.
+var feed = whSettle.feed(function () { whSettle.schedule(cookedJob); });
+
+var cookedFinal = false;   // true once the current round has sent its final message
+
+function applyBeacons() {
+  var beacons = pendingBeacons;
+  pendingBeacons = [];
+  for (var b = 0; b < beacons.length; b++) {
+    addItem("beacon", beacons[b]);
+    dirty = true;
+  }
+}
+
+function* cookedJob() {
+  cookedFinal = false;
+  var batch = feed.take();
+  if (batch.full) {
+    yield* scanPixels();
+    yield* scanIframes();
+    scanPrefetches();
+  } else {
+    var n = 0;
+    for (var el of whSettle.matches(batch, "img, iframe, link", seenEls, true)) {
+      scanElement(el);
+      if (++n % 16 === 0) yield;
     }
   }
+  applyBeacons();
+  if (dirty || !sentOnce) {
+    dirty = false;
+    sentOnce = true;
+    sendResults();
+  }
+  cookedFinal = true;
+}
+
+// Leaving: send what is counted so far (pixels/iframes found by the quick pass).
+whSettle.onLeave(function () {
+  if (cookedFinal) return;
+  applyBeacons();
+  if (!totals.total) return;   // only report finds, never an unscanned zero
+  sentOnce = true;
+  dirty = false;
+  sendResults();
 });
 
-observer.observe(document.documentElement, { childList: true, subtree: true });
-
 // No injectBeaconWrapper() — inject.js is manifest-loaded now
-scanPixels();
-scanIframes();
-scanPrefetches();
-sendResults();
+whSettle.schedule(cookedJob);
 
 })();

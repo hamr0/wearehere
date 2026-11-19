@@ -4,6 +4,9 @@
   var DEBUG = false;
   var dlog = DEBUG ? console.log.bind(console) : function () {};
 
+  // Policy fetching/scanning is too heavy for the leave quick pass: skipped there.
+  function schedTos(fn) { whSettle.schedule(fn, { noLeave: true }); }
+
   function safeSend(msg, cb) {
     if (!chrome.runtime || !chrome.runtime.id) return false;
     try {
@@ -29,7 +32,7 @@
   }
 
   // --- Find policy/terms links in the DOM ---
-  function findPolicyLinks() {
+  function* findPolicyLinks() {
     var privacyLinks = [];
     var termsLinks = [];
     var seen = {};
@@ -39,6 +42,7 @@
 
     var links = document.querySelectorAll("a[href]");
     for (var i = 0; i < links.length; i++) {
+      if (i % 16 === 15) yield;
       var href = links[i].href;
       if (!href || href.startsWith("javascript:") || href.startsWith("#") || href.startsWith("mailto:") || href.startsWith("tel:")) continue;
       var text = (links[i].textContent || "").trim();
@@ -67,6 +71,7 @@
       var privacyUrlRe = /['"](\/?[^'"]*privac[^'"]{0,60}\.html?)['"]/i;
       var termsUrlRe = /['"](\/?[^'"]*terms[^'"]{0,60}\.html?)['"]/i;
       for (var s = 0; s < scripts.length; s++) {
+        yield;
         var src = scripts[s].textContent || "";
         if (src.length > 200000) continue;
         if (privacyLinks.length === 0) {
@@ -116,6 +121,17 @@
       .trim();
   }
 
+  // One settled step: follow a meta-refresh stub, otherwise strip and scan.
+  function inspectPolicyHtml(html, noRedirect) {
+    if (!noRedirect) {
+      var metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
+      if (metaRedirect && htmlToText(html).length < 500) return { redirect: metaRedirect[1] };
+    }
+    var text = htmlToText(html);
+    if (text.length < 200) throw new Error("Too short");
+    return { result: scanText(text) };
+  }
+
   // --- Fetch a URL from page context (has cookies/session) ---
   function fetchAndScan(urls, index, callback) {
     if (index >= urls.length) { callback(null); return; }
@@ -129,19 +145,22 @@
         return resp.text();
       })
       .then(function (html) {
-        // Follow meta refresh redirects (Google pattern)
-        var metaRedirect = html.match(/content=["'][^"']*URL=([^"'\s>]+)/i);
-        if (metaRedirect && htmlToText(html).length < 500) {
-          dlog("[wearetosed] following meta redirect:", metaRedirect[1]);
-          return fetch(metaRedirect[1], { credentials: "include", redirect: "follow" })
-            .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.text(); });
-        }
-        return html;
+        // The regex/strip/scan work on a whole policy page is CPU only the
+        // report needs, so it waits for the page to settle (settle.js).
+        return whSettle.later(function () { return inspectPolicyHtml(html); });
       })
-      .then(function (html) {
-        var text = htmlToText(html);
-        if (text.length < 200) throw new Error("Too short");
-        var result = scanText(text);
+      .then(function (r) {
+        if (r.result) return r.result;
+        // Meta refresh redirect (Google pattern): fetch the target, same inspection
+        dlog("[wearetosed] following meta redirect:", r.redirect);
+        return fetch(r.redirect, { credentials: "include", redirect: "follow" })
+          .then(function (resp) { if (!resp.ok) throw new Error("HTTP " + resp.status); return resp.text(); })
+          .then(function (html2) {
+            return whSettle.later(function () { return inspectPolicyHtml(html2, true); });
+          })
+          .then(function (r2) { return r2.result; });
+      })
+      .then(function (result) {
         dlog("[wearetosed] fetched:", url, "score:", result.score);
         callback(result);
       })
@@ -176,39 +195,49 @@
     });
   }
 
-  if (pageType) {
-    // We're on a policy/terms page — scan directly
-    var text = getPolicyText();
-    var result = scanText(text);
-
-    dlog("[wearetosed] direct scan (" + pageType + ") — score:", result.score, result.items);
-    sendDirectScan(pageType, result);
-
-    // SPA retry — content may load after document_idle
-    if (result.total === 0) {
-      var retries = 0;
-      var observer = new MutationObserver(function () {
-        retries++;
-        if (retries > 50) { observer.disconnect(); return; }
-        var newText = getPolicyText();
-        var newResult = scanText(newText);
-        if (newResult.total > 0) {
-          observer.disconnect();
-          dlog("[wearetosed] SPA rescan (" + pageType + ") — score:", newResult.score);
-          sendDirectScan(pageType, newResult);
-        }
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-      setTimeout(function () { observer.disconnect(); }, 15000);
+  // On a policy page the text is rescanned while it keeps loading (SPA pages
+  // render late). Each rescan is a settle-scheduled job, so a busy page costs
+  // one scan per quiet period instead of one per mutation.
+  function watchForContent(type) {
+    var rescans = 0;
+    var obs = null;
+    function* recheck() {
+      if (++rescans > 50) { obs.disconnect(); return; }
+      var newResult = scanText(getPolicyText());
+      if (newResult.total > 0) {
+        obs.disconnect();
+        dlog("[wearetosed] SPA rescan (" + type + ") — score:", newResult.score);
+        sendDirectScan(type, newResult);
+      }
     }
+    obs = new MutationObserver(function () { schedTos(recheck); });
+    obs.observe(document.body, { childList: true, subtree: true });
+    setTimeout(function () { obs.disconnect(); }, 15000);
+  }
+
+  if (pageType) {
+    // We're on a policy/terms page — scan directly (once settled)
+    schedTos(function* directScan() {
+      var text = getPolicyText();
+      yield;
+      var result = scanText(text);
+
+      dlog("[wearetosed] direct scan (" + pageType + ") — score:", result.score, result.items);
+      sendDirectScan(pageType, result);
+
+      // SPA retry — content may load after document_idle
+      if (result.total === 0) watchForContent(pageType);
+    });
   } else {
+    schedTos(function* checkPolicies() {
     // Check cache first via background
     safeSend({ type: "checkCache", domain: location.hostname }, function (cached) {
       if (cached && cached.privacy && cached.terms) {
         return;
       }
 
-      var found = findPolicyLinks();
+      schedTos(function* locatePolicies() {
+      var found = yield* findPolicyLinks();
       var origin = location.origin;
 
       // Always append same-origin fallbacks
@@ -272,37 +301,26 @@
           }
         });
       }
+      });
+    });
     });
   }
 
   // SPA navigation detection — overlays/pushState (Etsy pattern)
   var lastHref = location.href;
   var spaInterval = setInterval(function () {
-    if (!chrome.runtime || !chrome.runtime.id) { clearInterval(spaInterval); return; }
+    if (!chrome.runtime || !chrome.runtime.id) { clearInterval(spaInterval); whSettle.stop(); return; }
     if (location.href === lastHref) return;
     lastHref = location.href;
     var newType = getPageType();
     if (!newType) return;
-    setTimeout(function () {
+    schedTos(function* spaNavScan() {
       var text = getPolicyText();
+      yield;
       var spaResult = scanText(text);
       dlog("[wearetosed] SPA nav (" + newType + ") — score:", spaResult.score);
       sendDirectScan(newType, spaResult);
-      if (spaResult.total === 0) {
-        var spaRetries = 0;
-        var spaObs = new MutationObserver(function () {
-          spaRetries++;
-          if (spaRetries > 50) { spaObs.disconnect(); return; }
-          var t = getPolicyText();
-          var r = scanText(t);
-          if (r.total > 0) {
-            spaObs.disconnect();
-            sendDirectScan(newType, r);
-          }
-        });
-        spaObs.observe(document.body, { childList: true, subtree: true });
-        setTimeout(function () { spaObs.disconnect(); }, 15000);
-      }
-    }, 1500);
+      if (spaResult.total === 0) watchForContent(newType);
+    });
   }, 1000);
 })();

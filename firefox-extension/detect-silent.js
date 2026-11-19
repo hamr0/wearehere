@@ -50,11 +50,28 @@ function getAriaLabel(el) {
   return null;
 }
 
-function scanFields() {
-  var fields = [];
-  var seen = {};
+var fields = [];
+var seen = {};
+var silentFinal = false;
+
+function sendFields() {
+  if (fields.length > 0 && chrome.runtime.id) {
+    chrome.runtime.sendMessage({
+      type: "detection",
+      module: "silent",
+      data: {
+        domain: location.hostname,
+        fields: fields.slice()
+      }
+    });
+  }
+}
+
+function* scanFields() {
+  silentFinal = false;
   var els = document.querySelectorAll("input, textarea, select");
   for (var i = 0; i < els.length; i++) {
+    if (i % 16 === 15) yield;
     var el = els[i];
     var type = (el.type || "").toLowerCase();
     if (type === "hidden" || type === "submit" || type === "button" || type === "reset") continue;
@@ -65,19 +82,17 @@ function scanFields() {
     seen[label] = true;
     fields.push(label);
   }
-  if (fields.length > 0 && chrome.runtime.id) {
-    chrome.runtime.sendMessage({
-      type: "detection",
-      module: "silent",
-      data: {
-        domain: location.hostname,
-        fields: fields
-      }
-    });
-  }
+  sendFields();
+  silentFinal = true;
 }
 
-scanFields();
-setTimeout(scanFields, 2000);
+// Leaving: send the fields found so far.
+whSettle.onLeave(function () {
+  if (!silentFinal) try { sendFields(); } catch (e) {}
+});
+
+// Reporting only: one scan when the page has settled (replaces the load-time
+// scan plus the 2 s rescan; see settle.js).
+whSettle.schedule(scanFields);
 
 })();

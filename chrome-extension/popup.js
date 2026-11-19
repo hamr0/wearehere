@@ -15,7 +15,21 @@ function safeSetHTML(el, html) {
   el.replaceChildren.apply(el, Array.from(doc.body.childNodes));
 }
 
-chrome.runtime.sendMessage({ type: 'getReport' }, render);
+// Ask the page's content scripts to finish pending report work now (they defer it
+// until the page settles). Waits at most 2 s; never blocks on a page that cannot answer.
+function whFlushTab(tabId, cb) {
+  let done = false;
+  const finish = () => { if (!done) { done = true; cb(); } };
+  setTimeout(finish, 2000);
+  try {
+    chrome.tabs.sendMessage(tabId, { type: 'wh-flush' }, { frameId: 0 }, () => { void chrome.runtime.lastError; finish(); });
+  } catch (e) { finish(); }
+}
+
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  if (!tabs || !tabs[0]) return chrome.runtime.sendMessage({ type: 'getReport' }, render);
+  whFlushTab(tabs[0].id, () => chrome.runtime.sendMessage({ type: 'getReport' }, render));
+});
 
 const $ = (id) => document.getElementById(id);
 

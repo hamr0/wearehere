@@ -50,37 +50,37 @@
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-cooked.js"],
+      "js": ["settle.js", "detect-cooked.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-played.js"],
+      "js": ["settle.js", "detect-played.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-leaked.js"],
+      "js": ["settle.js", "detect-leaked.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-linked.js"],
+      "js": ["settle.js", "detect-linked.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["tos-scanner.js", "detect-tosed.js"],
+      "js": ["settle.js", "tos-scanner.js", "detect-tosed.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-silent.js"],
+      "js": ["settle.js", "detect-silent.js"],
       "run_at": "document_idle",
       "all_frames": true
     }

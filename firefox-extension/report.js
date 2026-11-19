@@ -41,7 +41,19 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.theme) applyTheme(changes.theme.newValue);
 });
 
-chrome.runtime.sendMessage({ type: 'getFullReport', tabId }, init);
+// Ask the page's content scripts to finish pending report work now (they defer it
+// until the page settles). Waits at most 2 s; never blocks on a page that cannot answer.
+function whFlushTab(tabId, cb) {
+  let done = false;
+  const finish = () => { if (!done) { done = true; cb(); } };
+  setTimeout(finish, 2000);
+  try {
+    chrome.tabs.sendMessage(tabId, { type: 'wh-flush' }, { frameId: 0 }, () => { void chrome.runtime.lastError; finish(); });
+  } catch (e) { finish(); }
+}
+
+if (Number.isFinite(tabId)) whFlushTab(tabId, () => chrome.runtime.sendMessage({ type: 'getFullReport', tabId }, init));
+else chrome.runtime.sendMessage({ type: 'getFullReport', tabId }, init);
 
 function init(report) {
   $('loading').hidden = true;
@@ -963,10 +975,10 @@ function fetchTabReport(targetTabId) {
   const cached = tabReportCache.get(targetTabId);
   if (cached) return Promise.resolve(cached);
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'getFullReport', tabId: targetTabId }, (r) => {
+    whFlushTab(targetTabId, () => chrome.runtime.sendMessage({ type: 'getFullReport', tabId: targetTabId }, (r) => {
       if (r) tabReportCache.set(targetTabId, r);
       resolve(r || null);
-    });
+    }));
   });
 }
 
