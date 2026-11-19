@@ -1,6 +1,17 @@
 "use strict";
 
 (function () {
+  // Hands-off frames: background.js stamps sub_frame responses embedded
+  // directly in a Trust ID (blur off) site with this fixed Last-Modified (DNR
+  // rule). document.lastModified is local-time formatted, so compare the parsed
+  // epoch with a 2h tolerance (DST/zone-agnostic). Also check the parent for
+  // about:blank / srcdoc children (same-origin only). Must stay first.
+  try {
+    var WH_HANDS_OFF_MS = Date.UTC(2035, 1, 20, 2, 20, 22);
+    var whMarked = function (d) { return Math.abs(new Date(d.lastModified).getTime() - WH_HANDS_OFF_MS) <= 7200000; };
+    if (whMarked(document)) return;
+    if (window.parent !== window) { try { if (whMarked(window.parent.document)) return; } catch (e) {} }
+  } catch (e) {}
   // --- wearewatched: fingerprinting + permission wrappers ---
 
   // Flip to true and reload the extension to surface [wh-farble]

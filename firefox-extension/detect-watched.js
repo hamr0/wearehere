@@ -1,6 +1,14 @@
 "use strict";
 
 (function () {
+  // Hands-off (Trust ID) frames: see inject.js. Stand down completely.
+  var standDown = false;
+  try {
+    var WH_HANDS_OFF_MS = Date.UTC(2035, 1, 20, 2, 20, 22);
+    var whMarked = function (d) { return Math.abs(new Date(d.lastModified).getTime() - WH_HANDS_OFF_MS) <= 7200000; };
+    if (whMarked(document)) return;
+    if (window.parent !== window) { try { if (whMarked(window.parent.document)) return; } catch (e) {} }
+  } catch (e) {}
   // Flip to true and reload the extension to surface [wh-farble:dw]
   // diagnostics in the page console. Off by default — these fire at
   // document_start on every navigation and would be noisy in real use.
@@ -176,6 +184,7 @@
       var state;
       if (omode === "off") {
         state = "off";
+        standDown = true;  // trusted site: no relay / telemetry from this frame
       } else if (omode === "stable") {
         state = "stable";
       } else if (omode === "rotation") {
@@ -252,6 +261,7 @@
   // host, so sampling loses no unique pair for anything but a late caller
   // of an already-hot API).
   function record(e) {
+    if (standDown) return;
     if (!e || typeof e.api !== "string") return;
     var api = e.api;
     var category = e.category;
@@ -283,11 +293,13 @@
   });
 
   function scheduleSend() {
+    if (standDown) return;
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(sendResults, DEBOUNCE_MS);
   }
 
   function sendResults() {
+    if (standDown) return;
     var items = [];
     var uniqueFingerprint = 0;
     var uniquePermission = 0;

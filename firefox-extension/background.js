@@ -746,9 +746,47 @@ function _sameInjectScript(a, b) {
     && arr(a.excludeMatches) === arr(b.excludeMatches);
 }
 
+// Trust ID hands-off for frames embedded directly in a trusted site (incl.
+// other-domain anti-bot frames): one DNR session rule stamps their responses
+// with a sentinel Last-Modified; inject.js / detect-watched.js see it via
+// document.lastModified and stand down. Direct children only (initiator =
+// trusted site). Session rules don't persist: rebuilt on every sync.
+const WH_HANDS_OFF_RULE_ID = 1;
+// Future (browser heuristic caching then gives freshness 0, so toggles apply
+// on reload) yet before 2038 (Firefox formats lastModified via glibc, wrong past 2037).
+const WH_HANDS_OFF_LASTMOD = 'Tue, 20 Feb 2035 02:20:22 GMT';  // keep == inject.js
+async function _syncHandsOffRule(settings) {
+  try {
+    const doms = [];
+    if (settings && typeof settings === 'object') {
+      for (const key of Object.keys(settings)) {
+        const v = settings[key];
+        if (!v || typeof v !== 'object' || v.mode !== 'off') continue;
+        if (typeof key !== 'string') continue;
+        if (!WH_IPV4_RE.test(key) && !WH_HOST_RE.test(key)) continue;
+        const d = key.toLowerCase();
+        if (doms.indexOf(d) === -1) doms.push(d);
+      }
+    }
+    doms.sort();
+    const opts = { removeRuleIds: [WH_HANDS_OFF_RULE_ID] };
+    if (doms.length) {
+      opts.addRules = [{
+        id: WH_HANDS_OFF_RULE_ID, priority: 1,
+        action: { type: 'modifyHeaders', responseHeaders: [{ header: 'Last-Modified', operation: 'set', value: WH_HANDS_OFF_LASTMOD }] },
+        condition: { initiatorDomains: doms, resourceTypes: ['sub_frame'] },
+      }];
+    }
+    await chrome.declarativeNetRequest.updateSessionRules(opts);
+  } catch (e) {
+    console.warn('[hands-off] DNR rule sync failed:', e && e.message ? e.message : e);
+  }
+}
+
 async function _doSyncInjectRegistration() {
   try {
     const { farblerSettings, whChallengeExcludes } = await chrome.storage.local.get(['farblerSettings', 'whChallengeExcludes']);
+    await _syncHandsOffRule(farblerSettings);  // never throws
     // Publish the always-on challenge patterns for detect-watched.js (it must
     // write no data-wh-* attributes in these frames). Idempotent.
     if (JSON.stringify(whChallengeExcludes) !== JSON.stringify(WH_CHALLENGE_EXCLUDES)) {
