@@ -97,7 +97,7 @@
     return bytesToHex([dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)]);
   }
 
-  // Registrable domain for per-site override + relax-offer lookup. KEEP THIS
+  // Registrable domain for per-site override lookup. KEEP THIS
   // SUFFIX LIST IN SYNC with background.js `self.WH_PUBLIC_SUFFIX` (and
   // scoper.js / popup.js / report.js) — the key is written in the SW/pages and
   // read here; a mismatch silently drops rules.
@@ -238,119 +238,6 @@
   })();
   // --- end farble-seed ---
 
-  // --- relax banner (in-page) ------------------------------------------
-  // background.js flags farbleReloadOffer[etld1] when a user rage-reloads a
-  // site that's likely broken by fingerprint blur. Show a top banner offering
-  // one-click relax + reload — far more discoverable than expecting the user
-  // to find our toolbar popup. Top frame + http(s) only. Rendered in a shadow
-  // root with styles set via the CSSOM (not a <style> tag / style attribute),
-  // so the page's CSS can't distort it and a strict CSP can't block it. We
-  // react to storage.onChanged so it appears on the current load, and also
-  // check once at start in case the flag predates this load.
-  var WH_RELAX_ETLD1 = (function () { try { return etld1FromHost(location.hostname || ""); } catch (e) { return ""; } })();
-  var whRelaxShown = false;
-
-  function showRelaxBanner(etld1) {
-    if (whRelaxShown || window.top !== window || !document.documentElement) return;
-    if (document.getElementById("wh-relax-banner-host")) return;
-    whRelaxShown = true;
-
-    var hostEl = document.createElement("div");
-    hostEl.id = "wh-relax-banner-host";
-    hostEl.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;";
-    var root = hostEl.attachShadow ? hostEl.attachShadow({ mode: "open" }) : hostEl;
-
-    var bar = document.createElement("div");
-    bar.style.cssText = "display:flex;align-items:center;justify-content:center;gap:10px;" +
-      "position:relative;padding:10px 44px;" +
-      "background:#1a1b26;color:#c0caf5;border-bottom:2px solid #e0af68;" +
-      "font:13px/1.4 'JetBrains Mono','IBM Plex Mono',ui-monospace,Menlo,monospace;" +
-      "box-shadow:0 2px 8px rgba(0,0,0,0.4);";
-
-    // Full [we]arehere wordmark, matching the popup.
-    var brand = document.createElement("span");
-    brand.style.cssText = "flex-shrink:0;font-weight:800;";
-    var we = document.createElement("span"); we.textContent = "[we]"; we.style.cssText = "color:#e0af68;";
-    var rest = document.createElement("span"); rest.textContent = "arehere"; rest.style.cssText = "color:#c0caf5;";
-    brand.appendChild(we); brand.appendChild(rest);
-
-    var msg = document.createElement("span");
-    msg.textContent = etld1 + " may not work with fingerprint protection on.";
-    msg.style.cssText = "min-width:0;";
-
-    var relax = document.createElement("button");
-    relax.textContent = "relax & reload";
-    relax.style.cssText = "flex-shrink:0;cursor:pointer;padding:5px 12px;border:1px solid #e0af68;" +
-      "background:#e0af68;color:#1a1b26;font:inherit;font-weight:700;border-radius:3px;";
-
-    var close = document.createElement("button");
-    close.textContent = "✕";
-    close.setAttribute("aria-label", "dismiss");
-    close.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);" +
-      "cursor:pointer;padding:5px 9px;border:1px solid #565f89;" +
-      "background:transparent;color:#9aa5ce;font:inherit;border-radius:3px;";
-
-    relax.addEventListener("click", function () {
-      DEBUG && console.log("[wh-farble:relax] relax clicked for " + etld1);
-      // Dismiss synchronously — instant feedback and not gated on any async
-      // callback (the previous bug: reload was the callback to a storage write
-      // that never fired once this page's content-script context was torn down
-      // by the anti-bot script right after the banner appeared).
-      try { hostEl.remove(); } catch (e) {}
-      var reloaded = false;
-      var doReload = function () {
-        if (reloaded) return; reloaded = true;
-        try { location.reload(); } catch (e) { try { location.href = location.href; } catch (e2) {} }
-      };
-      // Persist blur-off + reload via the service worker. Its context is stable
-      // (unlike this page's, which the site can tear down) and chrome.tabs.reload
-      // doesn't depend on page JS surviving. Only reload page-side when the SW is
-      // unreachable (context already dead); otherwise trust the SW reload and keep
-      // a long backstop in case it never lands. A fresh content script re-shows
-      // the still-pending offer if we reload before the relax could persist.
-      try {
-        if (chrome.runtime && chrome.runtime.id) {
-          chrome.runtime.sendMessage({ type: "wh-relax-site", etld1: etld1 }, function () {
-            void (chrome.runtime && chrome.runtime.lastError);
-          });
-          setTimeout(doReload, 3000);  // backstop only; the SW reload wins normally
-        } else {
-          doReload();                  // ctx dead — SW unreachable, reload now
-        }
-      } catch (e) { doReload(); }
-    });
-    close.addEventListener("click", function () {
-      try { hostEl.remove(); } catch (e) {}
-      // Clear via the SW for the same reason relax does — this page's context may
-      // already be torn down, so a page-side storage write could silently no-op.
-      try {
-        if (chrome.runtime && chrome.runtime.id) {
-          chrome.runtime.sendMessage({ type: "wh-clear-relax-offer", etld1: etld1 }, function () {
-            void (chrome.runtime && chrome.runtime.lastError);
-          });
-        }
-      } catch (e) {}
-    });
-
-    bar.appendChild(brand); bar.appendChild(msg); bar.appendChild(relax); bar.appendChild(close);
-    root.appendChild(bar);
-    document.documentElement.appendChild(hostEl);
-    DEBUG && console.log("[wh-farble:relax] banner shown for " + etld1);
-  }
-
-  function whCheckRelaxOffer() {
-    if (window.top !== window || !/^https?:$/.test(location.protocol) || !WH_RELAX_ETLD1) return;
-    chrome.storage.local.get("farbleReloadOffer", function (s) {
-      var o = s && s.farbleReloadOffer && s.farbleReloadOffer[WH_RELAX_ETLD1];
-      if (o && o.at && (Date.now() - o.at) < 10 * 60 * 1000) showRelaxBanner(WH_RELAX_ETLD1);
-    });
-  }
-
-  chrome.storage.onChanged.addListener(function (changes, area) {
-    if (area === "local" && changes.farbleReloadOffer) whCheckRelaxOffer();
-  });
-  whCheckRelaxOffer();
-  // --- end relax banner ------------------------------------------------
 
 
   // inject.js is loaded by manifest as a MAIN-world content script at

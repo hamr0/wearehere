@@ -273,7 +273,7 @@ self.WH_PUBLIC_SUFFIX = self.WH_PUBLIC_SUFFIX || {
   'now.sh': 1, 'surge.sh': 1,
 };
 // Registrable domain. Keep in sync with detect-watched.js `etld1FromHost`,
-// popup.js, report.js, scoper/scoper.js — the relax/per-site rule key is written
+// popup.js, report.js, scoper/scoper.js — the per-site rule key is written
 // in some and read in others, so all must compute the same thing.
 // IP literals (IPv4 dotted quad, or IPv6 — URL.hostname gives '[::1]') have no
 // eTLD+1: every helper returns them whole instead of splitting on '.'.
@@ -571,15 +571,6 @@ chrome.webRequest.onCompleted.addListener(
   (details) => {
     if (details.tabId < 0) return;
 
-    // Hard anti-bot block (e.g. Akamai/Cloudflare "Access Denied"): a main-frame
-    // 403 is a strong "this site is broken" signal. Surface the same relax offer
-    // as rage-reload (maybeOfferRelax no-ops if blur is already off here). Only
-    // 403 — 429 (rate-limit) is usually transient and unrelated to blur. Catches
-    // outright blocks; soft hangs still need rage-reload.
-    if (details.type === 'main_frame' && details.statusCode === 403) {
-      try { maybeOfferRelax(harvestEtld1(new URL(details.url).hostname)); } catch {}
-    }
-
     const domain = extractDomain(details.url);
     if (!domain) return;
 
@@ -804,49 +795,13 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.farblerSettings) syncInjectRegistration();
 });
 syncInjectRegistration();  // install / browser startup / SW wake
+// One-time cleanup: the removed relax-offer feature left this key behind.
+chrome.storage.local.remove('farbleReloadOffer');
 
 // =============================================================================
 // Message handler
 // =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-
-  // --- One-click "relax fingerprint protection here" from the in-page banner ---
-  // Persist blur-off for this site and reload the tab from the SW. Doing this
-  // page-side is unreliable: anti-bot sites tear down our content-script context
-  // right after the banner shows, so its own chrome.storage callbacks never fire.
-  // The SW context is stable and chrome.tabs.reload doesn't need page JS.
-  if (msg && msg.type === 'wh-relax-site' && msg.etld1) {
-    const etld1 = msg.etld1;
-    chrome.storage.local.get(['farblerSettings', 'farbleReloadOffer'], (s) => {
-      const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
-      settings[etld1] = { mode: 'off', auto: true };
-      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
-      delete offer[etld1];
-      chrome.storage.local.set({ farblerSettings: settings, farbleReloadOffer: offer }, async () => {
-        // Reload only after inject.js's exclusion is registered, else the
-        // reloaded page would still get the wrappers.
-        await syncInjectRegistration();
-        const tabId = sender.tab && sender.tab.id;
-        if (tabId != null) { try { chrome.tabs.reload(tabId); } catch (e) {} }
-        try { sendResponse({ ok: true }); } catch (e) {}
-        console.log('[relax] blur off + reload for', etld1);
-      });
-    });
-    return true;  // async sendResponse
-  }
-
-  // Dismiss ('✕') of the in-page relax banner. Routed through the SW for the
-  // same reason as wh-relax-site: the page's context may already be torn down,
-  // so a page-side storage write could silently no-op and the banner would
-  // re-show on the next load.
-  if (msg && msg.type === 'wh-clear-relax-offer' && msg.etld1) {
-    chrome.storage.local.get('farbleReloadOffer', (s) => {
-      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
-      delete offer[msg.etld1];
-      chrome.storage.local.set({ farbleReloadOffer: offer });
-    });
-    return;
-  }
 
   // --- Per-module detection messages from content scripts ---
   if (msg.type === 'detection' && sender.tab) {
@@ -1933,138 +1888,11 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // rejects with "No tab with id: …".
   markTabRemoved(tabId);
   snapshotAndEvict(tabId);
-  delete reloadTrack[tabId];
 });
 
-// --- rage-reload relax offer ------------------------------------------------
-// If a user *reloads the same page* several times in a short window while blur
-// is ON for that site, surface a one-click "relax fingerprint protection here"
-// offer in the popup (read from farbleReloadOffer). The popup is where the fix
-// lives (Trust ID); we just flag that this site is a likely candidate.
-//
-// Telling a reload apart from a navigation, from chrome.tabs.onUpdated alone
-// (verified against real captured event streams):
-//   • a NAVIGATION's load cycle contains a 'loading' event WITH changeInfo.url
-//     — and ALSO emits later url-less 'loading' sub-events, so a url-less
-//     'loading' is NOT by itself a reload.
-//   • a RELOAD's load cycle has NO url-bearing 'loading' event at all.
-// So: stamp navAt when a 'loading'+url (navigation) arrives and reset the
-// streak; a url-less 'loading' is a reload UNLESS it lands within
-// NAV_SUBEVENT_MS of that stamp (i.e. it's one of the navigation's own
-// sub-events). Time-based, not 'complete'-based, so a stuck page that never
-// fires 'complete' (the anti-bot case relax exists for) is still counted.
-const RELAX_WINDOW_MS = 25000;
-// Fire on the 3rd reload within the window. 2 was too eager: people reload slow
-// pages too, and reload count alone can't tell slow from broken (see the
-// "altered something" gate below).
-const RELAX_MIN_RELOADS = 3;
-const RELAX_DEDUPE_MS = 1500;   // collapse the burst of url-less 'loading' fires within one reload
-const NAV_SUBEVENT_MS = 2500;   // url-less 'loading' this soon after a nav's url-loading = sub-event, not a reload
-const reloadTrack = {};         // tabId -> { times: [], navAt: number, sawBreakable: bool }
-
-// Gate: a relax offer only makes sense if blur actually altered something on the
-// page, otherwise a reload loop is just a slow page, not a page broken by blur.
-// So the offer needs at least one fingerprint API the watched module recorded
-// from THIS allowlist = APIs whose returned value inject.js really changes.
-// Deliberately an allowlist (a new API must be added on purpose) and NOT the
-// family helper alone: Performance.now (called by nearly every page; 0.1ms
-// flooring doesn't break sites, counting it would make the gate fire everywhere),
-// Navigator.platform and AudioContext.createOscillator (notify-only, value not
-// changed) and all 'permission' APIs are excluded. Navigator.* / Screen.* lies
-// (hardwareConcurrency, languages, deviceMemory, Screen.width/height/colorDepth/
-// pixelDepth) are excluded too: they're read by many ordinary pages and our
-// substitutes (en-US, 4 cores, 8 GB, snapped resolution, 24-bit) degrade pages
-// gracefully instead of breaking them, so they're noise for a "this site is
-// broken" signal. Kept: canvas readback, WebGL, audio and measureText, which
-// alter rendered output / metrics, where real breakage comes from. farbleFamilyOf is used only
-// to honour farbleDisableFamilies: an API from a disabled family wasn't altered.
-const RELAX_BREAKABLE_APIS = new Set([
-  'Canvas.toDataURL', 'Canvas.toBlob', 'Canvas.getImageData', 'createImageBitmap.canvasSrc',
-  'WebGL.getParameter', 'WebGL.readPixels',
-  'AudioBuffer.getChannelData',
-  'CanvasRenderingContext2D.measureText',
-]);
-function isBreakableApi(api) {
-  return typeof api === 'string' && (RELAX_BREAKABLE_APIS.has(api) || api.indexOf('AnalyserNode.') === 0);
-}
-// Items of the page currently held for this tab (the page that was just
-// reloaded: tabData.modules.watched is only overwritten once the NEW page's
-// content script reports, which is after this 'loading' event).
-function watchedItemsOf(tabId) {
-  const w = tabData[tabId] && tabData[tabId].modules && tabData[tabId].modules.watched;
-  return (w && Array.isArray(w.items)) ? w.items : [];
-}
-function hasBreakableItem(items, disabledFamilies) {
-  const dis = Array.isArray(disabledFamilies) ? disabledFamilies
-    : (typeof disabledFamilies === 'string' ? disabledFamilies.split(',') : []);
-  for (const it of items || []) {
-    if (!it || it.category !== 'fingerprint' || !isBreakableApi(it.api)) continue;
-    if (dis.indexOf(farbleFamilyOf(it.api)) !== -1) continue;
-    return true;
-  }
-  return false;
-}
-
-// A navigation (a 'loading' event carrying a new URL): the user left the page,
-// so any rage-reload streak is moot — reset it, and stamp navAt so this cycle's
-// later url-less 'loading' sub-events aren't mistaken for reloads.
-function noteNavigation(tabId) {
-  reloadTrack[tabId] = { times: [], navAt: Date.now(), sawBreakable: false };
-}
-
-function trackReloadForRelaxOffer(tabId, url) {
-  if (!url || !/^https?:/.test(url)) return;
-  let etld1;
-  try { etld1 = harvestEtld1(new URL(url).hostname); } catch { return; }
-  if (!etld1) return;
-  let t = reloadTrack[tabId];
-  if (!t) t = reloadTrack[tabId] = { times: [], navAt: 0, sawBreakable: false };
-  const now = Date.now();
-  if (now - t.navAt < NAV_SUBEVENT_MS) return;  // a navigation's own sub-event, not a reload
-  if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;  // same reload's burst
-  // Streak expired (no reload inside the window): drop stale evidence.
-  if (!t.times.some((x) => now - x <= RELAX_WINDOW_MS)) { t.sawBreakable = false; t.breakableItems = []; }
-  // Stash the evidence of the page being reloaded NOW (before the new page's
-  // detection overwrites it). Streak rule: ANY reloaded page in the streak that
-  // had a breakage-capable API recorded counts (a stalled page that never
-  // reports must not cancel the evidence of an earlier one).
-  const hit = watchedItemsOf(tabId).filter((it) => it && it.category === 'fingerprint' && isBreakableApi(it.api));
-  if (hit.length) {
-    t.sawBreakable = true;
-    t.breakableItems = (t.breakableItems || []).concat(hit.map((it) => ({ api: it.api, category: it.category })));
-  }
-  t.times.push(now);
-  t.times = t.times.filter((x) => now - x <= RELAX_WINDOW_MS);
-  if (t.times.length >= RELAX_MIN_RELOADS) {
-    const evidence = t.breakableItems || [];
-    t.times = [];  // reset so we don't re-fire on every later reload
-    t.sawBreakable = false;
-    t.breakableItems = [];
-    maybeOfferRelax(etld1, evidence);
-  }
-}
-
-// `items` (optional): the breakage-capable items recorded across the reload
-// streak. Passed by the reload path, which is then gated on them (and on
-// farbleDisableFamilies); the 403 path omits it and stays ungated.
-function maybeOfferRelax(etld1, items) {
-  if (!etld1) return;
-  const gated = Array.isArray(items);
-  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer', 'farbleDisableFamilies'], (s) => {
-    const ov = s.farblerSettings && s.farblerSettings[etld1];
-    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
-    if (mode === 'off') return;  // blur already off here — nothing to offer
-    if (gated && !hasBreakableItem(items, s.farbleDisableFamilies)) return;  // blur altered nothing: slow page, not a broken one
-    const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
-    offer[etld1] = { at: Date.now() };
-    chrome.storage.local.set({ farbleReloadOffer: offer });
-    console.log('[relax-offer] ' + (gated ? 'rage-reload' : 'hard block') + ' on', etld1, '→ offering blur-off in popup');
-  });
-}
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
-    // Navigation (carries a new URL): snapshot on domain change, then mark it a
-    // navigation so the rage-reload tracker resets and ignores its sub-events.
+    // Navigation (carries a new URL): snapshot on domain change.
     const oldDomain = tabData[tabId]?.domain;
     try {
       const newDomain = new URL(changeInfo.url).hostname;
@@ -2074,15 +1902,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     } catch {
       snapshotAndEvict(tabId);
     }
-    noteNavigation(tabId);
-    return;
   }
-  // A url-less 'loading' event is a candidate reload (a user hammering reload on
-  // a page that's broken under blur is the most reliable "this is broken" cue;
-  // render heuristics are unreliable and our content script gets torn down on
-  // stuck SPAs, so we watch at the SW level to survive that). tab.url is the
-  // stable current URL here, since the URL isn't changing.
-  if (changeInfo.status === 'loading') trackReloadForRelaxOffer(tabId, tab && tab.url);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (tabData[tabId]) updateBadge(tabId);
