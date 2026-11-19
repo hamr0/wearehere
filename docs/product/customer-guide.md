@@ -2,9 +2,12 @@
 
 ## What is wearehere?
 
-wearehere is a privacy scanner for your browser. It checks every website you visit and shows you what is happening behind the scenes — cookies, trackers, fingerprinting, dark patterns, and more.
+wearehere shows you who is watching you on each site, and quietly makes that watching less useful.
 
-There are no accounts to create, no cloud services involved, and nothing leaves your browser. The extension runs entirely on your device and gives each site a risk score from 0 to 100 so you can make informed decisions about where you share your information.
+- **It scans.** Every site you visit gets a score from 0 to 100 (lower is better) and a list of the companies watching.
+- **It acts.** A built-in privacy guard shortens how long tracking cookies live and blurs the signals sites use to recognise your device.
+
+No accounts. No cloud. Nothing leaves your browser.
 
 ---
 
@@ -13,126 +16,186 @@ There are no accounts to create, no cloud services involved, and nothing leaves 
 ### Chrome
 
 1. Download the wearehere ZIP file and extract it.
-2. Open Chrome and go to `chrome://extensions` in the address bar.
-3. Turn on **Developer mode** using the toggle in the top-right corner.
+2. Open Chrome and go to `chrome://extensions`.
+3. Turn on **Developer mode** (top-right toggle).
 4. Click **Load unpacked**.
 5. Select the `chrome-extension` folder from the extracted files.
-
-The wearehere icon will appear in your browser toolbar.
 
 ### Firefox
 
 1. Download the wearehere ZIP file and extract it.
-2. Open Firefox and go to `about:debugging#/runtime/this-firefox` in the address bar.
+2. Open Firefox and go to `about:debugging#/runtime/this-firefox`.
 3. Click **Load Temporary Add-on**.
-4. Navigate into the `firefox-extension` folder and select any file inside it.
+4. Open the `firefox-extension` folder and select any file inside it.
 
-The wearehere icon will appear in your browser toolbar.
+The wearehere icon appears in your toolbar. If the popup says "site access needed", reload the tab once so it can scan from page load.
+
+---
+
+## What it does for you
+
+### Cookie shortener
+
+Cookies are how sites remember you, and how trackers follow you for weeks. The guard caps their life:
+
+| Cookie | What happens |
+|--------|--------------|
+| Normal site cookies | Capped at **7 days** |
+| Cookies on a site you trusted | Capped at **30 or 90 days** (your choice) |
+| Tracker cookies (analytics, ads) | Turned into **session cookies**: gone when you close the tab |
+| Partitioned and captcha/challenge cookies | **Left alone**: already limited to one site, and touching them breaks human-checks |
+
+It runs in the background: when cookies are set, and in a regular sweep (hourly by default).
+
+### Fingerprint blur
+
+Sites can recognise your device without cookies, by reading small details like how your browser draws images, plays audio, or lists fonts. That is the **device-id** mechanism. The guard blurs those readings (canvas, audio, fonts, screen and navigator details, WebGL) so the same browser looks different to different sites.
+
+Three modes:
+
+- **rotation** (default): a different fingerprint per site, changing weekly.
+- **stable**: one fixed fingerprint per site. Still blurred. Handy for sites you log into.
+- **off**: no blur.
+
+Blur applies on the next page load, not live.
 
 ---
 
 ## Using the Popup
 
-Click the wearehere icon in your toolbar while visiting any website. A popup will appear showing:
+Click the wearehere icon on any site.
 
-- **The site name** you are currently visiting.
-- **A risk score** from 0 to 100.
-- **A color-coded badge** — green means safe, orange means moderate risk, and red means risky.
+- **Site and score**, for example `40 / MODERATE`, with a one-line verdict.
+- **who's watching**: the top companies (a *watcher* is the company, who). `+N more` if there are more. If none: `no trackers detected ✓`.
+- **Mechanism chips**: how they watch, with counts. Only the ones detected show up:
+  - **cookies**: tracking cookies
+  - **pixels**: hidden trackers, beacons, invisible frames
+  - **device-id**: fingerprinting your device
+  - **typing**: watching what you type in forms
+  - **clicks**: tagged links and redirects
+- **Footer chips** (always all shown):
+  - `✓ not sold` / `[!] sold to N brokers`
+  - `✓ fair terms` / `[!] strict terms` / `[!] toxic terms` (shown when the site's terms were found)
+  - `✓ no pressure` / `[!] mild pressure` / `[!] aggressive pressure` (fake timers, "only 2 left", guilt buttons)
+- **privacy guard** card, for this site:
+  - A cookies line, for example `✓ Cookies expire in 7 days · 3 trimmed`.
+  - A blur line, for example `✓ Tracking blurred · 4 surfaces`.
+  - **[ trust cookies 30d ]**: keep this site's cookies up to 30 days. Becomes **[ untrust cookies ]**.
+  - **[ trust ID ]**: turn blur completely off for this site. Becomes **[ untrust ID ]**. Reload the page to apply.
+  - Running totals: cookies trimmed and surfaces blurred.
+- **[ open full dashboard ]**
 
-Below the score, you will see 10 sections covering different privacy categories:
+On browser pages (settings, new tab) the guard shows "not a regular site" and does nothing.
 
-1. **Cookies** — How many cookies the site sets, which ones come from third parties, and how long they last.
-2. **Network** — Which domains your browser communicates with in the background, and how many of them are known trackers.
-3. **Trackers** — Hidden tracking pixels, invisible iframes, and beacons that silently report your activity back to other companies.
-4. **Pressure** — Manipulative design tricks such as fake countdown timers, "only 2 left" warnings, guilt-trip buttons, and pre-checked consent boxes.
-5. **Selling data** — Whether the site connects to known data brokers.
-6. **Profiling** — When a site reads details about your device hardware (screen size, graphics card, fonts) to build a unique fingerprint that identifies you.
-7. **Stored data** — Tracking IDs saved in your browser's local storage, which can persist even after you clear cookies.
-8. **Watching** — Whether trackers are actively monitoring while you fill out forms, capturing keystrokes or field changes before you even submit.
-9. **Clicks** — Tracking parameters and redirect wrappers attached to links on the page.
-10. **Terms** — Toxic or concerning clauses found in the site's privacy policy and terms of service.
+### Score
 
----
-
-## Understanding Your Score
-
-The risk score ranges from 0 to 100. Here is what the ranges mean:
-
-| Score | Color | What it means |
-|-------|-------|---------------|
-| 0 -- 15 | Green | Fairly clean. You can browse normally. |
-| 16 -- 40 | Orange | Typical tracking activity. Using private browsing or clearing cookies after your visit helps. |
-| 41 -- 70 | Red | Significant privacy risks. Avoid sharing personal information on this site. |
-| 71 -- 100 | Red | Very invasive. Consider using a tracker blocker or avoiding this site entirely. |
-
-### How the score is calculated
-
-Each of the 10 categories contributes to the overall score, but some categories carry more weight than others:
-
-| Category | Weight |
-|----------|--------|
-| Trackers | 20 |
-| Profiling | 20 |
-| Cookies | 15 |
-| Pressure | 15 |
-| Terms | 15 |
-| Network | 10 |
-| Selling data | 10 |
-| Watching | 10 |
-| Stored data | 5 |
-| Clicks | 5 |
-
-A site that fingerprints your device (Profiling) will raise the score more than a site that only adds tracking parameters to links (Clicks), because fingerprinting is harder to defend against and more invasive.
+| Score | Label | Meaning |
+|-------|-------|---------|
+| 0 -- 15 | low | Fairly clean. Browse normally. |
+| 16 -- 40 | moderate | Typical tracking. |
+| 41 -- 70 | high | Significant risks. Avoid sharing personal info. |
+| 71 -- 100 | critical | Very invasive. |
 
 ---
 
-## The Full Report
+## The Dashboard
 
-Click the **Full Report** button in the popup to open a detailed dashboard. The report is organized into five tabs:
+Three tabs. The theme button (top right) switches light and dark. On first open a short welcome appears; click `[ got it ]`.
 
-- **Overview** — Your score visualized as a chart, all categories shown at a glance, and the top concerns highlighted.
-- **Cookies** — A full table of every cookie on the site. You can search, sort, and see exactly what each cookie does.
-- **Network** — Every domain your browser contacted while loading the page, organized by category, with alerts for known data brokers.
-- **Terms** — What the site's privacy policy and terms of service actually say, with concerning clauses scored by how toxic they are.
-- **Tracking** — A deep dive into fingerprinting techniques, form surveillance, storage-based tracking, and link tracking.
+### overview
+
+Your lifetime and recent story.
+
+- **Top numbers**: sites visited, average score, unique watchers, cookies trimmed, surfaces blurred.
+- **Top 3 lists**: most-seen watchers, most-trimmed cookie domains, sites where blur worked most.
+- **Window selector**: pick a time window for the rest of the tab.
+- **Green line**: what the guard did in that window.
+- **what changed**: new or gone watchers, score changes, and similar.
+- **browsing exposure**: your sites sorted into clean, mixed and hostile.
+
+### watchers
+
+Who follows you across the web.
+
+- **Top numbers**: sites visited, hidden contacts, unique watchers, average per visit.
+- **who follows you**: companies ranked by how many of your visits they appear in, and how (cookies, pixels, clicks, device-id), with Trimmed and Blurred counts.
+- **recent visits**: per site score, watchers and terms. **[ clear history ]** erases this list.
+- **dig deeper**: pick a site from the dropdown for its watcher detail and a breakdown of its terms of service (which clauses are concerning).
+
+### privacy guard
+
+- **Top numbers**: trimmed, blurred, sweeps run, last active.
+- **cookies in your browser**: what is in your browser now, by lifetime and owner.
+- **surfaces blurred**: which kinds of signals were blurred, how many sites run each mode, and the sites where blur fired most.
+- **per-site rules**: your exceptions, one row per site. Type a site, choose cookies or blur, `[ add ]`. Then use the `[ → ]` buttons to cycle a cell:
+  - cookies: 7d, 30d, 90d, back to 7d
+  - blur: rotation, off, stable, back to rotation
+  - `[ ✕ ]` removes the row.
+- **settings**: how often the cookie sweep runs (15min, hourly, 4hr, 12hr), and the **default blur** mode (off, rotation, stable per origin).
+- **recent activity**: a log of sweeps.
 
 ---
 
-## Cleaning Cookies
+## Trust ID: the one escape hatch
 
-In the Full Report, go to the **Cookies** tab. You will find two buttons:
+Some sites break when anything touches their fingerprint readings. Banks, big retailers and anti-bot systems are the usual ones.
 
-- **Clean Tracking Cookies** — Deletes only the cookies classified as analytics or advertising. Your login and preferences are left alone.
-- **Clean All Cookies** — Deletes every cookie for the current site. You may be logged out afterward.
+Click **[ trust ID ]** in the popup on that site. Blur is then **completely off** for it (main page, same-site frames and blank frames), and no blur code is loaded at all. Reload the page.
 
----
-
-## What wearehere Does NOT Do
-
-- **It does not block anything.** wearehere is a scanner, not a blocker. It shows you what is happening but does not intervene.
-- **It does not send any data anywhere.** Everything stays in your browser. There are no servers, no analytics, no telemetry.
-- **It does not require an account or signup.** Install it and it works immediately.
-- **It does not use AI or cloud services.** All analysis runs locally on your device.
-- **It does not modify web pages.** The sites you visit look and behave exactly the same.
+- Trust ID is about **blur only**. Cookie trust (30d / 90d) is a separate button with a separate effect.
+- **stable** is not the same: it still blurs, just with a fixed fingerprint.
+- To undo: click **[ untrust ID ]**.
 
 ---
 
 ## Logging in to a site that keeps failing
 
-Some sites recognise your device when you sign in (for example, magic links sent by email). wearehere changes your device's fingerprint, so the site may see two different devices and reject the login. Fix: open the popup on that site and click `[ trust ID ]`, then try again. Trust the site you log into, not the login provider behind it.
+Some sites recognise your device when you sign in. A common case is a **magic link sent by email**: the site notes your device when you ask for the link, and checks it again when you click it. wearehere blurs your fingerprint, so the two moments can look like two different devices and the login is rejected.
+
+Fix:
+
+1. Open the popup on the site you are logging into.
+2. Click **[ trust ID ]**.
+3. Reload and try the login again.
+
+Trust the site you log into. You do not need to trust the login provider behind it.
+
+If it still fails and the site asks you to log in repeatedly, also try **[ trust cookies 30d ]** on that site.
 
 ---
 
-## Tips
+## What wearehere does NOT do
 
-- **Check unfamiliar sites before entering personal information.** Open the popup before typing anything into a form.
-- **Sites scoring above 40 deserve extra caution.** Think twice before sharing sensitive details.
-- **Use the Terms tab before agreeing to anything.** It highlights the clauses that matter most.
-- **The Network tab shows who your browser talks to in real time.** This is useful for spotting unexpected connections to advertising networks or data brokers.
-- **Pair wearehere with a tracker blocker** like uBlock Origin for the best results. wearehere shows you the problem; a blocker fixes it.
+- **It does not block anything.** Trackers still load. wearehere shortens their cookies and blurs your device signals. For blocking, pair it with a blocker like uBlock Origin.
+- **It targets everyday fingerprinting scripts**, the kind used by commodity libraries. It is not built to beat the sophisticated detectors used by banks or anti-bot systems such as Akamai. Those can notice the blur: use Trust ID on such a site.
+- **Third-party frames inside a trusted site stay blurred.** Trust ID covers the site itself, not embedded frames from other companies. We tried covering them and it broke logins, so it was dropped.
+- **Sandboxed frames that run no scripts cannot be blurred** by any extension.
+- **Private windows work only if you allow the extension there** in your browser's extension settings.
 
 ---
 
 ## Privacy
 
-wearehere itself is private. There is zero data collection, zero network calls, and zero accounts. The extension's code is open source and runs entirely on your device. It practices what it preaches.
+Everything stays on your device. No accounts, no servers, no analytics, no telemetry, no AI or cloud services. The code is open source.
+
+The history you see in the dashboard is stored locally in your browser. **[ clear history ]** in the watchers tab erases the visit list.
+
+---
+
+## Tips and FAQ
+
+**A page looks broken or stuck.** Open the popup, click `[ trust ID ]`, reload.
+
+**I got logged out of a site a lot.** Click `[ trust cookies 30d ]` there. Use the dashboard to go to 90d.
+
+**Does the cookie shortener log me out after 7 days?** Sites that keep you logged in with a normal cookie may need you to log in again after 7 days unless you trust cookies there.
+
+**The numbers say 0 trimmed or 0 blurred.** Browse a few sites. They fill in as the guard works.
+
+**Blur changed but nothing looks different.** That is the point. Pages look the same to you. Only the readings sites take change.
+
+**Very quick visits are missing from the dashboard.** Scanning waits for the page to settle, so visits under about 2 seconds may not be counted.
+
+**Check unfamiliar sites before entering personal information.** Open the popup first. Sites above 40 deserve extra caution.
+
+**Read the terms chip before agreeing to anything.** `[!] toxic terms` means the site's terms have concerning clauses. Details are in the watchers tab.
