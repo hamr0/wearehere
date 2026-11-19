@@ -7,7 +7,7 @@
 >
 > This document merges the original Phase 0 PRD and the Phase 2 farbler PRD into one. **Current design** is authoritative (§1–§7); **all decisions and findings are preserved** in the decision log (§8); **known issues / deferred work** are consolidated in §9. Where an old decision was later reversed (e.g. detection-only → intervention; `per-tab` farble → `rotation`), the superseding entry is marked and the original is kept for history.
 >
-> **Mandatory rules:** all implementation work follows `.claude/memory/AGENT_RULES.md` — POC first, incremental modules, vanilla→stdlib→external dependency hierarchy, surgical changes, open-source only, mobile-responsive UI verified in DevTools before claiming UI tasks done. Never ship a POC — graduate, design, then build with tests. Build/order detail lives in [PLAN.md](./PLAN.md).
+> **Mandatory rules:** all implementation work follows `.claude/memory/AGENT_RULES.md` — POC first, incremental modules, vanilla→stdlib→external dependency hierarchy, surgical changes, open-source only, mobile-responsive UI verified in DevTools before claiming UI tasks done. Never ship a POC — graduate, design, then build with tests. Build/order detail lives in [PLAN.md](../logs/01-product/PLAN.md).
 
 ---
 
@@ -391,7 +391,7 @@ Work order was **Slice 2 first** (hard-part-first): Tier B seeded farbling + Web
 
 ## 10. References
 
-- **Build sequence & dependency graph:** [PLAN.md](./PLAN.md) — *what* is here; *how/in-what-order* is there. Chrome first, Firefox mirror last.
+- **Build sequence & dependency graph:** [PLAN.md](../logs/01-product/PLAN.md) — *what* is here; *how/in-what-order* is there. Chrome first, Firefox mirror last.
 - **Changelog:** `CHANGELOG.md` `## [5.0.0]`.
 - JShelter wrappers list: vendored at `chrome-extension/fingerprint-surfaces.js` (149 surfaces, 12 categories).
 - Open Cookie Database: vendored at `chrome-extension/cookie-database.js`.
