@@ -14,6 +14,11 @@
 //   - Trusted site (user-added)         -> cap 30d or 90d
 //   - Cookie classified as tracker (OCD Marketing/Analytics)
 //                                       -> session (kill on tab close)
+//   - Never touched: partitioned cookies (Chrome CHIPS partitionKey / Firefox
+//     partitionKey or firstPartyDomain) and cookies on captcha/challenge hosts
+//     (WH_CHALLENGE_EXCLUDES). cookies.set without the partition key writes an
+//     unpartitioned duplicate (e.g. cf_clearance), which broke Cloudflare
+//     Turnstile logins; partitioned cookies are already single-site scoped.
 //
 // Storage shape:
 //   cookieScopeCounters: { tightened, demotions, sweeps, lastSweep, bySite: { etld1: { tightened, demotions } } }
@@ -57,6 +62,32 @@ function etld1Of(host) {
   // case load order ever changes — falls back to last-two-labels.
   if ((self.WH_PUBLIC_SUFFIX || {})[lastTwo] && labels.length >= 3) return labels.slice(-3).join('.');
   return lastTwo;
+}
+
+// Cookies the scoper must leave alone: (1) partitioned cookies (Chrome CHIPS
+// partitionKey, Firefox TCP partitionKey / FPI firstPartyDomain). They are
+// already scoped to one top-level site, and re-setting one through
+// cookies.set without its partition key writes an UNPARTITIONED duplicate
+// (seen live: cf_clearance on a Cloudflare-challenged login), which corrupts
+// challenge/anti-bot state. (2) Cookies on the captcha/challenge provider
+// hosts in WH_CHALLENGE_EXCLUDES (background.js, read at call time).
+function isPartitioned(cookie) {
+  return !!(cookie.partitionKey || cookie.firstPartyDomain);
+}
+
+function isChallengeDomain(domain) {
+  if (typeof WH_CHALLENGE_EXCLUDES === 'undefined') return false;
+  const host = domain.replace(/^\./, '').toLowerCase();
+  for (const pat of WH_CHALLENGE_EXCLUDES) {
+    const m = /^\*:\/\/(\*\.)?([^/]+)\//.exec(pat);
+    if (!m) continue;
+    if (host === m[2] || host.endsWith('.' + m[2])) return true;
+  }
+  return false;
+}
+
+function shouldSkipCookie(cookie) {
+  return isPartitioned(cookie) || isChallengeDomain(cookie.domain);
 }
 
 function buildSetDetails(cookie, capDays) {
@@ -138,6 +169,7 @@ async function sweep(trigger) {
     const etld1 = etld1Of(c.domain);
     if (!etld1) continue;
     if (c.session) continue;
+    if (shouldSkipCookie(c)) continue;
 
     const decision = decideCap(c, etld1, trust);
     if (decision.cap !== null) {
@@ -389,6 +421,7 @@ chrome.cookies.onChanged.addListener(async (info) => {
   if (info.cause !== 'explicit') return;
   const c = info.cookie;
   if (c.session) return;
+  if (shouldSkipCookie(c)) return;
   if (!c.expirationDate) return;
   const etld1 = etld1Of(c.domain);
   if (!etld1) return;
