@@ -63,3 +63,34 @@ Coverage parity with Brave/Firefox-RFP/JShelter is cheap, so there is no moat th
 - Auto-pickup from cookie trust: a site marked "I live here" for cookies automatically gets stable farbling, with zero new UI for the common case (docs/archive/PRD.md:113-113).
 - Visibility: per-site "N probes farbled" counters in popup and dashboard, same affordances as the scoper's tightened/killed counters (docs/archive/PRD.md:114-114).
 - Default ON, with the cookie trust list as the auto-allowlist for logged-in sites (docs/archive/PRD.md:115-115).
+
+## typesafe.ai turnstile_blocked: scoper wrote unpartitioned duplicates (2026-11-19)
+
+1. Root cause: the cookie scoper re-set partitioned cookies via `cookies.set` without `partitionKey`, writing an unpartitioned duplicate (`cf_clearance` on `.typesafe.ai` alongside the partitioned one, topLevelSite `https://typesafe.ai`). Cloudflare Turnstile then rejected the login.
+2. Proven by manual bisect in real Firefox: scoper-fix build (V1) passes, dev build fails, no-ext passes.
+3. Fix (9d47c5a): scoper skips partitioned cookies (`partitionKey` / `firstPartyDomain`) and `WH_CHALLENGE_EXCLUDES` hosts, in both sweep and `onChanged`. A default rule, not a site list.
+4. Trade-off: in Firefox (Total Cookie Protection) all third-party cookies are partitioned, so the scoper no longer trims any third-party cookie in FF. Low privacy cost (partitioned cookies can't track cross-site); FF trimmed counters drop.
+5. Chrome: `getAll({})` doesn't return CHIPS cookies at all; only `onChanged` sees them. The duplicate bug is confirmed only in Firefox.
+6. Open: an unpartitioned `__cf_bm` appears on typesafe whenever the extension is loaded, even with the scoper disabled; absent in no-ext runs. Not the cause of the login failure. Unexplained.
+
+## Verification lesson: JS-layer parity is not login proof (2026-11-19)
+
+- Zero page differences vs no-ext at the JS layer does not prove a login works; the extension also acts at the cookie/network layer. Verify with the real flow.
+- When automation can't (Cloudflare WAF blocks Selenium even with no extension; the challenge only runs on submit), build per-component strip variants (scoper off / inject off / no content scripts) for the user to bisect by hand.
+- Clear site cookies between runs; old corrupt cookies mask a fix.
+
+## Remaining anti-bot breakage classes (2026-11-19)
+
+- Untrusted site with captcha: captcha frame unwrapped but top page blurred, so the vendor may compare. Remedy: Trust ID.
+- Anti-bot cookie misclassified as tracker: demoted to session, so re-challenge each session.
+- First-party anti-bot cookies trimmed to 7d: re-challenge weekly, no duplicate written.
+- First-party-routed challenge frames (`/cdn-cgi/challenge-platform` on the site itself) are not matched by the host list.
+
+## vinted Firefox slowness: parked (2026-11-19)
+
+- Method: Firefox Profiler, 3 rounds x 5 variants (no ext, release 5.0.0, dev, dev top-frame-only, dev blur off) on vinted catalog.
+- Network/site variance dominates (no-ext grid visible 4.8-12.6 s). Dev not measurably worse than release. vinted's own CPU is 8-12 s/run vs extension 0.5-1.2 s.
+- Extension hot spots: detect-played `scanCountdowns`/`Discounts`/`Scarcity` 400-700 ms/run (dev halved vs release); inject.js `farbleAnyCanvas` ~120-165 ms, only with blur on (FF blur works since fa6346c); detect-watched storage+HMAC ~25-48 ms; detect-cooked <30 ms dev (100 ms release).
+- all-frames change: no measurable effect (3 frames).
+- User reports it loads fine with AdGuard off and cache disabled, even with wearehere; likely AdGuard/cache interplay.
+- Revisit only if Firefox's "wearehere is slowing down this page" banner recurs; note AdGuard state and page.

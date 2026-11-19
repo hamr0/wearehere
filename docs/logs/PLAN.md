@@ -1,6 +1,6 @@
 # wearehere — rebuild plan
 
-> Companion to [PRD.md](../../product/PRD.md). The PRD defines *what* the new design is; this file defines *how* and *in what order* we build it. Chrome first, Firefox mirror last.
+> Companion to [PRD.md](../product/PRD.md). The PRD defines *what* the new design is; this file defines *how* and *in what order* we build it. Chrome first, Firefox mirror last.
 >
 > **Mandatory rules:** all implementation work follows `.claude/memory/AGENT_RULES.md` — POC first, incremental modules, vanilla→stdlib→external dependency hierarchy, surgical changes, open-source only, mobile-responsive UI verified in DevTools before claiming UI tasks done.
 
