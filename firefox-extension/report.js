@@ -19,6 +19,20 @@ function safeSetHTML(el, html) {
 
 const $ = (id) => document.getElementById(id);
 
+// Compact big counts (1.1k, 250k, 1.2M; truncated, see WH_fmtCount in
+// company-map.js). Exact value goes in a title tooltip whenever compacted.
+const fmtN = (n) => self.WH_fmtCount(n);
+const numHtml = (n) => {
+  n = Math.floor(Number(n) || 0);
+  const c = fmtN(n);
+  return c === String(n) ? c : `<span title="${n.toLocaleString()}">${c}</span>`;
+};
+const setNum = (el, n) => {
+  n = Math.floor(Number(n) || 0);
+  el.textContent = fmtN(n);
+  if (n >= 1000) el.title = n.toLocaleString(); else el.removeAttribute('title');
+};
+
 const tabIdFromHash = parseInt(location.hash.replace('#', ''), 10);
 const tabId = Number.isFinite(tabIdFromHash) ? tabIdFromHash : null;
 
@@ -41,7 +55,19 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.theme) applyTheme(changes.theme.newValue);
 });
 
-chrome.runtime.sendMessage({ type: 'getFullReport', tabId }, init);
+// Ask the page's content scripts to finish pending report work now (they defer it
+// until the page settles). Waits at most 2 s; never blocks on a page that cannot answer.
+function whFlushTab(tabId, cb) {
+  let done = false;
+  const finish = () => { if (!done) { done = true; cb(); } };
+  setTimeout(finish, 2000);
+  try {
+    chrome.tabs.sendMessage(tabId, { type: 'wh-flush' }, { frameId: 0 }, () => { void chrome.runtime.lastError; finish(); });
+  } catch (e) { finish(); }
+}
+
+if (Number.isFinite(tabId)) whFlushTab(tabId, () => chrome.runtime.sendMessage({ type: 'getFullReport', tabId }, init));
+else chrome.runtime.sendMessage({ type: 'getFullReport', tabId }, init);
 
 function init(report) {
   $('loading').hidden = true;
@@ -159,7 +185,7 @@ function watchVisitsStorage() {
     // Trimmed/Blurred from these keys. They change on sweeps + visit
     // appends independently of the snapshot recompute, so refresh the
     // table when they move (it re-reads both keys from storage itself).
-    if (changes.cookieScopeCounters || changes.farblerBlurredByCompany) {
+    if (changes.cookieScopeCounters || changes.farblerBlurredByCompany || changes.farblerCounters) {
       loadWatchersAggregates();
     }
   });
@@ -366,14 +392,14 @@ function renderProtectionLine() {
             : overviewWindow === 'all' ? 'all time'
             : `this ${overviewWindow}`;
   const parts = [];
-  if (trimmed) parts.push(`shortened ${trimmed.toLocaleString()} cookie${trimmed === 1 ? '' : 's'}`);
-  if (demoted) parts.push(`demoted ${demoted.toLocaleString()} tracker${demoted === 1 ? '' : 's'} to session-only`);
-  if (blurred) parts.push(`blurred ${blurred.toLocaleString()} fingerprint surface${blurred === 1 ? '' : 's'}`);
+  if (trimmed) parts.push(`shortened ${numHtml(trimmed)} cookie${trimmed === 1 ? '' : 's'}`);
+  if (demoted) parts.push(`demoted ${numHtml(demoted)} tracker${demoted === 1 ? '' : 's'} to session-only`);
+  if (blurred) parts.push(`blurred ${numHtml(blurred)} fingerprint surface${blurred === 1 ? '' : 's'}`);
   const phrase = parts.length > 1
     ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]
     : parts[0];
   el.hidden = false;
-  safeSetHTML(el, `✓ ${escapeText(win)} wearehere ${escapeText(phrase)} — so trackers can't recognise you tomorrow.`);
+  safeSetHTML(el, `✓ ${escapeText(win)} wearehere ${phrase} — so trackers can't recognise you tomorrow.`);
 }
 
 function loadOverviewRawVisits() {
@@ -393,9 +419,9 @@ function renderLifetimeHero(snap, s) {
   const hasVisits = !!(snap && snap.visitsN);
   $('ov-sites').textContent = hasVisits ? (snap.sites || []).length.toLocaleString() : '0';
   $('ov-score').textContent = hasVisits ? snap.avgScore : '—';
-  $('ov-watchers').textContent = hasVisits ? Object.keys(snap.watchers || {}).length.toLocaleString() : '0';
-  $('ov-trimmed').textContent = trimmed.toLocaleString();
-  $('ov-blurred').textContent = blurred.toLocaleString();
+  $('ov-watchers').textContent = hasVisits ? self.WH_parentTotals(snap).unique.toLocaleString() : '0';
+  setNum($('ov-trimmed'), trimmed);
+  setNum($('ov-blurred'), blurred);
 }
 
 // The three lifetime top-3 lists under the hero. Mixed entities by design:
@@ -406,9 +432,22 @@ function renderHeroLists(snap, s) {
   if (!el) return;
   const watchers = (snap && snap.watchers) || {};
   const reach = (snap && snap.reachPct) || {};
-  const watched = Object.entries(watchers)
-    .map(([k, w]) => ({ name: (w && w.name) || k, pct: reach[k] || 0 }))
-    .sort((a, b) => b.pct - a.pct).slice(0, 3).map((w) => w.name);
+  // By parent company (Google Ads + Google = one entry), same grouping as the
+  // Watchers table. Falls back to rolling raw watchers up when the snapshot
+  // predates `groups`.
+  let ranked;
+  if (snap && snap.groups) {
+    ranked = Object.keys(snap.groups).map((k) => ({ name: snap.groups[k].name || k, pct: snap.groups[k].hits || 0 }));
+  } else {
+    const roll = {};
+    for (const [k, w] of Object.entries(watchers)) {
+      const g = self.WH_watcherGroup((w && w.name) || k);
+      const pct = reach[k] || 0;
+      if (!roll[g.key] || pct > roll[g.key].pct) roll[g.key] = { name: g.name, pct };
+    }
+    ranked = Object.values(roll);
+  }
+  const watched = ranked.sort((a, b) => b.pct - a.pct).slice(0, 3).map((w) => w.name);
   const bySiteTrim = (s.cookieScopeCounters && s.cookieScopeCounters.bySite) || {};
   const cookies = Object.entries(bySiteTrim)
     .map(([d, v]) => [d, (v && v.tightened) || 0]).filter(([, n]) => n > 0)
@@ -510,7 +549,7 @@ function diffAggregates(cur, prev) {
     const a = (latestPrev[s] && latestPrev[s].scoperTightened) || 0;
     const b = latestCur[s].scoperTightened || 0;
     if (b - a >= 5) {
-      events.push({ cls: 'ok', icon: '✂', kind: 'sweep impact', text: `<strong>${escapeText(s)}</strong> +${b - a} cookies tightened by scoper` });
+      events.push({ cls: 'ok', icon: '✂', kind: 'sweep impact', text: `<strong>${escapeText(s)}</strong> +${numHtml(b - a)} cookies tightened by scoper` });
     }
   }
 
@@ -573,13 +612,22 @@ function renderRecentVisits(visits) {
       : `<span class="dim">none</span>`;
   };
 
+  // Visits stored before per-visit trimming existed have no `trimmed` field:
+  // show "—" rather than a misleading 0 · n.
+  const trimBlurCell = (v) => {
+    if (typeof v.trimmed !== 'number') return '<span class="dim">—</span>';
+    const b = v.blurredSurfaces || 0;
+    return (v.trimmed || b) ? `${numHtml(v.trimmed)} · ${numHtml(b)}` : '<span class="dim">—</span>';
+  };
+
   safeSetHTML(el, `
     <table class="table">
-      <thead><tr><th>site</th><th>score</th><th>watchers</th><th>via</th><th>terms</th><th>when</th></tr></thead>
+      <thead><tr><th>site</th><th>score</th><th>watchers</th><th>via</th><th title="cookies trimmed · fingerprint surfaces blurred on that visit">trim·blur</th><th>terms</th><th>when</th></tr></thead>
       <tbody>
         ${rows.map((v) => {
-          const topW = (v.watchers || []).slice(0, 2).map(escapeText).join(', ');
-          const more = (v.watchers || []).length > 2 ? ` <span class="dim">+${v.watchers.length - 2}</span>` : '';
+          const parents = self.WH_uniqueParents(v.watchers).map((g) => g.name);
+          const topW = parents.slice(0, 2).map(escapeText).join(', ');
+          const more = parents.length > 2 ? ` <span class="dim">+${parents.length - 2}</span>` : '';
           const tosCell = v.tosScore == null
             ? '<span class="dim">—</span>'
             : v.tosScore >= 60 ? `<span class="bad">${v.tosScore} [!]</span>`
@@ -590,6 +638,7 @@ function renderRecentVisits(visits) {
             <td class="num">${v.score}</td>
             <td>${topW || '<span class="dim">none</span>'}${more}</td>
             <td>${mechCell(v.mechanisms)}</td>
+            <td class="num">${trimBlurCell(v)}</td>
             <td>${tosCell}</td>
             <td><span class="dim">${escapeText(relativeTimeShort(v.at))}</span></td>
           </tr>`;
@@ -601,8 +650,10 @@ function renderRecentVisits(visits) {
 
 // Browsing exposure — sites this window bucketed by risk tier. Buckets by
 // SITE (average score across its visits) not by visit, so a heavily-
-// revisited site doesn't dominate the shape. Tiers match the dashboard's
-// scoring vocabulary (30 fair/mixed, 60 mixed/hostile).
+// revisited site doesn't dominate the shape. Tiers use the popup's verdict
+// cutoffs (computeVerdict in background.js: low <=15, moderate <=40,
+// high <=70, critical >70) collapsed to 3: clean <=15, moderate 16-40,
+// hostile 41+.
 function renderBrowsingExposure(visits) {
   const el = $('ov-trend');
   if (!visits.length) {
@@ -616,21 +667,21 @@ function renderBrowsingExposure(visits) {
     e.sum += v.score || 0;
     e.n++;
   }
-  let clean = 0, mixed = 0, hostile = 0;
+  let clean = 0, moderate = 0, hostile = 0;
   for (const k in bySite) {
-    const avg = bySite[k].sum / bySite[k].n;
-    if (avg >= 60) hostile++;
-    else if (avg >= 30) mixed++;
+    const avg = Math.round(bySite[k].sum / bySite[k].n);
+    if (avg > 40) hostile++;
+    else if (avg > 15) moderate++;
     else clean++;
   }
-  const total = clean + mixed + hostile;
-  const max = Math.max(1, clean, mixed, hostile);
+  const total = clean + moderate + hostile;
+  const max = Math.max(1, clean, moderate, hostile);
   const bar = (n, cls) => `<span class="bar ${cls}" style="width:${Math.round((n / max) * 60)}%"></span>`;
   safeSetHTML(el, `
     <div class="trend-caption dim">${total} site${total === 1 ? '' : 's'} this window · by risk tier · lower is better</div>
-    <div class="bar-row"><span class="nval">${clean}</span> ${bar(clean, 'ok')} <span class="nlbl">clean <span class="dim">(&lt; 30)</span></span></div>
-    <div class="bar-row"><span class="nval">${mixed}</span> ${bar(mixed, 'warn')} <span class="nlbl">mixed <span class="dim">(30–60)</span></span></div>
-    <div class="bar-row"><span class="nval">${hostile}</span> ${bar(hostile, 'bad')} <span class="nlbl">hostile <span class="dim">(60+)</span></span></div>
+    <div class="bar-row"><span class="nval">${clean}</span> ${bar(clean, 'ok')} <span class="nlbl">clean <span class="dim">(≤ 15)</span></span></div>
+    <div class="bar-row"><span class="nval">${moderate}</span> ${bar(moderate, 'warn')} <span class="nlbl">moderate <span class="dim">(16–40)</span></span></div>
+    <div class="bar-row"><span class="nval">${hostile}</span> ${bar(hostile, 'bad')} <span class="nlbl">hostile <span class="dim">(41+)</span></span></div>
   `);
 }
 
@@ -647,8 +698,13 @@ const tabReportCache = new Map();
 function renderWatchers(report) {
   const panel = $('panel-watchers');
   tabReportCache.set(tabId, report);
-  const currentSite = report.site || '';
-  const siteOpt = `<option value="${tabId}">${escapeText(currentSite)}</option>`;
+  // Only a real web page belongs in the site dropdown. Opened directly (no
+  // source tab) the report is for the dashboard's own tab, whose "site" is the
+  // extension id; show a placeholder instead.
+  const isWeb = /^https?:/i.test(report.url || '');
+  const siteOpt = isWeb
+    ? `<option value="${tabId}">${escapeText(report.site || '')}</option>`
+    : `<option value="">(no open site)</option>`;
 
   safeSetHTML(panel, `
     <div class="frame-title">watchers — who follows you across the web</div>
@@ -656,7 +712,7 @@ function renderWatchers(report) {
       <div class="cell"><div class="num" id="w-sites">—</div><div class="lbl">sites visited</div></div>
       <div class="cell"><div class="num" id="w-contacts">—</div><div class="lbl">hidden contacts</div></div>
       <div class="cell"><div class="num" id="w-unique">—</div><div class="lbl">unique watchers</div></div>
-      <div class="cell"><div class="num" id="w-amp">—</div><div class="lbl">avg per visit</div></div>
+      <div class="cell"><div class="num" id="w-amp">—</div><div class="lbl">trimmed · blurred</div></div>
     </div>
 
     <div class="window-sel" id="w-window" style="margin-top:14px"></div>
@@ -674,15 +730,14 @@ function renderWatchers(report) {
     <div class="dig-deeper">// dig deeper · per site</div>
 
     <div class="frame-title with-sel">
-      <span>watchers ·</span>
-      <select class="site-sel" id="watcher-site-sel">${siteOpt}</select>
+      <span>site ·</span>
+      <select class="site-sel" id="site-sel">${siteOpt}</select>
     </div>
+
+    <div class="frame-title">watchers</div>
     <div id="watcher-detail-block">${renderWatcherDetail(report)}</div>
 
-    <div class="frame-title with-sel">
-      <span>terms ·</span>
-      <select class="site-sel" id="terms-site-sel">${siteOpt}</select>
-    </div>
+    <div class="frame-title">terms</div>
     <div id="terms-block">${renderTermsBlock(report)}</div>
   `);
 
@@ -738,15 +793,42 @@ function renderWatchersHero(snap) {
     $('w-sites').textContent = '0';
     $('w-contacts').textContent = '0';
     $('w-unique').textContent = '0';
-    $('w-amp').textContent = '—';
+  } else {
+    // Parent-company counts, consistent with the merged Watchers table.
+    const { unique, contacts } = self.WH_parentTotals(snap);
+    $('w-sites').textContent = (snap.sites || []).length.toLocaleString();
+    $('w-contacts').textContent = contacts.toLocaleString();
+    $('w-unique').textContent = unique.toLocaleString();
+  }
+  renderWatchersProtection();
+}
+
+// 4th hero box: cookies trimmed · fingerprint surfaces blurred for the
+// selected window. "all" reads the lifetime counters (same as the Overview
+// hero). Bounded windows read the hourly impact log for trimmed (accurate for
+// every visit, old or new) and sum visit.blurredSurfaces for blurred (same
+// source the Overview protection line uses). Token guards stale async paints.
+let watchersProtToken = 0;
+function renderWatchersProtection() {
+  const myToken = ++watchersProtToken;
+  const win = watchersWindow;
+  const paint = (t, b) => {
+    if (myToken !== watchersProtToken) return;
+    safeSetHTML($('w-amp'), `${numHtml(t)} · ${numHtml(b)}`);
+  };
+  if (win === 'all') {
+    chrome.storage.local.get(['cookieScopeCounters', 'farblerCounters'], (s) => {
+      paint((s.cookieScopeCounters && s.cookieScopeCounters.tightened) || 0,
+            (s.farblerCounters && s.farblerCounters.totalCalls) || 0);
+    });
     return;
   }
-  const unique = Object.keys(snap.watchers || {}).length;
-  const amp = (snap.contacts / snap.visitsN).toFixed(1);
-  $('w-sites').textContent = (snap.sites || []).length.toLocaleString();
-  $('w-contacts').textContent = snap.contacts.toLocaleString();
-  $('w-unique').textContent = unique.toLocaleString();
-  $('w-amp').textContent = `${amp}×`;
+  chrome.runtime.sendMessage({ type: 'impact:get-window', window: win }, (impact) => {
+    chrome.runtime.sendMessage({ type: 'visits:get', window: win }, (visits) => {
+      const arr = Array.isArray(visits) ? visits : [];
+      paint((impact && impact.tightened) || 0, arr.reduce((n, v) => n + (v.blurredSurfaces || 0), 0));
+    });
+  });
 }
 
 let whoFollowsRenderToken = 0;
@@ -761,14 +843,7 @@ function renderWhoFollowsYou(snap) {
     return;
   }
 
-  const watchers = snap.watchers || {};
-  const reach = snap.reachPct || {};
-  const ranked = Object.entries(watchers)
-    .map(([k, w]) => ({ ...w, key: k, pct: reach[k] || 0 }))
-    .sort((a, b) => b.pct - a.pct)
-    .slice(0, 12);
-
-  if (ranked.length === 0) {
+  if (Object.keys(snap.watchers || {}).length === 0) {
     safeSetHTML(el, `<div class="placeholder"><div>no named watchers in this window.</div></div>`);
     renderWhoFollowsYouSummary(snap);
     return;
@@ -783,7 +858,7 @@ function renderWhoFollowsYou(snap) {
   // week) can land an older callback after a newer one and paint stale
   // rows. Bail if a newer render started while we were waiting on storage.
   const myToken = whoFollowsRenderToken;
-  chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany'], (s) => {
+  chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany', 'farblerCounters'], (s) => {
     if (myToken !== whoFollowsRenderToken) return;
     const byCompanyTrimmed = (s.cookieScopeCounters && s.cookieScopeCounters.byCompany) || {};
     const byCompanyBlurred = s.farblerBlurredByCompany || {};
@@ -800,29 +875,46 @@ function renderWhoFollowsYou(snap) {
       return parts.length ? 'via ' + parts.join(' · ') : '';
     };
 
-    const rowsHtml = ranked.map((c) => {
-      const trimmed = (byCompanyTrimmed[c.key] && byCompanyTrimmed[c.key].tightened) || 0;
-      const blurred = (byCompanyBlurred[c.key] && byCompanyBlurred[c.key].count) || 0;
+    // One row per PARENT company (Google Ads/Analytics/YouTube -> Google).
+    // Reach is a union over members; trimmed/blurred are the parent's stored
+    // counters (sub-brands are credited to the parent at write time). See
+    // WH_buildWatcherRows in company-map.js. Last row = lifetime total minus
+    // the shown rows, so the columns always add up.
+    const trimmedTotal = (s.cookieScopeCounters && s.cookieScopeCounters.tightened) || 0;
+    const blurredTotal = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
+    const t = WH_buildWatcherRows(snap, byCompanyTrimmed, byCompanyBlurred, trimmedTotal, blurredTotal, 12);
+    const rowsHtml = t.rows.map((c) => {
       const via = mechWords(c.mech || {});
       return `
         <div class="watcher-row">
           <span class="wt-name">${escapeText(c.name)}${via ? `<span class="wt-via">${escapeText(via)}</span>` : ''}</span>
           <span class="wt-reach">${c.hits} of ${snap.visitsN} <span class="dim">visits</span></span>
-          <span class="wt-num${trimmed > 0 ? ' pos' : ''}">${trimmed.toLocaleString()}</span>
-          <span class="wt-num${blurred > 0 ? ' pos' : ''}">${blurred.toLocaleString()}</span>
+          <span class="wt-num${c.trimmed > 0 ? ' pos' : ''}">${numHtml(c.trimmed)}</span>
+          <span class="wt-num${c.blurred > 0 ? ' pos' : ''}">${numHtml(c.blurred)}</span>
         </div>`;
     }).join('');
+    const elseHtml = `
+        <div class="watcher-row">
+          <span class="wt-name">everything else<span class="wt-via">the sites' own cookies, plus trackers we can't name</span></span>
+          <span class="wt-reach dim">—</span>
+          <span class="wt-num${t.elseTrimmed > 0 ? ' pos' : ''}">${numHtml(t.elseTrimmed)}</span>
+          <span class="wt-num${t.elseBlurred > 0 ? ' pos' : ''}">${numHtml(t.elseBlurred)}</span>
+        </div>`;
+    const quietHtml = t.quiet.length
+      ? `<div class="wt-quiet dim">also seen, nothing to trim or blur: ${escapeText(t.quiet.join(' · '))}</div>`
+      : '';
 
     safeSetHTML(el, `
+      <div class="wt-quiet dim wt-caption">trimmed · blurred columns are all-time totals, not the window above</div>
       <div class="watcher-table">
         <div class="watcher-header">
           <span class="wt-name">company</span>
           <span class="wt-reach">reach</span>
-          <span class="wt-num">trimmed</span>
-          <span class="wt-num">blurred</span>
+          <span class="wt-num" title="all time">trimmed</span>
+          <span class="wt-num" title="all time">blurred</span>
         </div>
-        ${rowsHtml}
-      </div>`);
+        ${rowsHtml}${elseHtml}
+      </div>${quietHtml}`);
 
     renderWhoFollowsYouSummary(snap);
   });
@@ -849,20 +941,16 @@ function wireSiteSelectors() {
   // path would re-call this and leak duplicate chrome.tabs listeners.
   if (siteSelectorsWired) return;
   siteSelectorsWired = true;
-  const watcherSel = $('watcher-site-sel');
-  const termsSel = $('terms-site-sel');
+  const siteSel = $('site-sel');
   const noData = (label) => `<div class="placeholder"><div>no live capture for ${escapeText(label)} yet — open or refresh that tab and try again.</div></div>`;
 
-  watcherSel.addEventListener('change', () => {
-    const opt = watcherSel.options[watcherSel.selectedIndex];
-    fetchTabReport(parseInt(watcherSel.value, 10)).then((r) => {
-      safeSetHTML($('watcher-detail-block'), r ? renderWatcherDetail(r) : noData(opt?.textContent || 'this tab'));
-    });
-  });
-  termsSel.addEventListener('change', () => {
-    const opt = termsSel.options[termsSel.selectedIndex];
-    fetchTabReport(parseInt(termsSel.value, 10)).then((r) => {
-      safeSetHTML($('terms-block'), r ? renderTermsBlock(r) : noData(opt?.textContent || 'this tab'));
+  // One dropdown drives both the watcher detail and the terms block.
+  siteSel.addEventListener('change', () => {
+    const opt = siteSel.options[siteSel.selectedIndex];
+    fetchTabReport(parseInt(siteSel.value, 10)).then((r) => {
+      const nd = noData(opt?.textContent || 'this tab');
+      safeSetHTML($('watcher-detail-block'), r ? renderWatcherDetail(r) : nd);
+      safeSetHTML($('terms-block'), r ? renderTermsBlock(r) : nd);
     });
   });
 
@@ -895,8 +983,7 @@ function wireSiteSelectors() {
 function populateSiteSelectors(opts) {
   chrome.runtime.sendMessage({ type: 'getOpenTabs' }, (tabs) => {
     if (!Array.isArray(tabs) || tabs.length === 0) return;
-    const watcherSel = $('watcher-site-sel');
-    const termsSel = $('terms-site-sel');
+    const siteSel = $('site-sel');
     const preserve = opts && opts.preserveSelection;
 
     const labelFor = (t) => {
@@ -919,29 +1006,20 @@ function populateSiteSelectors(opts) {
       ? current
       : fallback;
 
-    const watcherPrev = watcherSel.value;
-    const termsPrev = termsSel.value;
-    const watcherVal = resolveVal(watcherPrev);
-    const termsVal = resolveVal(termsPrev);
+    const prev = siteSel.value;
+    const val = resolveVal(prev);
 
-    const buildOptions = (selVal) => sorted
-      .map((t) => `<option value="${t.id}"${String(t.id) === selVal ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
+    const options = sorted
+      .map((t) => `<option value="${t.id}"${String(t.id) === val ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
       .join('');
-
-    const watcherOptions = buildOptions(watcherVal);
-    const termsOptions = buildOptions(termsVal);
 
     // Skip the innerHTML swap when the markup is unchanged. Replacing
     // options while the dropdown is open closes the menu under the
     // user's click, so their selection never fires `change`. The
     // `selected` attribute already tracks the correct value.
-    if (watcherSel.innerHTML !== watcherOptions) {
-      safeSetHTML(watcherSel, watcherOptions);
-      watcherSel.value = watcherVal;
-    }
-    if (termsSel.innerHTML !== termsOptions) {
-      safeSetHTML(termsSel, termsOptions);
-      termsSel.value = termsVal;
+    if (siteSel.innerHTML !== options) {
+      safeSetHTML(siteSel, options);
+      siteSel.value = val;
     }
 
     // If the user's selection was forcibly moved (their tab closed),
@@ -949,11 +1027,8 @@ function populateSiteSelectors(opts) {
     // from the closed tab. Synthetic `change` is the existing handler
     // path — keeps fetchTabReport + cache + no-data fallback in one
     // place.
-    if (watcherPrev && watcherPrev !== watcherVal) {
-      watcherSel.dispatchEvent(new Event('change'));
-    }
-    if (termsPrev && termsPrev !== termsVal) {
-      termsSel.dispatchEvent(new Event('change'));
+    if (prev && prev !== val) {
+      siteSel.dispatchEvent(new Event('change'));
     }
   });
 }
@@ -963,10 +1038,10 @@ function fetchTabReport(targetTabId) {
   const cached = tabReportCache.get(targetTabId);
   if (cached) return Promise.resolve(cached);
   return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: 'getFullReport', tabId: targetTabId }, (r) => {
+    whFlushTab(targetTabId, () => chrome.runtime.sendMessage({ type: 'getFullReport', tabId: targetTabId }, (r) => {
       if (r) tabReportCache.set(targetTabId, r);
       resolve(r || null);
-    });
+    }));
   });
 }
 
@@ -999,7 +1074,8 @@ function renderWatcherDetail(report) {
     : '';
 
   // Top companies with via + purpose
-  const companyRows = companies.slice(0, 12).map((c) => {
+  const merged = self.WH_mergeCompanies(companies);
+  const companyRows = merged.slice(0, 12).map((c) => {
     const via = [];
     if (c.viaPixels) via.push(`pixels ${c.viaPixels}`);
     if (c.viaCookies) via.push(`cookies ${c.viaCookies}`);
@@ -1014,7 +1090,7 @@ function renderWatcherDetail(report) {
   }).join('');
 
   const companyBlock = companies.length
-    ? `<div class="block-sub">companies (${companies.length})</div>${companyRows}`
+    ? `<div class="block-sub">companies (${merged.length})</div>${companyRows}`
     : '';
 
   // Data brokers — call out separately, even if folded into companies
@@ -1036,7 +1112,7 @@ function renderWatcherDetail(report) {
     <div class="event">
       <span class="event-icon">[·]</span>
       <span class="event-kind">${escapeText(m.technique || '')}</span>
-      <span class="event-text"><span class="dim">${(m.apis || []).slice(0, 4).map(escapeText).join(', ')}${m.apis && m.apis.length > 4 ? ', …' : ''} · ${m.calls || 0} calls</span></span>
+      <span class="event-text"><span class="dim">${(m.apis || []).slice(0, 4).map(escapeText).join(', ')}${m.apis && m.apis.length > 4 ? ', …' : ''} · ${numHtml(m.calls || 0)} calls</span></span>
     </div>
   `).join('');
 
@@ -1069,13 +1145,15 @@ function renderWatcherDetail(report) {
   // 5); the dashboard's detail view is where it belongs.
   const local = report.localData || {};
   const flaggedKeys = Array.isArray(local.flaggedKeys) ? local.flaggedKeys : [];
+  const storedGroups = self.WH_groupStoredKeys(flaggedKeys);
+  const storedKinds = storedGroups.length < flaggedKeys.length ? ` · ${storedGroups.length} kinds` : '';
   const storedBlock = (local.suspicious || 0) > 0
-    ? `<div class="block-sub">stored identifiers (${local.suspicious})</div>
-       ${flaggedKeys.slice(0, 8).map((k) => `
+    ? `<div class="block-sub">stored identifiers (${local.suspicious}${storedKinds})</div>
+       ${storedGroups.slice(0, 8).map((k) => `
          <div class="event">
            <span class="event-icon">[·]</span>
-           <span class="event-kind">${escapeText(k.key || '')}</span>
-           <span class="event-text"><span class="dim">${(k.flags || []).slice(0, 3).map(escapeText).join(', ')}</span></span>
+           <span class="event-kind">${escapeText(k.key)}${k.n > 1 ? ` ×${k.n}` : ''}</span>
+           <span class="event-text"><span class="dim">${k.flags.slice(0, 3).map(escapeText).join(', ')}</span></span>
          </div>
        `).join('')}`
     : '';
@@ -1139,7 +1217,7 @@ function renderTermsBlock(report) {
 
   return `
     <div class="score-line">
-      <span class="score-num">${score} / 100</span>
+      <span class="score-num ${verdictCls}">${score} / 100</span>
       <span class="${verdictCls}">[${verdict}]</span>
     </div>
     ${sourceLine}
@@ -1304,7 +1382,7 @@ function renderSurfacesBlurred() {
     const bar = (n, max) => `<span class="bar" style="width:${Math.round((n / max) * 60)}%"></span>`;
 
     const famRows = famEntries.map(([fam, n]) =>
-      `<div class="bar-row"><span class="nval">${n.toLocaleString()}</span> ${bar(n, maxFam)} <span class="nlbl">${escapeText(FAMILY_LABELS[fam] || fam)}</span></div>`
+      `<div class="bar-row"><span class="nval">${numHtml(n)}</span> ${bar(n, maxFam)} <span class="nlbl">${escapeText(FAMILY_LABELS[fam] || fam)}</span></div>`
     ).join('');
 
     const topSites = siteEntries.slice(0, 5);
@@ -1318,7 +1396,7 @@ function renderSurfacesBlurred() {
       <div class="bar-row"><span class="nval">${stableCount}</span> ${bar(stableCount, maxMode)} <span class="nlbl">stable (per-site)</span></div>
       <div class="bar-row"><span class="nval">${offCount}</span> ${bar(offCount, maxMode)} <span class="nlbl">off (allowlisted)</span></div>
 
-      <div class="callout" style="margin-top:10px">top sites: ${topSites.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${n.toLocaleString()})`).join(' · ') || '—'}</div>
+      <div class="callout" style="margin-top:10px">top sites: ${topSites.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${numHtml(n)})`).join(' · ') || '—'}</div>
     `);
   });
 }
@@ -1429,6 +1507,8 @@ const WH_PUBLIC_SUFFIX = {
   'now.sh': 1, 'surge.sh': 1,
 };
 function whEtld1(rawHost) {
+  const h = String(rawHost || '').toLowerCase();
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') !== -1) return h;  // IP literal
   const labels = String(rawHost || '').toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return '';
   const lastTwo = labels.slice(-2).join('.');
@@ -1515,7 +1595,7 @@ function loadScoperState() {
 
 function renderScoperHero(state) {
   const stats = state.cookieScopeCounters || {};
-  $('scoper-tightened').textContent = (stats.tightened || 0).toLocaleString();
+  setNum($('scoper-tightened'), stats.tightened || 0);
   $('scoper-sweeps').textContent = (stats.sweeps || 0).toLocaleString();
   // "last active" = most-recent guard event. Blur has no persisted timestamp
   // yet (lands with blur telemetry in 3b-2), so the cookie sweep — the
@@ -1527,7 +1607,7 @@ function renderScoperHero(state) {
   chrome.storage.local.get('farblerCounters', (s) => {
     const blurred = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
     const el = $('scoper-blurred');
-    if (el) el.textContent = blurred.toLocaleString();
+    if (el) setNum(el, blurred);
   });
 }
 
@@ -1555,7 +1635,8 @@ function renderCoverage() {
         else if (days < 90) expiry['<90d']++;
         else expiry['1yr+']++;
       }
-      const host = (c.domain || '').replace(/^\./, '').split('.').slice(-2).join('.');
+      const dom = (c.domain || '').replace(/^\./, '');
+      const host = (/^\d{1,3}(\.\d{1,3}){3}$/.test(dom) || dom.indexOf(':') !== -1) ? dom : dom.split('.').slice(-2).join('.');
       if (host) owners[host] = (owners[host] || 0) + 1;
     }
     const total = (cookies || []).length;
@@ -1569,7 +1650,7 @@ function renderCoverage() {
       const maxCov = Math.max(1, cov.capped, cov.trusted, cov.killOnClose);
       el.classList.remove('placeholder');
       safeSetHTML(el, `
-        <div class="callout"><strong>${total.toLocaleString()}</strong> cookies in your browser right now</div>
+        <div class="callout"><strong>${numHtml(total)}</strong> cookies in your browser right now</div>
 
         <div class="block-sub">coverage · what the scoper will do</div>
         <div class="bar-row"><span class="nval">${cov.capped}</span> ${bar(cov.capped, maxCov)} <span class="nlbl">capped (1p · 7d)</span></div>

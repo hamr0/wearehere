@@ -89,10 +89,15 @@
       "HMAC", keyMat,
       new TextEncoder().encode(input)
     );
-    return bytesToHex(new Uint8Array(sig).slice(0, 4));
+    // DataView reads, not new Uint8Array(sig).slice(): Firefox content scripts
+    // throw "Permission denied to access property constructor" on typed-array
+    // methods over a page-realm ArrayBuffer from crypto.subtle, which silently
+    // killed seed derivation (no farble state/seed attributes) in Firefox.
+    var dv = new DataView(sig);
+    return bytesToHex([dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3)]);
   }
 
-  // Registrable domain for per-site override + relax-offer lookup. KEEP THIS
+  // Registrable domain for per-site override lookup. KEEP THIS
   // SUFFIX LIST IN SYNC with background.js `self.WH_PUBLIC_SUFFIX` (and
   // scoper.js / popup.js / report.js) — the key is written in the SW/pages and
   // read here; a mismatch silently drops rules.
@@ -110,6 +115,7 @@
   };
   function etld1FromHost(host) {
     if (!host) return "";
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || String(host).indexOf(":") !== -1) return host;  // IP literal
     var labels = String(host).split(".").filter(Boolean);
     if (labels.length < 2) return host;
     var lastTwo = labels.slice(-2).join(".").toLowerCase();
@@ -117,15 +123,43 @@
     return labels.slice(-2).join(".");
   }
 
+  // Match location against challenge patterns of the forms actually used:
+  //   *://host/*   *://*.domain/* (incl. bare domain)   *://host/path/*
+  function whIsChallengeFrame(patterns) {
+    if (!Array.isArray(patterns)) return false;
+    var host = (location.hostname || "").toLowerCase();
+    var path = location.pathname || "/";
+    for (var i = 0; i < patterns.length; i++) {
+      var m = /^\*:\/\/([^\/]+)(\/.*)$/.exec(String(patterns[i]));
+      if (!m) continue;
+      var ph = m[1].toLowerCase(), pp = m[2];
+      var hostOk = ph.indexOf("*.") === 0
+        ? (host === ph.slice(2) || host.slice(-(ph.length - 1)) === ph.slice(1))
+        : host === ph;
+      if (!hostOk) continue;
+      if (pp === "/*") return true;
+      if (pp.slice(-1) === "*" ? path.indexOf(pp.slice(0, -1)) === 0 : path === pp) return true;
+    }
+    return false;
+  }
+
   (async function () {
     try {
       var stored = await new Promise(function (resolve) {
-        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies", "farblerRotationSalt"], resolve);
+        chrome.storage.local.get(["defaultBlurMode", "farblerSettings", "farbleDisableFamilies", "farblerRotationSalt", "whChallengeExcludes"], resolve);
       });
       DEBUG && console.log("[wh-farble:dw] storage →", JSON.stringify(stored), "hasDoc=" + !!document.documentElement);
       if (!document.documentElement) return;
 
       var origin = location.hostname || "";
+      if (!origin && /^(about|blob|data):$/.test(location.protocol)) {
+        // about:blank / srcdoc / blob: / data: frames inherit their creator's
+        // origin, but location.hostname is "" there (and location.origin is
+        // "null"); self.origin is the real inherited one. Without this every
+        // blank frame on every site would share one seed ("rotation|salt|") — a
+        // cross-site identifier — and ignore Trust ID / per-site overrides.
+        try { var inh = self.origin; origin = (inh && inh !== "null") ? new URL(inh).hostname : ""; } catch (e) { origin = ""; }
+      }
       var etld1 = etld1FromHost(origin);
       var settings = (stored && stored.farblerSettings) || {};
       var override = settings[etld1] || null;
@@ -154,6 +188,14 @@
         state = "rotation";
       }
 
+      // No usable origin (opaque: sandboxed / null-origin frame): fail safe, off.
+      if (!origin) state = "off";
+
+      // Challenge/CAPTCHA frames (inject.js is excluded there): write nothing.
+      // Patterns are published by background.js (whChallengeExcludes); absent on
+      // first run -> behave as before.
+      if (state !== "off" && whIsChallengeFrame(stored && stored.whChallengeExcludes)) state = "off";
+
       var seed = "";
       if (state !== "off") {
         var secret = await getSecret();
@@ -170,8 +212,17 @@
           }
         }
       }
-      document.documentElement.setAttribute("data-wh-farble-state", state);
-      document.documentElement.setAttribute("data-wh-farble-seed", seed);
+      var de = document.documentElement;
+      if (state === "off") {
+        // Leave no trace: inject.js treats a missing attribute as "off".
+        de.removeAttribute("data-wh-farble-state");
+        de.removeAttribute("data-wh-farble-seed");
+        de.removeAttribute("data-wh-farble-disable");
+        DEBUG && console.log("[wh-farble:dw] state=off, attributes removed");
+        return;
+      }
+      de.setAttribute("data-wh-farble-state", state);
+      de.setAttribute("data-wh-farble-seed", seed);
       // Per-family disable (diagnostic / per-site relax). Global list for now:
       //   chrome.storage.local.set({ farbleDisableFamilies: ["webgl"] })
       // inject.js skips farbling for any listed family (canvas|webgl|audio|
@@ -187,119 +238,6 @@
   })();
   // --- end farble-seed ---
 
-  // --- relax banner (in-page) ------------------------------------------
-  // background.js flags farbleReloadOffer[etld1] when a user rage-reloads a
-  // site that's likely broken by fingerprint blur. Show a top banner offering
-  // one-click relax + reload — far more discoverable than expecting the user
-  // to find our toolbar popup. Top frame + http(s) only. Rendered in a shadow
-  // root with styles set via the CSSOM (not a <style> tag / style attribute),
-  // so the page's CSS can't distort it and a strict CSP can't block it. We
-  // react to storage.onChanged so it appears on the current load, and also
-  // check once at start in case the flag predates this load.
-  var WH_RELAX_ETLD1 = (function () { try { return etld1FromHost(location.hostname || ""); } catch (e) { return ""; } })();
-  var whRelaxShown = false;
-
-  function showRelaxBanner(etld1) {
-    if (whRelaxShown || window.top !== window || !document.documentElement) return;
-    if (document.getElementById("wh-relax-banner-host")) return;
-    whRelaxShown = true;
-
-    var hostEl = document.createElement("div");
-    hostEl.id = "wh-relax-banner-host";
-    hostEl.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:2147483647;";
-    var root = hostEl.attachShadow ? hostEl.attachShadow({ mode: "open" }) : hostEl;
-
-    var bar = document.createElement("div");
-    bar.style.cssText = "display:flex;align-items:center;justify-content:center;gap:10px;" +
-      "position:relative;padding:10px 44px;" +
-      "background:#1a1b26;color:#c0caf5;border-bottom:2px solid #e0af68;" +
-      "font:13px/1.4 'JetBrains Mono','IBM Plex Mono',ui-monospace,Menlo,monospace;" +
-      "box-shadow:0 2px 8px rgba(0,0,0,0.4);";
-
-    // Full [we]arehere wordmark, matching the popup.
-    var brand = document.createElement("span");
-    brand.style.cssText = "flex-shrink:0;font-weight:800;";
-    var we = document.createElement("span"); we.textContent = "[we]"; we.style.cssText = "color:#e0af68;";
-    var rest = document.createElement("span"); rest.textContent = "arehere"; rest.style.cssText = "color:#c0caf5;";
-    brand.appendChild(we); brand.appendChild(rest);
-
-    var msg = document.createElement("span");
-    msg.textContent = etld1 + " may not work with fingerprint protection on.";
-    msg.style.cssText = "min-width:0;";
-
-    var relax = document.createElement("button");
-    relax.textContent = "relax & reload";
-    relax.style.cssText = "flex-shrink:0;cursor:pointer;padding:5px 12px;border:1px solid #e0af68;" +
-      "background:#e0af68;color:#1a1b26;font:inherit;font-weight:700;border-radius:3px;";
-
-    var close = document.createElement("button");
-    close.textContent = "✕";
-    close.setAttribute("aria-label", "dismiss");
-    close.style.cssText = "position:absolute;right:10px;top:50%;transform:translateY(-50%);" +
-      "cursor:pointer;padding:5px 9px;border:1px solid #565f89;" +
-      "background:transparent;color:#9aa5ce;font:inherit;border-radius:3px;";
-
-    relax.addEventListener("click", function () {
-      DEBUG && console.log("[wh-farble:relax] relax clicked for " + etld1);
-      // Dismiss synchronously — instant feedback and not gated on any async
-      // callback (the previous bug: reload was the callback to a storage write
-      // that never fired once this page's content-script context was torn down
-      // by the anti-bot script right after the banner appeared).
-      try { hostEl.remove(); } catch (e) {}
-      var reloaded = false;
-      var doReload = function () {
-        if (reloaded) return; reloaded = true;
-        try { location.reload(); } catch (e) { try { location.href = location.href; } catch (e2) {} }
-      };
-      // Persist blur-off + reload via the service worker. Its context is stable
-      // (unlike this page's, which the site can tear down) and chrome.tabs.reload
-      // doesn't depend on page JS surviving. Only reload page-side when the SW is
-      // unreachable (context already dead); otherwise trust the SW reload and keep
-      // a long backstop in case it never lands. A fresh content script re-shows
-      // the still-pending offer if we reload before the relax could persist.
-      try {
-        if (chrome.runtime && chrome.runtime.id) {
-          chrome.runtime.sendMessage({ type: "wh-relax-site", etld1: etld1 }, function () {
-            void (chrome.runtime && chrome.runtime.lastError);
-          });
-          setTimeout(doReload, 3000);  // backstop only; the SW reload wins normally
-        } else {
-          doReload();                  // ctx dead — SW unreachable, reload now
-        }
-      } catch (e) { doReload(); }
-    });
-    close.addEventListener("click", function () {
-      try { hostEl.remove(); } catch (e) {}
-      // Clear via the SW for the same reason relax does — this page's context may
-      // already be torn down, so a page-side storage write could silently no-op.
-      try {
-        if (chrome.runtime && chrome.runtime.id) {
-          chrome.runtime.sendMessage({ type: "wh-clear-relax-offer", etld1: etld1 }, function () {
-            void (chrome.runtime && chrome.runtime.lastError);
-          });
-        }
-      } catch (e) {}
-    });
-
-    bar.appendChild(brand); bar.appendChild(msg); bar.appendChild(relax); bar.appendChild(close);
-    root.appendChild(bar);
-    document.documentElement.appendChild(hostEl);
-    DEBUG && console.log("[wh-farble:relax] banner shown for " + etld1);
-  }
-
-  function whCheckRelaxOffer() {
-    if (window.top !== window || !/^https?:$/.test(location.protocol) || !WH_RELAX_ETLD1) return;
-    chrome.storage.local.get("farbleReloadOffer", function (s) {
-      var o = s && s.farbleReloadOffer && s.farbleReloadOffer[WH_RELAX_ETLD1];
-      if (o && o.at && (Date.now() - o.at) < 10 * 60 * 1000) showRelaxBanner(WH_RELAX_ETLD1);
-    });
-  }
-
-  chrome.storage.onChanged.addListener(function (changes, area) {
-    if (area === "local" && changes.farbleReloadOffer) whCheckRelaxOffer();
-  });
-  whCheckRelaxOffer();
-  // --- end relax banner ------------------------------------------------
 
 
   // inject.js is loaded by manifest as a MAIN-world content script at
@@ -307,28 +245,40 @@
   // <script> injection that used to live here would cause double-wrap of
   // canvas APIs — XOR-based perturbation cancels itself out. Removed.
 
-  // Listen for messages from inject.js
-  window.addEventListener("message", function (event) {
-    if (event.source !== window) return;
-    if (!event.data || event.data.type !== MSG_TYPE) return;
-
-    var api = event.data.api;
-    var category = event.data.category;
-    var script = event.data.script;
+  // Listen for batched messages from inject.js. Each entry is
+  // { api, category, count, scripts: [host, ...] }: count is the exact
+  // number of calls since the last batch, scripts the caller hosts seen
+  // (stack walks are sampled in inject.js, attribution is per distinct
+  // host, so sampling loses no unique pair for anything but a late caller
+  // of an already-hot API).
+  function record(e) {
+    if (!e || typeof e.api !== "string") return;
+    var api = e.api;
+    var category = e.category;
+    var n = (typeof e.count === "number" && e.count > 0 && e.count < 1e7) ? Math.floor(e.count) : 1;
 
     if (!counts[api]) {
       counts[api] = { category: category, count: 0 };
     }
-    counts[api].count++;
+    counts[api].count += n;
 
-    if (script) {
+    var scripts = Array.isArray(e.scripts) ? e.scripts : [];
+    for (var i = 0; i < scripts.length; i++) {
+      var script = scripts[i];
+      if (typeof script !== "string" || !script) continue;
       if (!byScript[script]) byScript[script] = { fingerprintApis: {}, permissionApis: {} };
       var bucket = category === "fingerprint" ? byScript[script].fingerprintApis
                  : category === "permission"  ? byScript[script].permissionApis
                  : null;
       if (bucket) bucket[api] = true;
     }
+  }
 
+  window.addEventListener("message", function (event) {
+    if (event.source !== window) return;
+    if (!event.data || event.data.type !== MSG_TYPE || !Array.isArray(event.data.batch)) return;
+    var batch = event.data.batch;
+    for (var i = 0; i < batch.length; i++) record(batch[i]);
     scheduleSend();
   });
 

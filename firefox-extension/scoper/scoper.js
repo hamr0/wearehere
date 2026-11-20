@@ -14,6 +14,11 @@
 //   - Trusted site (user-added)         -> cap 30d or 90d
 //   - Cookie classified as tracker (OCD Marketing/Analytics)
 //                                       -> session (kill on tab close)
+//   - Never touched: partitioned cookies (Chrome CHIPS partitionKey / Firefox
+//     partitionKey or firstPartyDomain) and cookies on captcha/challenge hosts
+//     (WH_CHALLENGE_EXCLUDES). cookies.set without the partition key writes an
+//     unpartitioned duplicate (e.g. cf_clearance), which broke Cloudflare
+//     Turnstile logins; partitioned cookies are already single-site scoped.
 //
 // Storage shape:
 //   cookieScopeCounters: { tightened, demotions, sweeps, lastSweep, bySite: { etld1: { tightened, demotions } } }
@@ -49,6 +54,7 @@ const CAP_TRUSTED_POWER = 90;
 function etld1Of(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned) || cleaned.indexOf(':') !== -1) return cleaned.toLowerCase();  // IP literal
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join('.');
@@ -56,6 +62,41 @@ function etld1Of(host) {
   // case load order ever changes — falls back to last-two-labels.
   if ((self.WH_PUBLIC_SUFFIX || {})[lastTwo] && labels.length >= 3) return labels.slice(-3).join('.');
   return lastTwo;
+}
+
+// Cookies the scoper must leave alone: (1) partitioned cookies (Chrome CHIPS
+// partitionKey, Firefox TCP partitionKey / FPI firstPartyDomain). They are
+// already scoped to one top-level site, and re-setting one through
+// cookies.set without its partition key writes an UNPARTITIONED duplicate
+// (seen live: cf_clearance on a Cloudflare-challenged login), which corrupts
+// challenge/anti-bot state. (2) Cookies on the captcha/challenge provider
+// hosts in WH_CHALLENGE_EXCLUDES (background.js, read at call time).
+function isPartitioned(cookie) {
+  return !!(cookie.partitionKey || cookie.firstPartyDomain);
+}
+
+// A challenge pattern with a path ('*://www.google.com/recaptcha/*') only
+// exempts cookies whose own path sits under that prefix (reCAPTCHA sets
+// _GRECAPTCHA with path /recaptcha). Matching the host alone would also exempt
+// every other host-only cookie on www.google.com. Host-only patterns
+// ('*://challenges.cloudflare.com/*') stay host-wide.
+function isChallengeCookie(cookie) {
+  if (typeof WH_CHALLENGE_EXCLUDES === 'undefined') return false;
+  const host = cookie.domain.replace(/^\./, '').toLowerCase();
+  const cpath = cookie.path || '/';
+  for (const pat of WH_CHALLENGE_EXCLUDES) {
+    const m = /^\*:\/\/(\*\.)?([^/]+)(\/[^*]*)?\*?$/.exec(pat);
+    if (!m) continue;
+    if (!(host === m[2] || host.endsWith('.' + m[2]))) continue;
+    const prefix = (m[3] || '/').replace(/\/+$/, '');
+    if (!prefix) return true;
+    if (cpath === prefix || cpath.startsWith(prefix + '/')) return true;
+  }
+  return false;
+}
+
+function shouldSkipCookie(cookie) {
+  return isPartitioned(cookie) || isChallengeCookie(cookie);
 }
 
 function buildSetDetails(cookie, capDays) {
@@ -137,6 +178,7 @@ async function sweep(trigger) {
     const etld1 = etld1Of(c.domain);
     if (!etld1) continue;
     if (c.session) continue;
+    if (shouldSkipCookie(c)) continue;
 
     const decision = decideCap(c, etld1, trust);
     if (decision.cap !== null) {
@@ -158,12 +200,7 @@ async function sweep(trigger) {
       demotions++;
       perSite[etld1].demotions++;
     }
-    const company = domainCompany[etld1];
-    if (company) {
-      const k = company.toLowerCase();
-      if (!perCompany[k]) perCompany[k] = { name: company, tightened: 0 };
-      perCompany[k].tightened++;
-    }
+    creditCompany(perCompany, domainCompany[etld1]);
   }
 
   await mergeCounters(rewrote, demotions, perSite, perCompany);
@@ -173,6 +210,19 @@ async function sweep(trigger) {
   const stats = { scanned, rewrote, demotions, failed, rewrites: rewrote };
   console.log(`[scoper] sweep (${trigger}): scanned ${scanned}, rewrote ${rewrote}, demoted ${demotions}`);
   return stats;
+}
+
+// Credit a company, and its parent when it is a sub-brand ("Google Ads" also
+// counts toward "Google"). Parent rows therefore include their sub-brands;
+// the Watchers table avoids double-counting when it sums them.
+function creditCompany(bucket, company) {
+  if (!company) return;
+  const parent = self.WH_companyParent && self.WH_companyParent(company);
+  for (const name of parent ? [company, parent] : [company]) {
+    const k = name.toLowerCase();
+    if (!bucket[k]) bucket[k] = { name, tightened: 0 };
+    bucket[k].tightened++;
+  }
 }
 
 async function mergeCounters(deltaTightened, deltaDemotions, perSite, perCompany) {
@@ -227,27 +277,33 @@ async function mergeCountersUnsafe(deltaTightened, deltaDemotions, perSite, perC
   });
 }
 
-// Cached cookie-domain → company map. Populated by background.js's
-// harvest from detect-cooked items (keyed by eTLD+1). We read it once
-// per sweep and cache it for the realtime onChanged path; storage
-// listener below refreshes the cache when background writes a new
-// version. Cookies whose domain hasn't been observed via cooked stay
-// unattributed in byCompany — the lifetime total in `tightened` is
-// still complete.
+// Cached cookie-domain → company map, keyed by registrable domain. Seeded
+// from the built-in tracker list (company-map.js), then topped up with what
+// background.js's harvest learned from detect-cooked items (learned entries
+// only fill domains the list doesn't know). Read once per sweep and cached
+// for the realtime onChanged path; the storage listener below refreshes it.
+// Cookies on domains nobody can name stay unattributed in byCompany — the
+// lifetime total in `tightened` is still complete (the Watchers table shows
+// the remainder as "everything else").
 let domainCompanyCache = null;
+let domainCompanySeed = null;
+function mergeDomainCompany(learned) {
+  if (!domainCompanySeed) domainCompanySeed = self.WH_seedDomainCompany ? self.WH_seedDomainCompany(etld1Of) : {};
+  const out = Object.assign({}, learned && typeof learned === 'object' ? learned : {}, domainCompanySeed);
+  return out;
+}
 async function loadDomainCompanyMapForScoper() {
   if (domainCompanyCache) return domainCompanyCache;
   try {
     const { cookieDomainCompanyMap } = await chrome.storage.local.get('cookieDomainCompanyMap');
-    domainCompanyCache = (cookieDomainCompanyMap && typeof cookieDomainCompanyMap === 'object')
-      ? cookieDomainCompanyMap : {};
-  } catch { domainCompanyCache = {}; }
+    domainCompanyCache = mergeDomainCompany(cookieDomainCompanyMap);
+  } catch { domainCompanyCache = mergeDomainCompany(null); }
   return domainCompanyCache;
 }
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.cookieDomainCompanyMap) {
-    domainCompanyCache = changes.cookieDomainCompanyMap.newValue || {};
+    domainCompanyCache = mergeDomainCompany(changes.cookieDomainCompanyMap.newValue);
   }
 });
 // Warm the cache at load so the realtime onChanged path can attribute
@@ -360,12 +416,7 @@ function queueRetrim(etld1, isDemote) {
   // few real-time retrims after a fresh install may not resolve a
   // company yet, which is fine — they accrue to bySite, just not to
   // byCompany. Cache is refreshed via the storage listener above.
-  const company = domainCompanyCache && domainCompanyCache[etld1];
-  if (company) {
-    const k = company.toLowerCase();
-    if (!pendingRetrim.byCompany[k]) pendingRetrim.byCompany[k] = { name: company, tightened: 0 };
-    pendingRetrim.byCompany[k].tightened++;
-  }
+  creditCompany(pendingRetrim.byCompany, domainCompanyCache && domainCompanyCache[etld1]);
   if (pendingFlushTimer) return;
   pendingFlushTimer = setTimeout(flushPendingRetrim, RETRIM_FLUSH_MS);
 }
@@ -388,6 +439,7 @@ chrome.cookies.onChanged.addListener(async (info) => {
   if (info.cause !== 'explicit') return;
   const c = info.cookie;
   if (c.session) return;
+  if (shouldSkipCookie(c)) return;
   if (!c.expirationDate) return;
   const etld1 = etld1Of(c.domain);
   if (!etld1) return;
@@ -411,9 +463,11 @@ chrome.cookies.onChanged.addListener(async (info) => {
   if (!r.ok) return;
 
   queueRetrim(etld1, decision.reason === 'tracker-demote');
+  if (self.whCreditTrimToTab) self.whCreditTrimToTab(c.domain, etld1);
 });
 
 self.scoperSweep = sweep;
+self.scoperShouldSkipCookie = shouldSkipCookie;
 self.scoperEnsureAlarm = ensureAlarm;
 self.scoperEtld1Of = etld1Of;
 self.SCOPER_PERIOD_CHOICES_MIN = PERIOD_CHOICES_MIN;

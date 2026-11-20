@@ -112,3 +112,12 @@ test('clearVisits wipes the buffer', async () => {
   await ctx.visitsClear();
   assert.equal((await ctx.visitsGet('all')).length, 0);
 });
+
+test('compactVisit records per-visit trimmed count (0 when report has none)', async () => {
+  const ctx = loadServiceWorkerModule('visits.js');
+  await ctx.visitsAppend(makeReport({ trimmed: 18 }));
+  await ctx.visitsAppend(makeReport());
+  const all = await ctx.visitsGet('all');
+  assert.equal(all[1].trimmed, 18);
+  assert.equal(all[0].trimmed, 0);
+});

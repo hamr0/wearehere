@@ -15,7 +15,24 @@ function safeSetHTML(el, html) {
   el.replaceChildren.apply(el, Array.from(doc.body.childNodes));
 }
 
-chrome.runtime.sendMessage({ type: 'getReport' }, render);
+// Compact count helper shared with the dashboard (company-map.js).
+const fmtCount = self.WH_fmtCount;
+
+// Ask the page's content scripts to finish pending report work now (they defer it
+// until the page settles). Waits at most 2 s; never blocks on a page that cannot answer.
+function whFlushTab(tabId, cb) {
+  let done = false;
+  const finish = () => { if (!done) { done = true; cb(); } };
+  setTimeout(finish, 2000);
+  try {
+    chrome.tabs.sendMessage(tabId, { type: 'wh-flush' }, { frameId: 0 }, () => { void chrome.runtime.lastError; finish(); });
+  } catch (e) { finish(); }
+}
+
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  if (!tabs || !tabs[0]) return chrome.runtime.sendMessage({ type: 'getReport' }, render);
+  whFlushTab(tabs[0].id, () => chrome.runtime.sendMessage({ type: 'getReport' }, render));
+});
 
 const $ = (id) => document.getElementById(id);
 
@@ -161,7 +178,9 @@ function extractCompanies(report) {
     if (v && v.name) add(v.name);
   });
 
-  return out;
+  // Roll sub-brands up under their parent ("Google Ads", "Google" -> Google),
+  // same grouping as the dashboard, so "+N more" counts distinct parents.
+  return self.WH_uniqueParents(out).map((g) => g.name);
 }
 
 // Mechanism chips in the popup. Each entry is { name, n } where `n` is
@@ -251,6 +270,7 @@ const WH_PUBLIC_SUFFIX = {
 function etld1FromHost(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned) || cleaned.indexOf(':') !== -1) return cleaned.toLowerCase();  // IP literal
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join('.');
@@ -333,36 +353,6 @@ function renderGuardCard(etld1, trust, stats, report, farblerSettings, globalOn)
 
   renderGuardCookiesLine(etld1, capDays, isCookieTrusted, stats);
   renderGuardBlurLine(report, blurOverridden, globalOn, (override && override.mode) || null);
-  renderRelaxOffer(etld1, blurOverridden, globalOn);
-}
-
-// Rage-reload relax offer (popup fallback to the in-page banner). background.js
-// flags farbleReloadOffer[etld1] when a user hammers reload while blur is on —
-// a strong "this page is broken" signal. Rather than a duplicate action button,
-// we show a one-line hint and highlight the existing Trust ID button (which is
-// the relax action). Only when blur is actually on here and the flag is fresh.
-function renderRelaxOffer(etld1, blurOverridden, globalOn) {
-  const el = $('guard-relax-offer');
-  const trustIdBtn = $('trust-id');
-  if (!el) return;
-  const hide = () => { el.hidden = true; el.textContent = ''; if (trustIdBtn) trustIdBtn.classList.remove('pulse'); };
-  if (!etld1 || blurOverridden || !globalOn) { hide(); return; }
-  chrome.storage.local.get('farbleReloadOffer', (s) => {
-    const offer = (s.farbleReloadOffer && s.farbleReloadOffer[etld1]) || null;
-    const fresh = !!(offer && offer.at && (Date.now() - offer.at) < 10 * 60 * 1000);
-    if (!fresh) { hide(); return; }
-    el.hidden = false;
-    safeSetHTML(el, `reloading a lot? this site may not work with fingerprint blur — <strong>Trust ID</strong> turns it off here ↓`);
-    if (trustIdBtn) trustIdBtn.classList.add('pulse');
-  });
-}
-
-function clearRelaxOffer(etld1, done) {
-  chrome.storage.local.get('farbleReloadOffer', (s) => {
-    const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? Object.assign({}, s.farbleReloadOffer) : {};
-    delete offer[etld1];
-    chrome.storage.local.set({ farbleReloadOffer: offer }, done || function () {});
-  });
 }
 
 function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
@@ -381,6 +371,7 @@ function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
     const demotions = bySite ? bySite.demotions : 0;
 
     el.classList.remove('ok', 'warn');
+    el.removeAttribute('title');
     if (isTrusted && rewrites === 0) {
       el.textContent = `• Cookies passing through · trusted ${capDays}d cap`;
     } else if (!isTrusted && rewrites === 0 && maxDays <= capDays) {
@@ -391,8 +382,9 @@ function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
       el.classList.add('ok');
     } else {
       el.textContent =
-        `✓ Cookies expire in ${capDays} days · ${rewrites} trimmed` +
-        (demotions > 0 ? `, ${demotions} killed` : '');
+        `✓ Cookies expire in ${capDays} days · ${fmtCount(rewrites)} trimmed` +
+        (demotions > 0 ? `, ${fmtCount(demotions)} killed` : '');
+      if (rewrites >= 1000 || demotions >= 1000) el.title = `${rewrites.toLocaleString()} trimmed, ${demotions.toLocaleString()} killed`;
       el.classList.add('ok');
     }
   });
@@ -443,11 +435,16 @@ function renderGuardCounters(stats, farblerCounters) {
   const blurred = (farblerCounters && farblerCounters.totalCalls) || 0;
   const last = stats && stats.lastSweep ? relativeTime(stats.lastSweep) : null;
   const parts = [
-    `${trimmed.toLocaleString()} cookies trimmed`,
-    `${blurred.toLocaleString()} surfaces blurred`,
+    `${fmtCount(trimmed)} cookies trimmed`,
+    `${fmtCount(blurred)} surfaces blurred`,
   ];
   if (last) parts.push(last);
-  $('guard-counters').textContent = parts.join(' · ');
+  const gc = $('guard-counters');
+  gc.textContent = parts.join(' · ');
+  const exact = [];
+  if (trimmed >= 1000) exact.push(`${trimmed.toLocaleString()} cookies trimmed`);
+  if (blurred >= 1000) exact.push(`${blurred.toLocaleString()} surfaces blurred`);
+  if (exact.length) gc.title = exact.join(' · '); else gc.removeAttribute('title');
 }
 
 function wireGuardButtons() {
@@ -490,7 +487,6 @@ function wireGuardButtons() {
         settings[currentEtld1] = { mode: 'off' };
       }
       chrome.storage.local.set({ farblerSettings: settings }, () => {
-        if (!overridden) clearRelaxOffer(currentEtld1);  // resolved via Trust ID
         chrome.runtime.sendMessage({ type: 'scoper:get-state' }, (state) => {
           renderGuardCard(
             currentEtld1,

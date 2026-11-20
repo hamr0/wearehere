@@ -17,6 +17,7 @@
 //       watchers:    [name, ...] (top 10 company names)
 //       mechanisms:  { cookies, pixels, deviceId, typing, clicks } counts
 //       storedIds:   int (localData.suspicious)
+//       trimmed:     int (cookies shortened during this visit; absent on older records)
 //       blurredSurfaces: int (fingerprint surfaces blurred this visit; 0 if off)
 //     }, ...
 //   ]
@@ -39,6 +40,7 @@ const FARBLER_HISTORY_MAX = 50;
 function visitEtld1(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(cleaned) || cleaned.indexOf(':') !== -1) return cleaned.toLowerCase();  // IP literal
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   return labels.slice(-2).join('.');
@@ -103,6 +105,10 @@ function compactVisit(report) {
     // Raw third-party cookie count — used by the "cookies grew" event
     // (per-site delta between adjacent visits).
     cookieCount: cookies.thirdParty || 0,
+    // Cookies the realtime scoper shortened during this visit (attributed in
+    // background.js creditTrimToTab). Absent on records stored before this
+    // field existed — callers must treat undefined as "unknown", not 0.
+    trimmed: report.trimmed || 0,
     storedIds: local.suspicious || 0,
   };
 }
@@ -111,6 +117,13 @@ function compactVisit(report) {
 // near-simultaneous tab closes both `get → unshift → set` from the
 // same starting array, and the second `set` clobbers the first — one
 // visit is silently lost. Chaining keeps read-modify-write atomic.
+// Effective blur mode for a site: per-site override beats the default.
+async function resolveBlurMode(etld1) {
+  const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
+  const ov = farblerSettings && farblerSettings[etld1];
+  return (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'rotation');
+}
+
 let appendChain = Promise.resolve();
 async function appendVisit(report) {
   const record = compactVisit(report);
@@ -129,8 +142,10 @@ async function appendVisit(report) {
     // of distinct fingerprint APIs the company's scripts touched on this
     // visit. Summing it into the lifetime counter at visit boundaries
     // matches the Watchers tab's "lifetime regardless of window" rule.
+    // Skipped when blur is off for this site, like farblerCounters.totalCalls,
+    // so the Watchers blurred column stays in step with the hero total.
     try {
-      if (self.recordBlurredByCompany) {
+      if (self.recordBlurredByCompany && (await resolveBlurMode(record.etld1)) !== 'off') {
         const perCompany = {};
         for (const [name, m] of Object.entries(record.watcherMech || {})) {
           if (m && m.deviceId > 0) perCompany[name] = m.deviceId;
@@ -149,9 +164,7 @@ async function appendVisit(report) {
         .find((m) => m.technique === 'fingerprint');
       const apis = (fpMethod && fpMethod.apis) || [];
       if (apis.length) {
-        const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
-        const ov = farblerSettings && farblerSettings[record.etld1];
-        const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'rotation');
+        const mode = await resolveBlurMode(record.etld1);
         // Stash the windowed-blur input on the visit record (0 when blur was
         // off here) so Overview can sum surfaces blurred per time window from
         // visitHistory — more accurate than the 50-capped farblerHistory.
@@ -209,6 +222,15 @@ async function clearVisits() {
   await chrome.storage.local.set({ [VISIT_HISTORY_KEY]: [] });
 }
 
+// Did a navigation end the visit we hold? oldDomain = hostname of the held
+// visit, newHost = hostname being navigated to (undefined = tab closed).
+// Same host (reload, same-site nav, redirect hop, duplicate event) = no.
+// Unknown old domain = nothing to compare, so yes. Pure; unit-tested.
+function navLeavesVisit(oldDomain, newHost) {
+  return newHost === undefined || !oldDomain || oldDomain !== newHost;
+}
+
+self.navLeavesVisit = navLeavesVisit;
 self.visitsAppend = appendVisit;
 self.visitsGet = getVisits;
 self.visitsClear = clearVisits;

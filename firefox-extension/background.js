@@ -212,8 +212,19 @@ function creditFarblerIfActive(delta, famDelta, etld1) {
 // chrome.storage.local under farblerBlurredByCompany; the Watchers
 // tab joins by lowercased company name.
 const MAX_BLURRED_COMPANIES = 300;
-async function recordBlurredByCompany(perCompany) {
-  if (!perCompany) return;
+let _seedDomainCompany = null;
+async function recordBlurredByCompany(perCompanyIn) {
+  if (!perCompanyIn) return;
+  // Sub-brands also count toward their parent ("Google Ads" -> "Google"), as
+  // a per-visit MAX over the parent's own count and its sub-brands' counts,
+  // not a sum: sub-brands often touch the same APIs, so the parent is never
+  // credited above what the visit blurred. Different parents can still
+  // overlap each other (the Watchers else-row clamps at 0).
+  const perCompany = Object.assign({}, perCompanyIn);
+  for (const [name, n] of Object.entries(perCompanyIn)) {
+    const parent = self.WH_companyParent && self.WH_companyParent(name);
+    if (parent) perCompany[parent] = Math.max(perCompany[parent] || 0, n);
+  }
   try {
     const { farblerBlurredByCompany } = await chrome.storage.local.get('farblerBlurredByCompany');
     let next = (farblerBlurredByCompany && typeof farblerBlurredByCompany === 'object')
@@ -273,11 +284,18 @@ self.WH_PUBLIC_SUFFIX = self.WH_PUBLIC_SUFFIX || {
   'now.sh': 1, 'surge.sh': 1,
 };
 // Registrable domain. Keep in sync with detect-watched.js `etld1FromHost`,
-// popup.js, report.js, scoper/scoper.js — the relax/per-site rule key is written
+// popup.js, report.js, scoper/scoper.js — the per-site rule key is written
 // in some and read in others, so all must compute the same thing.
+// IP literals (IPv4 dotted quad, or IPv6 — URL.hostname gives '[::1]') have no
+// eTLD+1: every helper returns them whole instead of splitting on '.'.
+// Keep in sync with the inline checks in popup.js / report.js / scoper.js etc.
+function whIsIpHost(h) {
+  return /^\d{1,3}(\.\d{1,3}){3}$/.test(h) || h.indexOf(':') !== -1;
+}
 function harvestEtld1(host) {
   if (!host) return null;
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (whIsIpHost(cleaned)) return cleaned.toLowerCase();
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   if (labels.length < 2) return null;
   const lastTwo = labels.slice(-2).join('.');
@@ -354,7 +372,7 @@ const tabData = {};
 // next time the popup opened cold. Keyed by domain; merge-keeps known axes
 // (never clobbers a found page with a later null); capped + TTL'd.
 let domainTosCache = {};
-const TOS_CACHE_KEY = 'tosCacheV1';
+const TOS_CACHE_KEY = 'tosCacheV2';  // V1 held scores from the old scanner scale
 const TOS_CACHE_MAX = 500;
 const TOS_TTL_FOUND_MS = 30 * 864e5;  // 30d once we've found a policy/terms page
 const TOS_TTL_MISS_MS = 1 * 864e5;    // 1d for a miss, so re-discovery still runs
@@ -366,6 +384,7 @@ function tosEntryFresh(e) {
   return Date.now() - e.at <= (found ? TOS_TTL_FOUND_MS : TOS_TTL_MISS_MS);
 }
 
+chrome.storage.local.remove('tosCacheV1').catch(() => {});  // one-time cleanup
 const tosCacheReady = chrome.storage.local.get(TOS_CACHE_KEY).then((o) => {
   const stored = (o && o[TOS_CACHE_KEY] && typeof o[TOS_CACHE_KEY] === 'object') ? o[TOS_CACHE_KEY] : {};
   domainTosCache = stored;
@@ -496,6 +515,9 @@ function ensureTab(tabId) {
       networkData: null,
       cookies: null,
     };
+    // Fresh tabData for a tab id: after a SW restart the live page is still
+    // there, so pick its per-visit trim count back up from session storage.
+    restoreTrim(tabId, tabData[tabId]);
   }
   return tabData[tabId];
 }
@@ -503,6 +525,9 @@ function ensureTab(tabId) {
 // =============================================================================
 // Network monitoring (from wearebaked v0.5.1)
 // =============================================================================
+// tabId -> { rid, departed } for the latest main_frame navigation (redirect
+// hops reuse its requestId); departed = the previous visit is already closed.
+const mainNav = new Map();
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
@@ -511,21 +536,16 @@ chrome.webRequest.onBeforeRequest.addListener(
       // A fresh navigation in this tab id — clear any prior removed-tab mark
       // (Chrome reuses ids after a tab is closed).
       removedTabs.delete(details.tabId);
-      const tab = ensureTab(details.tabId);
-      if (!tab) return;
-      try {
-        const mainUrl = new URL(details.url);
-        tab.domain = mainUrl.hostname;
-        tab.url = details.url;
-      } catch {}
-      tab.networkData = {
-        requestCount: 0,
-        thirdPartyDomains: {},
-        categories: {},
-        brokers: {},
-        bytesReceived: 0,
-        bytesSent: 0,
-      };
+      // Only note the navigation here. It may never commit (download link,
+      // 204): whether to close the old visit and reset the tab is decided
+      // at the response (onHeadersReceived below), so a failed navigation
+      // leaves the page on screen and its tabData untouched. Redirect hops
+      // share the navigation's requestId.
+      let nav = mainNav.get(details.tabId);
+      if (!nav || nav.rid !== details.requestId) {
+        nav = { rid: details.requestId, departed: false, sent: 0 };
+        mainNav.set(details.tabId, nav);
+      }
     }
 
     networkTraffic.timing[details.requestId] = Date.now();
@@ -541,13 +561,73 @@ chrome.webRequest.onBeforeRequest.addListener(
           }
         }
         networkTraffic.domains[domain].bytesSent += size;
-        const tabNet = tabData[details.tabId]?.networkData;
-        if (tabNet) tabNet.bytesSent += size;
+        if (details.type === 'main_frame') {
+          const nv = mainNav.get(details.tabId);
+          if (nv && nv.rid === details.requestId) nv.sent += size;  // credited on commit
+        } else {
+          const tabNet = tabData[details.tabId]?.networkData;
+          if (tabNet) tabNet.bytesSent += size;
+        }
       }
     }
   },
   { urls: ['<all_urls>'] },
   ['requestBody']
+);
+
+// A main_frame response that will commit a new page. NOT every response does:
+//   - 3xx with Location: a redirect hop; the final hop decides.
+//   - 204/205: the browser stays on the current page.
+//   - Content-Disposition: attachment: a download; the page stays.
+// Known leak (accepted): a download the browser decides from Content-Type
+// alone (octet-stream, zip, ... without Content-Disposition) looks like a
+// commit here and still closes the old visit early. Telling those apart
+// needs the commit event itself (webNavigation, deliberately not requested).
+// onHeadersReceived carries statusCode + responseHeaders in both Chrome and
+// Firefox (responseHeaders must be requested via extraInfoSpec).
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (details.tabId < 0 || details.type !== 'main_frame') return;
+    const st = details.statusCode, hs = details.responseHeaders || [];
+    const hdr = (n) => { const h = hs.find((x) => x.name && x.name.toLowerCase() === n); return h ? String(h.value || '') : ''; };
+    if (st >= 300 && st < 400 && hdr('location')) return;
+    if (st === 204 || st === 205) return;
+    if (/^\s*attachment/i.test(hdr('content-disposition'))) return;
+    let mainHost = '';
+    try { mainHost = new URL(details.url).hostname; } catch {}
+    // This runs BEFORE tabs.onUpdated carries the new url (captured in Chrome
+    // and Firefox), and the lines below
+    // overwrite tab.domain in place, so the visit we are leaving must be
+    // snapshotted here, before tabData is reused. After an SW restart there
+    // is no mainNav entry; one is created here (nothing else is needed).
+    let nav = mainNav.get(details.tabId);
+    if (!nav || nav.rid !== details.requestId) {
+      nav = { rid: details.requestId, departed: false, sent: 0 };
+      mainNav.set(details.tabId, nav);
+    }
+    if (!nav.departed) {
+      const held = tabData[details.tabId];
+      snapshotAndEvict(details.tabId, mainHost);
+      nav.departed = !held || self.navLeavesVisit(held.domain, mainHost);
+    }
+    const tab = ensureTab(details.tabId);
+    if (!tab) return;
+    tab.revived = false;  // a new page load reports in full again
+    if (mainHost) {
+      tab.domain = mainHost;
+      tab.url = details.url;
+    }
+    tab.networkData = {
+      requestCount: 0,
+      thirdPartyDomains: {},
+      categories: {},
+      brokers: {},
+      bytesReceived: 0,
+      bytesSent: nav.sent || 0,
+    };
+  },
+  { urls: ['<all_urls>'], types: ['main_frame'] },
+  ['responseHeaders']
 );
 
 chrome.webRequest.onBeforeRedirect.addListener(
@@ -563,15 +643,6 @@ chrome.webRequest.onBeforeRedirect.addListener(
 chrome.webRequest.onCompleted.addListener(
   (details) => {
     if (details.tabId < 0) return;
-
-    // Hard anti-bot block (e.g. Akamai/Cloudflare "Access Denied"): a main-frame
-    // 403 is a strong "this site is broken" signal. Surface the same relax offer
-    // as rage-reload (maybeOfferRelax no-ops if blur is already off here). Only
-    // 403 — 429 (rate-limit) is usually transient and unrelated to blur. Catches
-    // outright blocks; soft hangs still need rage-reload.
-    if (details.type === 'main_frame' && details.statusCode === 403) {
-      try { maybeOfferRelax(harvestEtld1(new URL(details.url).hostname)); } catch {}
-    }
 
     const domain = extractDomain(details.url);
     if (!domain) return;
@@ -654,50 +725,169 @@ chrome.webRequest.onErrorOccurred.addListener(
 );
 
 // =============================================================================
+// inject.js registration (Trust ID = hands-off)
+// =============================================================================
+// inject.js wraps fingerprint APIs in the page MAIN world. MAIN world cannot
+// read extension storage, so it can't know a site is trusted: with blur "off"
+// the wrappers still got installed and merely returned native values, but
+// Function.prototype.toString no longer showed [native code]. Anti-bot /
+// device-fingerprinting (Stytch DFP, Cloudflare Turnstile) flags that as a
+// tampered browser and logins fail. So inject.js is registered dynamically
+// here and every farblerSettings site with mode 'off' is put in
+// excludeMatches: trusted sites get no wrappers at all. Accepted trade-off:
+// no fingerprint / permission / beacon detection on trusted sites.
+// Note: '*.x' also matches bare 'x'.
+const WH_INJECT_ID = 'wh-inject';
+const WH_HOST_RE = /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i;
+const WH_IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
+let _injectSyncChain = Promise.resolve();
+
+// Challenge / CAPTCHA / anti-bot frames are NEVER wrapped, on any site. Wrapping
+// them breaks logins (the vendor sees a tampered browser, or its challenge
+// fails outright), and solving one identifies you to the vendor anyway, so
+// blur gains little there. inject.js runs in all frames, so these frame hosts
+// must be excluded explicitly. Each pattern is taken from the vendor's own
+// frame-src / CSP docs; keep new entries confirmed too.
+//   Cloudflare Turnstile  frame-src https://challenges.cloudflare.com
+//   hCaptcha              frame-src https://hcaptcha.com https://*.hcaptcha.com
+//   Google reCAPTCHA      frame-src https://www.google.com/recaptcha/
+//                         https://recaptcha.google.com/recaptcha/ ; recaptcha.net
+//                         is the documented www.google.com substitute
+//   Arkose Labs           frame-src *.arkoselabs.com (vendor-recommended wildcard)
+//   DataDome              frame-src *.captcha-delivery.com
+//   HUMAN / PerimeterX    frame-src *.px-cloud.net ; captcha.px-cdn.net is the
+//                         documented CAPTCHA first-party route host
+//   funcaptcha.com        legacy Arkose domain (pre-rebrand)
+// Limitation: vendors served from the customer's own domain (first-party routes,
+// CNAME hosts such as /cdn-cgi/challenge-platform/ on the site itself) can't be
+// matched by frame host, so they are NOT covered here.
+const WH_CHALLENGE_EXCLUDES = [
+  '*://challenges.cloudflare.com/*',
+  '*://*.hcaptcha.com/*',
+  '*://www.google.com/recaptcha/*',
+  '*://recaptcha.google.com/recaptcha/*',
+  '*://www.recaptcha.net/recaptcha/*',
+  '*://*.arkoselabs.com/*',
+  '*://*.captcha-delivery.com/*',
+  '*://*.px-cloud.net/*',
+  '*://captcha.px-cdn.net/*',
+  '*://*.funcaptcha.com/*',  // legacy Arkose
+];
+
+function _desiredInjectScript(settings) {
+  const ex = WH_CHALLENGE_EXCLUDES.slice();
+  if (settings && typeof settings === 'object') {
+    for (const key of Object.keys(settings)) {
+      const v = settings[key];
+      if (!v || typeof v !== 'object' || v.mode !== 'off') continue;
+      if (typeof key !== 'string') continue;
+      // IPv4 key: '*.1.2.3.4' isn't a valid match host — exact host only.
+      // IPv6 keys are skipped (bracketed-host match patterns unverified).
+      const isIp4 = WH_IPV4_RE.test(key);
+      if (!isIp4 && !WH_HOST_RE.test(key)) continue;
+      const pat = (isIp4 ? '*://' : '*://*.') + key.toLowerCase() + '/*';
+      if (ex.indexOf(pat) === -1) ex.push(pat);
+    }
+  }
+  ex.sort();
+  const script = {
+    id: WH_INJECT_ID,
+    js: ['inject.js'],
+    matches: ['<all_urls>'],
+    runAt: 'document_start',
+    world: 'MAIN',
+    // Every frame, incl. about:blank/srcdoc ones a page makes to grab untouched
+    // APIs (matchOriginAsFallback: blank frames match via their creator's origin,
+    // so Trust ID excludeMatches cover them too).
+    allFrames: true,
+    matchOriginAsFallback: true,
+    persistAcrossSessions: true,
+  };
+  if (ex.length) script.excludeMatches = ex;
+  return script;
+}
+
+function _sameInjectScript(a, b) {
+  if (!a) return false;
+  const arr = (x) => JSON.stringify(Array.isArray(x) ? x.slice().sort() : []);
+  return a.runAt === b.runAt && a.world === b.world
+    && !!a.allFrames === !!b.allFrames
+    && !!a.matchOriginAsFallback === !!b.matchOriginAsFallback
+    && !!a.persistAcrossSessions === !!b.persistAcrossSessions
+    && arr(a.js) === arr(b.js)
+    && arr(a.matches) === arr(b.matches)
+    && arr(a.excludeMatches) === arr(b.excludeMatches);
+}
+
+async function _doSyncInjectRegistration() {
+  try {
+    const { farblerSettings, whChallengeExcludes } = await chrome.storage.local.get(['farblerSettings', 'whChallengeExcludes']);
+    // Publish the always-on challenge patterns for detect-watched.js (it must
+    // write no data-wh-* attributes in these frames). Idempotent.
+    if (JSON.stringify(whChallengeExcludes) !== JSON.stringify(WH_CHALLENGE_EXCLUDES)) {
+      try { await chrome.storage.local.set({ whChallengeExcludes: WH_CHALLENGE_EXCLUDES.slice() }); } catch (e) {}
+    }
+    const want = _desiredInjectScript(farblerSettings);
+    const have = await chrome.scripting.getRegisteredContentScripts({ ids: [WH_INJECT_ID] });
+    if (have && have.length && _sameInjectScript(have[0], want)) return;
+    if (have && have.length) await chrome.scripting.unregisterContentScripts({ ids: [WH_INJECT_ID] });
+    try {
+      await chrome.scripting.registerContentScripts([want]);
+    } catch (e) {
+      // Fail safe: one bad Trust ID pattern must never leave inject.js
+      // registered nowhere. Retry with only the always-on challenge excludes.
+      const dropped = (want.excludeMatches || []).filter((p) => WH_CHALLENGE_EXCLUDES.indexOf(p) === -1);
+      console.warn('[inject-reg] register failed, retrying without Trust ID patterns; dropped:',
+        dropped, e && e.message ? e.message : e);
+      await _registerInjectBase();
+    }
+  } catch (e) {
+    console.warn('[inject-reg] sync failed:', e && e.message ? e.message : e);
+    // Last resort: make sure protection is registered at all.
+    try {
+      const have = await chrome.scripting.getRegisteredContentScripts({ ids: [WH_INJECT_ID] });
+      if (!have || !have.length) await _registerInjectBase();
+    } catch (e2) {
+      console.warn('[inject-reg] base register failed:', e2 && e2.message ? e2.message : e2);
+    }
+  }
+}
+
+async function _registerInjectBase() {
+  try { await chrome.scripting.unregisterContentScripts({ ids: [WH_INJECT_ID] }); } catch (e) {}
+  await chrome.scripting.registerContentScripts([_desiredInjectScript(null)]);
+}
+
+// Serialized; never rejects. Resolves once the registration reflects storage.
+function syncInjectRegistration() {
+  _injectSyncChain = _injectSyncChain.then(_doSyncInjectRegistration, _doSyncInjectRegistration);
+  return _injectSyncChain;
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.farblerSettings) syncInjectRegistration();
+});
+syncInjectRegistration();  // install / browser startup / SW wake
+// One-time cleanup: the removed relax-offer feature left this key behind.
+chrome.storage.local.remove('farbleReloadOffer');
+
+// =============================================================================
 // Message handler
 // =============================================================================
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
-  // --- One-click "relax fingerprint protection here" from the in-page banner ---
-  // Persist blur-off for this site and reload the tab from the SW. Doing this
-  // page-side is unreliable: anti-bot sites tear down our content-script context
-  // right after the banner shows, so its own chrome.storage callbacks never fire.
-  // The SW context is stable and chrome.tabs.reload doesn't need page JS.
-  if (msg && msg.type === 'wh-relax-site' && msg.etld1) {
-    const etld1 = msg.etld1;
-    chrome.storage.local.get(['farblerSettings', 'farbleReloadOffer'], (s) => {
-      const settings = (s.farblerSettings && typeof s.farblerSettings === 'object') ? s.farblerSettings : {};
-      settings[etld1] = { mode: 'off', auto: true };
-      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
-      delete offer[etld1];
-      chrome.storage.local.set({ farblerSettings: settings, farbleReloadOffer: offer }, () => {
-        const tabId = sender.tab && sender.tab.id;
-        if (tabId != null) { try { chrome.tabs.reload(tabId); } catch (e) {} }
-        try { sendResponse({ ok: true }); } catch (e) {}
-        console.log('[relax] blur off + reload for', etld1);
-      });
-    });
-    return true;  // async sendResponse
-  }
-
-  // Dismiss ('✕') of the in-page relax banner. Routed through the SW for the
-  // same reason as wh-relax-site: the page's context may already be torn down,
-  // so a page-side storage write could silently no-op and the banner would
-  // re-show on the next load.
-  if (msg && msg.type === 'wh-clear-relax-offer' && msg.etld1) {
-    chrome.storage.local.get('farbleReloadOffer', (s) => {
-      const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
-      delete offer[msg.etld1];
-      chrome.storage.local.set({ farbleReloadOffer: offer });
-    });
-    return;
-  }
-
   // --- Per-module detection messages from content scripts ---
   if (msg.type === 'detection' && sender.tab) {
     const tabId = sender.tab.id;
+    // No tabData yet = this wake-up is the first thing we hear from a page
+    // that was loaded before the SW restarted (normally webRequest has
+    // created it). Memory then holds only this one module; the session
+    // pendingVisit still holds the whole visit, so it must not be
+    // overwritten and snapshotAndEvict must prefer it.
+    const revived = !tabData[tabId];
     const tab = ensureTab(tabId);
     if (!tab) return;
+    if (revived) tab.revived = true;
     const mod = msg.module;
     const data = msg.data;
 
@@ -835,7 +1025,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           .replace(/&#39;/gi, "'")
           .replace(/\s+/g, ' ')
           .trim();
-        if (text.length < 200) throw new Error('Too short');
+        if (text.length < 4000 || !looksLikePolicy(text)) throw new Error('Too short');
         sendResponse(scanText(text));
       })
       .catch(() => {
@@ -1078,7 +1268,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           // Simple eTLD+1 (last two labels) — matches scoper.js's etld1Of.
           const host = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
           const labels = host.toLowerCase().split('.').filter(Boolean);
-          const etld1 = labels.length >= 2 ? labels.slice(-2).join('.') : null;
+          const etld1 = whIsIpHost(host) ? host.toLowerCase()
+            : labels.length >= 2 ? labels.slice(-2).join('.') : null;
           if (etld1 && trust[etld1]) buckets.trusted++;
           else buckets.capped++;
         }
@@ -1275,9 +1466,56 @@ function buildTosModuleData(domain, privacyResult, termsResult) {
 function etld1ForCookie(host) {
   if (!host) return '';
   const cleaned = host.startsWith('.') ? host.slice(1) : host;
+  if (whIsIpHost(cleaned)) return cleaned.toLowerCase();
   const labels = cleaned.toLowerCase().split('.').filter(Boolean);
   return labels.length < 2 ? cleaned.toLowerCase() : labels.slice(-2).join('.');
 }
+
+// Per-visit trim attribution. The scoper's realtime retrim (cookies.onChanged)
+// calls this once per cookie it actually shortened; WH_pickTrimTab (company-map.js)
+// chooses the single tab to credit. Sweeps do not call this: they trim old
+// cookies retroactively, not "during this visit". No match = unattributed
+// (stays in the lifetime total only).
+function creditTrimToTab(cookieDomain, cookieEtld1) {
+  const t = self.WH_pickTrimTab(tabData, cookieDomain, cookieEtld1, self.scoperEtld1Of || etld1ForCookie);
+  if (!t) return;
+  t.trimmed = (t.trimmed || 0) + 1;
+  for (const id in tabData) if (tabData[id] === t) { trimDirty.add(id); break; }
+  if (!trimFlushTimer) trimFlushTimer = setTimeout(flushTrimCounts, TRIM_FLUSH_MS);
+}
+
+// Per-tab trim counts live in memory, which an MV3 SW restart wipes
+// mid-visit (the pendingVisit record only refreshes on detection writes, so
+// it predates later trims). Mirror the count to its own session key,
+// batched: one storage write per burst, never per cookie. Stored with the
+// domain so a reused tab id on another site never inherits it.
+const TRIM_KEY = (tabId) => 'pendingTrim:' + tabId;
+const TRIM_FLUSH_MS = 1500;
+const trimDirty = new Set();
+let trimFlushTimer = null;
+function flushTrimCounts() {
+  trimFlushTimer = null;
+  const batch = {};
+  for (const id of trimDirty) {
+    const t = tabData[id];
+    if (t && t.domain && t.trimmed) batch[TRIM_KEY(id)] = { d: t.domain, n: t.trimmed };
+  }
+  trimDirty.clear();
+  if (Object.keys(batch).length) chrome.storage.session.set(batch).catch(() => {});
+}
+function restoreTrim(tabId, tab) {
+  const key = TRIM_KEY(tabId);
+  chrome.storage.session.get(key, (s) => {
+    const p = s && s[key];
+    // Additive: memory counts only post-restart credits, the key everything before.
+    if (p && p.n && tab.domain && p.d === tab.domain) {
+      tab.trimmed = (tab.trimmed || 0) + p.n;
+      trimDirty.add(String(tabId));
+      if (!trimFlushTimer) trimFlushTimer = setTimeout(flushTrimCounts, TRIM_FLUSH_MS);
+    }
+  });
+}
+self.whCreditTrimToTab = creditTrimToTab;
 
 async function fetchCookies(tabId, url, domain) {
   try {
@@ -1480,8 +1718,12 @@ function buildReport(data) {
     if (!fp) continue;
     let name = hostToCompany[scriptHost];
     if (!name) {
-      const root = scriptHost.split('.').slice(-2).join('.');
-      name = hostToCompany[root];
+      // Registrable domain (honours WH_PUBLIC_SUFFIX), then the built-in
+      // tracker list, so a script served from a known tracker's domain is
+      // credited even when this page's cooked scan didn't list it.
+      const root = harvestEtld1(scriptHost) || scriptHost;
+      if (!_seedDomainCompany) _seedDomainCompany = self.WH_seedDomainCompany(harvestEtld1);
+      name = hostToCompany[root] || _seedDomainCompany[root];
     }
     if (!name) continue;
     if (!trackerCompanies[name]) {
@@ -1510,6 +1752,7 @@ function buildReport(data) {
   const report = {
     site: data.domain,
     url: data.url,
+    trimmed: data.trimmed || 0,
     cookies: {
       total: cookies.total, firstParty: cookies.firstParty, thirdParty: cookies.thirdParty,
       thirdPartyDomains: cookies.thirdPartyDomains, longestDays: cookies.longestDays,
@@ -1680,7 +1923,7 @@ const PENDING_VISIT_KEY = (tabId) => 'pendingVisit:' + tabId;
 // SW dormancy. The session-storage record is what snapshotAndEvict reads
 // from when in-memory tabData has been cleared.
 function persistPendingVisit(tabId, tab) {
-  if (!tab || !tab.domain) return;
+  if (!tab || !tab.domain || tab.revived) return;
   try {
     const report = buildReport(tab);
     if (!report) return;
@@ -1706,9 +1949,17 @@ function snapshotsRecomputeDebounced() {
   }, SNAPSHOT_DEBOUNCE_MS);
 }
 
-function snapshotAndEvict(tabId) {
-  console.log('[visits] onRemoved tab', tabId);
+// `newHost` (optional) = hostname the tab is navigating to. When given and
+// it matches the visit we hold, this is not a departure (same-site nav,
+// reload, redirect hop, or the second of the two events that report one
+// departure) and nothing is snapshotted: that is what makes the webRequest
+// and tabs.onUpdated call sites safe to both call it, exactly one wins.
+// Omitted (tab close) always snapshots.
+const leavingFromSession = new Set();
+function snapshotAndEvict(tabId, newHost) {
   const data = tabData[tabId];
+  if (data && data.domain && !self.navLeavesVisit(data.domain, newHost)) return;
+  console.log('[visits] leave tab', tabId, newHost === undefined ? '(closed)' : '-> ' + newHost);
   const finalize = (report, source) => {
     if (!report) {
       console.log('[visits] skip — no report for tab', tabId);
@@ -1726,21 +1977,35 @@ function snapshotAndEvict(tabId) {
       .catch((e) => console.warn('[visits] persist failed', e));
   };
 
-  if (data && data.domain) {
+  if (data && data.domain && !data.revived) {
     try { finalize(buildReport(data), 'memory'); }
     catch (e) { console.warn('[visits] snapshot failed for tab', tabId, e); }
     delete tabData[tabId];
-    chrome.storage.session.remove(PENDING_VISIT_KEY(tabId));
+    chrome.storage.session.remove([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)]);
+    trimDirty.delete(String(tabId));
     return;
   }
 
   // Memory empty (SW restarted while tab was open) — read the most recent
-  // snapshot from session storage and finalize that instead.
-  chrome.storage.session.get(PENDING_VISIT_KEY(tabId), (s) => {
+  // snapshot from session storage and finalize that instead. The read is
+  // async: a second departure event (tabs.onUpdated after the response hook)
+  // arriving before it returns would read the same record and log it twice,
+  // so one read per tab at a time.
+  if (leavingFromSession.has(tabId)) return;
+  leavingFromSession.add(tabId);
+  chrome.storage.session.get([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)], (s) => {
+    leavingFromSession.delete(tabId);
     const pending = s && s[PENDING_VISIT_KEY(tabId)];
+    // Same-site nav/reload after an SW restart: that visit is still live.
+    if (pending && !self.navLeavesVisit(pending.site, newHost)) return;
     if (pending) {
+      const tr = s[TRIM_KEY(tabId)];
+      if (tr && tr.n > (pending.trimmed || 0)) pending.trimmed = tr.n;
       finalize(pending, 'session');
-      chrome.storage.session.remove(PENDING_VISIT_KEY(tabId));
+      chrome.storage.session.remove([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)]);
+    } else if (data && data.domain) {
+      // Revived tab with no session record (page predates the extension).
+      try { finalize(buildReport(data), 'memory'); } catch (e) { console.warn('[visits] snapshot failed for tab', tabId, e); }
     } else {
       console.log('[visits] skip — no memory + no session record for tab', tabId);
     }
@@ -1775,92 +2040,20 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // resurrect tabData via ensureTab, then a follow-up badge write
   // rejects with "No tab with id: …".
   markTabRemoved(tabId);
+  mainNav.delete(tabId);
   snapshotAndEvict(tabId);
-  delete reloadTrack[tabId];
 });
 
-// --- rage-reload relax offer ------------------------------------------------
-// If a user *reloads the same page* several times in a short window while blur
-// is ON for that site, surface a one-click "relax fingerprint protection here"
-// offer in the popup (read from farbleReloadOffer). The popup is where the fix
-// lives (Trust ID); we just flag that this site is a likely candidate.
-//
-// Telling a reload apart from a navigation, from chrome.tabs.onUpdated alone
-// (verified against real captured event streams):
-//   • a NAVIGATION's load cycle contains a 'loading' event WITH changeInfo.url
-//     — and ALSO emits later url-less 'loading' sub-events, so a url-less
-//     'loading' is NOT by itself a reload.
-//   • a RELOAD's load cycle has NO url-bearing 'loading' event at all.
-// So: stamp navAt when a 'loading'+url (navigation) arrives and reset the
-// streak; a url-less 'loading' is a reload UNLESS it lands within
-// NAV_SUBEVENT_MS of that stamp (i.e. it's one of the navigation's own
-// sub-events). Time-based, not 'complete'-based, so a stuck page that never
-// fires 'complete' (the anti-bot case relax exists for) is still counted.
-const RELAX_WINDOW_MS = 25000;
-const RELAX_MIN_RELOADS = 2;    // fire on the 2nd reload within the window
-const RELAX_DEDUPE_MS = 1500;   // collapse the burst of url-less 'loading' fires within one reload
-const NAV_SUBEVENT_MS = 2500;   // url-less 'loading' this soon after a nav's url-loading = sub-event, not a reload
-const reloadTrack = {};         // tabId -> { times: [], navAt: number }
-
-// A navigation (a 'loading' event carrying a new URL): the user left the page,
-// so any rage-reload streak is moot — reset it, and stamp navAt so this cycle's
-// later url-less 'loading' sub-events aren't mistaken for reloads.
-function noteNavigation(tabId) {
-  reloadTrack[tabId] = { times: [], navAt: Date.now() };
-}
-
-function trackReloadForRelaxOffer(tabId, url) {
-  if (!url || !/^https?:/.test(url)) return;
-  let etld1;
-  try { etld1 = harvestEtld1(new URL(url).hostname); } catch { return; }
-  if (!etld1) return;
-  let t = reloadTrack[tabId];
-  if (!t) t = reloadTrack[tabId] = { times: [], navAt: 0 };
-  const now = Date.now();
-  if (now - t.navAt < NAV_SUBEVENT_MS) return;  // a navigation's own sub-event, not a reload
-  if (t.times.length && now - t.times[t.times.length - 1] < RELAX_DEDUPE_MS) return;  // same reload's burst
-  t.times.push(now);
-  t.times = t.times.filter((x) => now - x <= RELAX_WINDOW_MS);
-  if (t.times.length >= RELAX_MIN_RELOADS) {
-    t.times = [];  // reset so we don't re-fire on every later reload
-    maybeOfferRelax(etld1);
-  }
-}
-
-function maybeOfferRelax(etld1) {
-  if (!etld1) return;
-  chrome.storage.local.get(['farblerSettings', 'defaultBlurMode', 'farbleReloadOffer'], (s) => {
-    const ov = s.farblerSettings && s.farblerSettings[etld1];
-    const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (s.defaultBlurMode || 'rotation');
-    if (mode === 'off') return;  // blur already off here — nothing to offer
-    const offer = (s.farbleReloadOffer && typeof s.farbleReloadOffer === 'object') ? s.farbleReloadOffer : {};
-    offer[etld1] = { at: Date.now() };
-    chrome.storage.local.set({ farbleReloadOffer: offer });
-    console.log('[relax-offer] rage-reload on', etld1, '→ offering blur-off in popup');
-  });
-}
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
-    // Navigation (carries a new URL): snapshot on domain change, then mark it a
-    // navigation so the rage-reload tracker resets and ignores its sub-events.
-    const oldDomain = tabData[tabId]?.domain;
-    try {
-      const newDomain = new URL(changeInfo.url).hostname;
-      if (oldDomain && oldDomain !== newDomain) {
-        snapshotAndEvict(tabId);
-      }
-    } catch {
-      snapshotAndEvict(tabId);
-    }
-    noteNavigation(tabId);
-    return;
+    // Navigation (carries a new URL). Normally webRequest already closed the
+    // old visit and this is a no-op; it still covers navigations webRequest
+    // never sees (about:, chrome:, moz-extension:) and an event order where
+    // this one wins. Unparseable URL -> '' -> counts as leaving.
+    let newHost = '';
+    try { newHost = new URL(changeInfo.url).hostname; } catch {}
+    snapshotAndEvict(tabId, newHost);
   }
-  // A url-less 'loading' event is a candidate reload (a user hammering reload on
-  // a page that's broken under blur is the most reliable "this is broken" cue;
-  // render heuristics are unreliable and our content script gets torn down on
-  // stuck SPAs, so we watch at the SW level to survive that). tab.url is the
-  // stable current URL here, since the URL isn't changing.
-  if (changeInfo.status === 'loading') trackReloadForRelaxOffer(tabId, tab && tab.url);
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
   if (tabData[tabId]) updateBadge(tabId);

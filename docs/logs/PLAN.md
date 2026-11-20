@@ -1,6 +1,6 @@
 # wearehere — rebuild plan
 
-> Companion to [PRD.md](./PRD.md). The PRD defines *what* the new design is; this file defines *how* and *in what order* we build it. Chrome first, Firefox mirror last.
+> Companion to [PRD.md](../product/PRD.md). The PRD defines *what* the new design is; this file defines *how* and *in what order* we build it. Chrome first, Firefox mirror last.
 >
 > **Mandatory rules:** all implementation work follows `.claude/memory/AGENT_RULES.md` — POC first, incremental modules, vanilla→stdlib→external dependency hierarchy, surgical changes, open-source only, mobile-responsive UI verified in DevTools before claiming UI tasks done.
 
@@ -210,6 +210,14 @@ Every phase must respect:
 - **Empty-state copy** — fresh-install Overview / Watchers placeholders ("Visit a few sites to populate this view"). Wording TBD.
 - **Tab order in `report.html`** — new order: Overview / Watchers / Cookie scoper. Confirm before Phase 4 starts.
 - **Port-kit `scoper-bridge.js`** — final shape after rewiring may be small enough to inline into `popup-card.js`. Decide during Phase 2.
+
+## Status (2026-11-19, branch fix/ff-trustid-perf)
+
+- Done: scoper skips partitioned/challenge-host cookies (9d47c5a); relax offer removed (42a57ff); Trust ID frame marker tried and reverted (bc28b8f, b089771); findings recorded.
+- Done (2026-11-20): post-settle scheduling for report-only scanners (`settle.js`, 0ec8d09); Watchers attribution by parent company with an everything-else row (df8a037, 69b7395, 8b5c571); broader ToS scanner + `looksLikePolicy` (37cdcdf, 32ab33a); visit snapshot on the main_frame response (76c26ab, 0f95b26); scoper challenge exemption path-scoped for reCAPTCHA (ae37e91).
+- Next: redesign `data-wh-farble-seed` exposure; align eTLD+1 helpers; unexplained `__cf_bm`.
+- Release: 6.0.0, bump only at release; store v5.0.0 carries the cookie bug until then; `scripting` permission needs store re-review.
+- Dev Firefox builds use gecko id `wearehere-dev@extension`.
 
 ## Test plan
 

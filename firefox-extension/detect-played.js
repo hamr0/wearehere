@@ -10,6 +10,7 @@
     "hidden-unsub": 0
   };
   var seen = {};
+  var uid = 0;   // unique key per element for the patterns that count elements, not text
 
   function hit(pattern, key) {
     if (seen[key]) return;
@@ -17,38 +18,77 @@
     counts[pattern]++;
   }
 
+  // Cheap gate before innerText. innerText forces layout and serializes the
+  // element's whole rendered subtree; calling it on every span/div/p made
+  // these scans the extension's longest repeat task on large, constantly
+  // mutating pages (infinite-scroll catalogs). Every pattern below needs a
+  // digit, and innerText's characters are a subset of textContent's (it
+  // drops hidden text and only adds whitespace), so a textContent with no
+  // digit can never match: that gate is lossless. The length gate is 4-6x
+  // the visible-text caps below, so it only skips an element whose text is
+  // overwhelmingly hidden/script content: an accepted, rare miss.
+  var DIGIT_RE = /\d/;
+  function digitCandidate(el, maxLen) {
+    var tc = el.textContent;
+    return !!tc && tc.length <= maxLen && DIGIT_RE.test(tc);
+  }
+
+  // Elements with digits whose rendered text is empty right now (rotating
+  // tickers, collapsed panels). They can become visible without any node being
+  // added, so the next round looks at them again.
+  var pendingHidden = new Set();
+  function noteHidden(el) {
+    if (pendingHidden.size < 300) pendingHidden.add(el);
+  }
+
+  // A ticking countdown rewrites its text every second and is revisited on each
+  // pass; key the hit by element so it counts once, not once per tick.
+  var elIds = new WeakMap();
+  function elId(el) {
+    var id = elIds.get(el);
+    if (id === undefined) { id = ++uid; elIds.set(el, id); }
+    return id;
+  }
+
   // --- 1. Countdown timers (structural: digits + colons, timer classes) ---
-  function scanCountdowns() {
+  function* scanCountdowns(batch) {
     var timerSel = "[class*='timer'],[class*='countdown'],[class*='clock'],[class*='Timer'],[class*='Countdown'],[class*='Clock'],[id*='timer'],[id*='countdown'],[data-countdown],[data-timer],[data-end],[data-expire]";
-    var timerEls = document.querySelectorAll(timerSel);
-    for (var i = 0; i < timerEls.length; i++) {
-      var t = (timerEls[i].innerText || "").trim();
+    var n = 0;
+    for (var te of whSettle.matches(batch, timerSel, ws.timer)) {
+      var t = (te.innerText || "").trim();
+      if (!t) noteHidden(te);
       if (t.length > 0 && /\d/.test(t)) {
-        hit("countdown", "timer:" + i);
+        hit("countdown", "timer:" + elId(te));
       }
+      if (++n % 16 === 0) yield;
     }
 
     var timeRe = /\d{1,2}\s*[:．]\s*\d{2}\s*[:．]\s*\d{2}/;
-    var els = document.querySelectorAll("span, div, p");
-    for (var j = 0; j < els.length; j++) {
-      if (els[j].children.length > 5) continue;
-      var text = (els[j].innerText || "").trim();
+    for (var ce of whSettle.matches(batch, "span, div, p", ws.time)) {
+      if (++n % 32 === 0) yield;
+      if (ce.children.length > 5) continue;
+      if (!digitCandidate(ce, 400)) continue;
+      var text = (ce.innerText || "").trim();
+      if (!text) noteHidden(ce);
       if (text.length < 5 || text.length > 100) continue;
       if (timeRe.test(text)) {
-        hit("countdown", "time:" + text.slice(0, 30));
+        hit("countdown", "time:" + elId(ce));
       }
     }
   }
 
   // --- 2. Discount pressure (structural: %, currency symbols, "sale" classes) ---
-  function scanDiscounts() {
-    var els = document.querySelectorAll("span, div, p, a, strong, b, em, small, [class*='sale'],[class*='Sale'],[class*='deal'],[class*='Deal'],[class*='discount'],[class*='Discount'],[class*='promo'],[class*='Promo'],[class*='flash'],[class*='Flash'],[class*='offer'],[class*='Offer'],[class*='price'],[class*='Price']");
+  function* scanDiscounts(batch) {
+    var discountSel = ("span, div, p, a, strong, b, em, small, [class*='sale'],[class*='Sale'],[class*='deal'],[class*='Deal'],[class*='discount'],[class*='Discount'],[class*='promo'],[class*='Promo'],[class*='flash'],[class*='Flash'],[class*='offer'],[class*='Offer'],[class*='price'],[class*='Price']");
+    var n = 0;
     var discountRe = /\d+\s*%\s*(off|korting|rabatt|remise|de\s+r[eé]duction)?/i;
     var strikeRe = /line-through/;
 
-    for (var i = 0; i < els.length; i++) {
-      var el = els[i];
+    for (var el of whSettle.matches(batch, discountSel, ws.disc)) {
+      if (++n % 32 === 0) yield;
+      if (!digitCandidate(el, 600)) continue;
       var text = (el.innerText || "").trim();
+      if (!text) noteHidden(el);
       if (text.length < 2 || text.length > 150) continue;
 
       if (discountRe.test(text)) {
@@ -56,24 +96,28 @@
         continue;
       }
 
+      // Price text first (a regex), computed style only for prices.
+      if (!/[\$€£¥₹]\s*\d|\d\s*[\$€£¥₹]/.test(text)) continue;
       var style = null;
       try { style = window.getComputedStyle(el); } catch (e) { continue; }
       if (style && strikeRe.test(style.textDecorationLine || style.textDecoration || "")) {
-        if (/[\$€£¥₹]\s*\d|\d\s*[\$€£¥₹]/.test(text)) {
-          hit("discount", "strike:" + text.slice(0, 30));
-        }
+        hit("discount", "strike:" + text.slice(0, 30));
       }
     }
   }
 
   // --- 3. Scarcity & social proof (structural) ---
-  function scanScarcity() {
-    var els = document.querySelectorAll("span, div, p, a, small, strong, [class*='stock'],[class*='sold'],[class*='left'],[class*='demand'],[class*='urgency'],[class*='scarcity'],[class*='badge']");
+  function* scanScarcity(batch) {
+    var scarcitySel = ("span, div, p, a, small, strong, [class*='stock'],[class*='sold'],[class*='left'],[class*='demand'],[class*='urgency'],[class*='scarcity'],[class*='badge']");
+    var n = 0;
     var numAction = /\b\d[\d,.]*\s*\+?\s*(sold|bought|orders?|verkocht|besteld|vendu|gekauft|left|remaining|viewing|watching|people|personen|personer)\b/i;
     var stockRe = /\b(only|nog|nur|seulement)\s+\d+\s/i;
 
-    for (var i = 0; i < els.length; i++) {
-      var text = (els[i].innerText || "").trim();
+    for (var se of whSettle.matches(batch, scarcitySel, ws.scar)) {
+      if (++n % 32 === 0) yield;
+      if (!digitCandidate(se, 400)) continue;
+      var text = (se.innerText || "").trim();
+      if (!text) noteHidden(se);
       if (text.length < 4 || text.length > 100) continue;
       if (numAction.test(text) || stockRe.test(text)) {
         hit("scarcity", "sc:" + text.slice(0, 30));
@@ -82,27 +126,27 @@
   }
 
   // --- 4. Pre-checked checkboxes ---
-  function scanPrechecked() {
+  function* scanPrechecked(batch) {
     var susWords = /newsletter|marketing|subscribe|promo|opt.?in|updates|offers|agree|consent|plan|protection|warranty|verzeker|nieuwsbrief|abonner|souscrire|inscri/i;
 
-    var checks = document.querySelectorAll("input[type='checkbox']");
-    for (var i = 0; i < checks.length; i++) {
-      if (!checks[i].checked) continue;
-      var label = findLabel(checks[i]);
+    var n = 0;
+    for (var cb of whSettle.matches(batch, "input[type='checkbox']", ws.cb)) {
+      if (++n % 16 === 0) yield;
+      if (!cb.checked) continue;
+      var label = findLabel(cb);
       if (label && susWords.test(label)) {
-        hit("prechecked", "cb:" + i);
+        hit("prechecked", "cb:" + (++uid));
       }
     }
 
-    var ariaChecked = document.querySelectorAll("[role='checkbox'][aria-checked='true'], [role='switch'][aria-checked='true']");
-    for (var j = 0; j < ariaChecked.length; j++) {
-      var text = (ariaChecked[j].innerText || "").trim();
+    for (var ac of whSettle.matches(batch, "[role='checkbox'][aria-checked='true'], [role='switch'][aria-checked='true']", ws.aria)) {
+      var text = (ac.innerText || "").trim();
       if (!text) {
-        var parent = ariaChecked[j].closest("label, [class*='checkbox'], [class*='check']");
+        var parent = ac.closest("label, [class*='checkbox'], [class*='check']");
         if (parent) text = (parent.innerText || "").trim();
       }
       if (text && susWords.test(text)) {
-        hit("prechecked", "aria:" + j);
+        hit("prechecked", "aria:" + (++uid));
       }
     }
   }
@@ -120,7 +164,7 @@
   }
 
   // --- 5. Confirm-shaming ---
-  function scanConfirmShaming() {
+  function* scanConfirmShaming(batch) {
     var phrases = [
       /no\s*,?\s*thanks?\b/i,
       /no\s*,?\s*i\s/i,
@@ -135,13 +179,15 @@
       /non\s*,?\s*merci/i,
       /nein\s*,?\s*danke/i
     ];
-    var clickables = document.querySelectorAll("a, button, [role='button'], [class*='btn'], [class*='dismiss'], [class*='decline'], [class*='close'], [class*='cancel'], [class*='reject'], [class*='skip']");
-    for (var i = 0; i < clickables.length; i++) {
-      var text = (clickables[i].textContent || "").trim();
+    var n = 0;
+    var clickSel = "a, button, [role='button'], [class*='btn'], [class*='dismiss'], [class*='decline'], [class*='close'], [class*='cancel'], [class*='reject'], [class*='skip']";
+    for (var cl of whSettle.matches(batch, clickSel, ws.shame)) {
+      if (++n % 32 === 0) yield;
+      var text = (cl.textContent || "").trim();
       if (text.length > 100 || text.length < 4) continue;
       for (var p = 0; p < phrases.length; p++) {
         if (phrases[p].test(text)) {
-          hit("shaming", "sh:" + i);
+          hit("shaming", "sh:" + (++uid));
           break;
         }
       }
@@ -149,16 +195,17 @@
   }
 
   // --- 6. Hidden unsubscribe ---
-  function scanHiddenUnsub() {
-    var links = document.querySelectorAll("a");
-    for (var i = 0; i < links.length; i++) {
-      var text = (links[i].textContent || "").trim();
+  function* scanHiddenUnsub(batch) {
+    var n = 0;
+    for (var a of whSettle.matches(batch, "a", ws.unsub)) {
+      if (++n % 32 === 0) yield;
+      var text = (a.textContent || "").trim();
       if (!/unsubscribe|opt.?out|afmelden|uitschrijven|d[eé]sabonner/i.test(text)) continue;
-      var style = window.getComputedStyle(links[i]);
+      var style = window.getComputedStyle(a);
       var size = parseFloat(style.fontSize);
       var opacity = parseFloat(style.opacity);
-      if (size < 10 || opacity < 0.5 || isLowContrast(style.color, findBg(links[i]))) {
-        hit("hidden-unsub", "unsub:" + i);
+      if (size < 10 || opacity < 0.5 || isLowContrast(style.color, findBg(a))) {
+        hit("hidden-unsub", "unsub:" + (++uid));
       }
     }
   }
@@ -194,23 +241,35 @@
   }
 
   // --- Run ---
-  function safeScan(name, fn) {
-    try { fn(); } catch (e) {
+  // Each scan is a generator so the scheduler can pause between slices. A failing
+  // scan is logged and skipped, same as before.
+  function* safeScanGen(name, gen) {
+    try { yield* gen; } catch (e) {
       console.warn("[weareplayed] " + name + " error:", e.message);
     }
   }
 
-  function scan() {
+  // Reporting only: everything below waits for the page to settle (see settle.js).
+  // Counts accumulate across settle rounds; only nodes added since the last round
+  // are scanned. A WeakSet per scan keeps an element from being scanned twice.
+  var ws;
+  var lastHref = null;
+  function resetState() {
     for (var k in counts) counts[k] = 0;
     seen = {};
+    ws = {
+      timer: new WeakSet(), time: new WeakSet(), disc: new WeakSet(), scar: new WeakSet(),
+      cb: new WeakSet(), aria: new WeakSet(), shame: new WeakSet(), unsub: new WeakSet()
+    };
+    lastHref = location.href;
+  }
+  resetState();
 
-    safeScan("countdowns", scanCountdowns);
-    safeScan("discounts", scanDiscounts);
-    safeScan("scarcity", scanScarcity);
-    safeScan("prechecked", scanPrechecked);
-    safeScan("shaming", scanConfirmShaming);
-    safeScan("hidden-unsub", scanHiddenUnsub);
+  var feed = whSettle.feed(function () { whSettle.schedule(scan); });
 
+  var playedFinal = false;
+
+  function sendPlayed() {
     var items = [];
     var total = 0;
     var patternCount = 0;
@@ -237,16 +296,44 @@
       });
     } catch (e) {
       // Extension context invalidated — stop observing
-      if (observer) observer.disconnect();
+      whSettle.stop();
     }
   }
 
-  setTimeout(scan, 2000);
-
-  var rescanTimer = null;
-  var observer = new MutationObserver(function () {
-    if (rescanTimer) clearTimeout(rescanTimer);
-    rescanTimer = setTimeout(scan, 3000);
+  // Leaving: send the tallies so far. The quick pass covers the first steps of
+  // the countdown scan (timer-class elements, then span/div/p in document order).
+  whSettle.onLeave(function () {
+    if (playedFinal) return;
+    for (var p in counts) if (counts[p] > 0) { sendPlayed(); return; }   // only report finds, never an unscanned zero
   });
-  observer.observe(document.body, { childList: true, subtree: true });
+
+  function* scan() {
+    playedFinal = false;
+    var batch = feed.take();
+    if (location.href !== lastHref) {   // SPA navigation: start the tallies over
+      resetState();
+      batch = { full: true, nodes: [], retouch: batch.retouch };
+    }
+
+    if (pendingHidden.size) {
+      var again = Array.from(pendingHidden);
+      pendingHidden = new Set();
+      if (!batch.full) {
+        for (var h = 0; h < again.length; h++) batch.retouch.add(again[h]);
+        batch = { full: false, nodes: batch.nodes.concat(again), retouch: batch.retouch };
+      }
+    }
+
+    yield* safeScanGen("countdowns", scanCountdowns(batch));
+    yield* safeScanGen("discounts", scanDiscounts(batch));
+    yield* safeScanGen("scarcity", scanScarcity(batch));
+    yield* safeScanGen("prechecked", scanPrechecked(batch));
+    yield* safeScanGen("shaming", scanConfirmShaming(batch));
+    yield* safeScanGen("hidden-unsub", scanHiddenUnsub(batch));
+
+    sendPlayed();
+    playedFinal = true;
+  }
+
+  whSettle.schedule(scan);
 })();

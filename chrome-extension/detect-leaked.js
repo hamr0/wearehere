@@ -52,13 +52,14 @@ function classifyItem(key, value) {
   return unique;
 }
 
-function scanStorage(storage, storeName) {
-  var items = [];
+function* scanStorage(storage, storeName, out) {
+  var items = out;
   if (!storage) return items;
 
   try {
     var len = Math.min(storage.length, MAX_KEYS_PER_DOMAIN);
     for (var i = 0; i < len; i++) {
+      if (i % 20 === 19) yield;
       var key = storage.key(i);
       if (key === null) continue;
       var rawValue = storage.getItem(key) || "";
@@ -78,9 +79,12 @@ function scanStorage(storage, storeName) {
   return items;
 }
 
-function run() {
-  var localItems = scanStorage(window.localStorage, "local");
-  var sessionItems = scanStorage(window.sessionStorage, "session");
+// Reporting only: runs once, when the page has settled (see settle.js).
+var localItems = [];
+var sessionItems = [];
+var leakedFinal = false;
+
+function sendLeaked() {
   var items = localItems.concat(sessionItems);
   var flagged = 0;
   for (var i = 0; i < items.length; i++) {
@@ -104,6 +108,21 @@ function run() {
   });
 }
 
-run();
+function* run() {
+  leakedFinal = false;
+  localItems = [];
+  sessionItems = [];
+  yield* scanStorage(window.localStorage, "local", localItems);
+  yield* scanStorage(window.sessionStorage, "session", sessionItems);
+  sendLeaked();
+  leakedFinal = true;
+}
+
+// Leaving: send the keys read so far (storage reads are cheap, usually complete).
+whSettle.onLeave(function () {
+  if (!leakedFinal && localItems.length + sessionItems.length) try { sendLeaked(); } catch (e) {}
+});
+
+whSettle.schedule(run);
 
 })();

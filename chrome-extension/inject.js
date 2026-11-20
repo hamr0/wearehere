@@ -34,17 +34,55 @@
     return null;
   }
 
+  // notify() runs inside every wrapped API, including hot ones (a page's
+  // scheduler can call performance.now() thousands of times a second), so
+  // it must be O(1). It used to walk the stack (new Error().stack) and
+  // postMessage on every call; each postMessage also runs every one of the
+  // page's own "message" listeners. Now:
+  //   - every call is counted (exact totals: background sums them into
+  //     totalCalls),
+  //   - the stack walk is sampled: all of the first STACK_FULL calls per
+  //     API, then 1 in STACK_EVERY, so a script that starts probing late
+  //     still gets attributed while a hot loop stops paying for it,
+  //   - one batched message per FLUSH_MS carries everything.
+  // detect-watched only needs the distinct (api, script) pairs plus counts,
+  // so the dashboard numbers keep the same meaning.
+  var STACK_FULL = 32;
+  var STACK_EVERY = 64;
+  var FLUSH_MS = 250;
+  var origSetTimeout = window.setTimeout;
+  var pending = null;      // { api: { category, n, hosts: {host: 1} } }
+  var seenCalls = {};      // api -> calls so far this page (drives sampling)
+  var flushTimer = 0;
+
+  function flushNotify() {
+    flushTimer = 0;
+    var batch = pending;
+    pending = null;
+    if (!batch) return;
+    var out = [];
+    for (var api in batch) {
+      out.push({ api: api, category: batch[api].category, count: batch[api].n, scripts: Object.keys(batch[api].hosts) });
+    }
+    try { window.postMessage({ type: MSG_TYPE, batch: out }, "*"); } catch (e) {}
+  }
+
   function notify(api, category) {
     try {
-      window.postMessage({
-        type: MSG_TYPE,
-        api: api,
-        category: category,
-        script: callerHost(),
-        timestamp: Date.now()
-      }, "*");
+      if (!pending) pending = {};
+      var p = pending[api];
+      if (!p) p = pending[api] = { category: category, n: 0, hosts: {} };
+      p.n++;
+      var seen = seenCalls[api] = (seenCalls[api] || 0) + 1;
+      if (seen <= STACK_FULL || seen % STACK_EVERY === 0) {
+        var h = callerHost();
+        if (h) p.hosts[h] = 1;
+      }
+      if (!flushTimer) flushTimer = origSetTimeout.call(window, flushNotify, FLUSH_MS);
     } catch (e) {}
   }
+  // Don't strand the last partial batch when the page goes away.
+  try { window.addEventListener("pagehide", flushNotify); } catch (e) {}
 
   // Capture original canvas readback APIs at IIFE top, before any wrappers
   // are installed. farbleAnyCanvas must use the ORIGINAL getImageData —

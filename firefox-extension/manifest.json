@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "wearehere",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "Privacy that acts back: full scan + cookie scoper. Cookies, trackers, fingerprinting, dark patterns, terms — all in one popup.",
-  "permissions": ["cookies", "webRequest", "alarms", "storage"],
+  "permissions": ["cookies", "webRequest", "alarms", "storage", "scripting"],
   "host_permissions": ["<all_urls>"],
   "browser_specific_settings": {
     "gecko": {
@@ -32,6 +32,7 @@
     "scripts": [
       "tos-scanner.js",
       "network-domains.js",
+      "company-map.js",
       "cookie-database.js",
       "visits.js",
       "snapshots.js",
@@ -42,51 +43,45 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["inject.js"],
-      "run_at": "document_start",
-      "world": "MAIN",
-      "all_frames": false
-    },
-    {
-      "matches": ["<all_urls>"],
       "js": ["detect-watched.js"],
       "run_at": "document_start",
       "world": "ISOLATED",
-      "all_frames": false
+      "all_frames": true,
+      "match_origin_as_fallback": true
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-cooked.js"],
+      "js": ["settle.js", "company-map.js", "detect-cooked.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-played.js"],
+      "js": ["settle.js", "detect-played.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-leaked.js"],
+      "js": ["settle.js", "detect-leaked.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-linked.js"],
+      "js": ["settle.js", "detect-linked.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["tos-scanner.js", "detect-tosed.js"],
+      "js": ["settle.js", "tos-scanner.js", "detect-tosed.js"],
       "run_at": "document_idle",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["detect-silent.js"],
+      "js": ["settle.js", "detect-silent.js"],
       "run_at": "document_idle",
       "all_frames": true
     }

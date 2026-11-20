@@ -190,7 +190,8 @@ body {
 .frame-title {
   color: var(--fg-mute);
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 700;
   letter-spacing: 0.12em;
   margin: 18px 0 8px;
 }
@@ -266,6 +267,8 @@ body {
 .wt-reach { color: var(--fg); }
 .wt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 .wt-num.pos { color: var(--warn); }
+.wt-quiet { font-size: 11px; margin-top: 8px; overflow-wrap: anywhere; }
+.wt-caption { margin: 0 0 6px; }
 
 .saved-flash {
   color: var(--ok);
@@ -280,7 +283,8 @@ body {
 
 .dig-deeper {
   color: var(--fg-faint);
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin: 32px 0 4px;
@@ -585,7 +589,6 @@ input[type="text"].mono-input {
   margin: 6px 0 10px;
 }
 .score-line .score-num {
-  color: var(--warn);
   font-weight: 700;
   font-size: 14px;
 }
@@ -689,6 +692,14 @@ input[type="text"].mono-input {
   #overview-hero { grid-template-columns: 1fr; }
   .hero .cell { border-bottom: 1px dashed var(--line); padding-bottom: 10px; }
   .hero .cell:last-child { border-bottom: 0; padding-bottom: 0; }
+  .watcher-header,
+  .watcher-row { grid-template-columns: minmax(0, 1fr) 76px 54px 54px; gap: 8px; }
+  /* Recent visits gained the trim·blur column; tighter cell padding keeps the
+     table no wider than it was before that column. */
+  #w-recent .table th, #w-recent .table td { padding-left: 4px; padding-right: 4px; }
+  /* The table can still be wider than the viewport (long sites + mechanism
+     words): scroll inside its own box so the page never scrolls sideways. */
+  #w-recent { overflow-x: auto; }
 }
 
 /* Onboarding — first-run overlay. Shown once per install via the
