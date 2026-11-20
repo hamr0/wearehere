@@ -2,11 +2,48 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
-## [Unreleased]
+## [6.0.0] — Unreleased
+
+Watchers by parent company, and a round of fixes from real-site use. The dashboard and popup now count and list who follows you by the company that owns the tracker (not by every sub-brand), Trust ID really leaves a trusted site alone, Firefox blurring works, and counting trackers no longer slows page loads.
+
+### Added
+
+- **Watchers are attributed to their parent company.** Tracker domains are matched by registrable domain and sub-brands are credited to the parent, with owner aliases for TikTok, LinkedIn, Marketo, Zemanta, Alipay and Snapchat. Each parent appears once with its combined reach. Companies that were seen but had no measurable impact are listed on a single "also seen" line, and everything else is rolled into one "everything else" row so the table adds up.
+- **Per-visit trim·blur column and a trimmed·blurred hero.** Recent visits show how many cookies were trimmed and surfaces blurred on that visit, and the hero reads trimmed · blurred for the selected window instead of an average per visit. Realtime trims are credited to the tab that caused them and kept across a service-worker restart. Watcher columns are labelled all-time, with a caption for the everything-else row.
+- **Grouped stored identifiers** and a **tier-coloured terms score** in the dashboard, so the worst findings read at a glance.
+- **Compact counts.** Large numbers show as `999`, `1.1k`, `250k`, `1.2M` (rounded down, never overstated) with the exact value on hover, in both the dashboard and the popup.
+- **Broader terms-and-conditions scanning.** The scanner now recognises arbitration and class-action waivers, termination at will, broad content licences and more tracking wording, and handles HTML entities and curly quotes. Each category is capped so one repeated clause can't dominate the score; the fair / strict / toxic chip is unchanged. On 22 real policies it found 30 of 33 known clauses (was 13).
 
 ### Changed
 
+- **Parent-based counts everywhere.** Hero counts, the Overview watched top 3, recent-visit company lists and the popup all group by parent company. A parent's blur credit on a visit is the highest of its own and its sub-brands' counts, never the sum, so it can't exceed what the visit actually blurred.
+- **Single per-site dropdown** in the dashboard, with extension pages hidden from it, and **bolder section headers**.
+- **Browsing-exposure tiers match the popup verdict** (15 and 40 thresholds), so the dashboard and the popup call the same site by the same tier.
+- **Report-only scanners count once, after the page settles.** The scanners that only report (they don't protect) now count after the page has loaded and gone quiet, in small idle slices, and don't re-run while you are looking at the tab. Later content is counted when the tab is hidden, when you open the popup or dashboard, or when you leave. Blur and cookie trimming are unchanged. Real-site runs showed no extension task over 50 ms and a lower load cost (Fox News 214 → 67 ms in Firefox). This also stops ticking countdown timers being counted repeatedly.
+- **Trust ID is the only whitelist.** The "relax and reload" offer (reload-streak banner, 403 banner and popup hint) is removed; it never fired in Firefox and added little. Trust ID and trusted cookies remain the escape hatch.
+- **Trust ID is truly hands-off.** Trusted sites get no blur wrappers at all, so native browser APIs stay native and the page shows no trace of the extension. Known CAPTCHA and challenge frames (Turnstile, hCaptcha, reCAPTCHA, Arkose, DataDome, HUMAN) are never wrapped either.
+- **Blur reaches every frame**, including blank and `srcdoc` frames, in both browsers. Blank frames now take their seed from their own origin, so different sites' blank frames no longer share one identity.
+- **Terms results are only shown for text that reads like a legal policy.** Short stubs, nav pages and legal index pages no longer produce a false "fair terms" chip; the terms cache is bumped so old results are re-checked.
 - **Agent/IDE scratch gitignored and de-tracked.** `.gitignore` now default-denies every dot-directory (`.*/`), re-admitting only what ships (`.github/`). Per-machine agent/IDE state (`.claude/`, `.litectx/`, `.idea/`, …) regenerates locally and only added noise and churn; any already-committed copies are removed from tracking (local files kept on disk). Repo hygiene only.
+- **Version 6.0.0** across the Chrome and Firefox extensions, the root package and the npm package. New permission: `scripting` (needed to exempt Trust ID sites from blur at registration), which triggers a store re-review.
+
+### Fixed
+
+- **Login failed on Cloudflare-protected sites even under Trust ID.** Rewriting a partitioned cookie created an unpartitioned duplicate, which broke Cloudflare's `cf_clearance` (typesafe.ai: "couldn't verify your browser"). Partitioned cookies and cookies on challenge hosts are now left alone; long-lived first-party cookies are still trimmed to 7 days.
+- **Blur never ran in Firefox.** Seed derivation threw in Firefox content scripts; it is now read in a way Firefox accepts.
+- **Page-load slowness on infinite-scroll pages** (vinted: detect task 530 ms → under 3 ms in Chromium). Cheap string checks run before layout reads, and fingerprint notifications are batched every 250 ms with sampled stack walks.
+- **IP-address hosts were mangled.** `127.0.0.1` was treated as `0.1`; IP hosts are now kept whole, and Trust ID on an IPv4 site works.
+- **Blur credit when blur is off.** Visits with blur off no longer credit companies, matching the surface counter.
+- **Visits were lost or double-counted on same-tab navigation.** Going from one site to another in the same tab could drop the old visit or give the new site the old counts. The old site is now recorded once, when the new page's response arrives, and survives a service-worker restart. Downloads and 204/205 responses, which never load a page, no longer close the live visit early or log a duplicate row on tab close. Known gap: downloads signalled only by content type can still close early.
+- **Popup listed the same company more than once.** It now groups watchers by parent.
+- **Recent visits made the dashboard scroll sideways at narrow widths.** The table now scrolls inside its own box at 480px and below.
+- **Company names like `constructor` or `__proto__` could collide** in the company maps; lookups are now prototype-safe.
+
+### Internal
+
+- Tracker list seeded by registrable domain; new `company-map.js` helpers shared by dashboard and popup; `settle.js` scheduler (verified with a fake-timer harness, 31/31); `tosCacheV2` replaces `tosCacheV1`.
+- Firefox extension mirrors Chrome except `background.js` (`importScripts` guard) and `manifest.json` (dialect).
+- A header-rewrite approach to unwrapping third-party frames under Trust ID was tried and reverted: it broke Stytch/Turnstile sign-in.
 
 ## [5.0.0] — Unreleased
 
