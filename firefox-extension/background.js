@@ -946,7 +946,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           .replace(/&#39;/gi, "'")
           .replace(/\s+/g, ' ')
           .trim();
-        if (text.length < 4000) throw new Error('Too short');
+        if (text.length < 4000 || !looksLikePolicy(text)) throw new Error('Too short');
         sendResponse(scanText(text));
       })
       .catch(() => {

@@ -129,7 +129,7 @@
     }
     var text = htmlToText(html);
     // A stub or cookie wall is not the policy: below this it counts as not found.
-    if (text.length < 4000) throw new Error("Too short");
+    if (text.length < 4000 || !looksLikePolicy(text)) throw new Error("Too short");
     return { result: scanText(text) };
   }
 

@@ -143,3 +143,30 @@ function scanText(text) {
   score += 10 * Object.keys(core.heads).length;
   return { items: items, score: Math.min(100, score), total: total };
 }
+
+// "Looks like a policy" gate: fetched text must read like legal prose, not a
+// nav/footer-heavy index. Generic words (agree, terms, privacy) are left out
+// on purpose: nav pages are full of them. One bounded pass over 12 signals.
+// Pass: 5+ distinct signals, or 3+ distinct with >=1.1 hits/1k chars (plain-
+// language policies are sparse). Nav/index pages: max 4 distinct at <=0.95/1k.
+var TOS_LEGAL_SIGNALS = [
+  /\bliab(?:le|ility)\b/g, /\bgoverning law\b|\bjurisdiction\b/g,
+  /\bterminat(?:e|ion|ed)\b/g, /\bwarrant(?:y|ies)\b/g, /\bindemnif/g,
+  /\barbitrat/g, /\bpersonal (?:data|information)\b/g, /\bcookies?\b/g,
+  /\bthird[- ]part(?:y|ies)\b/g, /\bretain|\bretention\b/g,
+  /\bconsent\b/g, /\bdisclos(?:e|ure)/g
+];
+var TOS_SURE_SIGNALS = 5, TOS_MIN_SIGNALS = 3, TOS_MIN_DENSITY = 1.1;
+function tosLegalMetrics(text) {
+  var t = tosNormalize(text), distinct = 0, hits = 0;
+  for (var i = 0; i < TOS_LEGAL_SIGNALS.length; i++) {
+    var m = t.match(TOS_LEGAL_SIGNALS[i]);
+    if (m) { distinct++; hits += m.length; }
+  }
+  return { distinct: distinct, hits: hits, density: hits * 1000 / Math.max(1, t.length) };
+}
+function looksLikePolicy(text) {
+  var m = tosLegalMetrics(text);
+  return m.distinct >= TOS_SURE_SIGNALS ||
+    (m.distinct >= TOS_MIN_SIGNALS && m.density >= TOS_MIN_DENSITY);
+}
