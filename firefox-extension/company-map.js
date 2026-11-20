@@ -264,6 +264,12 @@ var PARENT_ALIASES = {
   "oracle (bluekai)": "Oracle",
   "moat (oracle)": "Oracle",
   "pardot": "Salesforce",
+  "tiktok": "ByteDance",
+  "linkedin": "Microsoft",
+  "marketo": "Adobe",
+  "zemanta": "Outbrain",
+  "alipay": "Alibaba",
+  "snapchat": "Snap",
 };
 
 // Parent of a sub-brand: explicit aliases first, then derived from the names
@@ -342,6 +348,76 @@ self.WH_buildWatcherRows = function (snap, byTrimmed, byBlurred, trimmedTotal, b
   return { rows: rows, quiet: quiet,
     elseTrimmed: Math.max(0, (trimmedTotal || 0) - sumT),
     elseBlurred: Math.max(0, (blurredTotal || 0) - sumB) };
+};
+
+// Distinct parent companies among a list of watcher names, in order of first
+// appearance. [{ key, name }] — "Google Ads", "Google" -> one Google entry.
+self.WH_uniqueParents = function (names) {
+  var seen = {}, out = [];
+  (names || []).forEach(function (n) {
+    if (!n) return;
+    var g = self.WH_watcherGroup(n);
+    if (seen[g.key]) return;
+    seen[g.key] = 1; out.push(g);
+  });
+  return out;
+};
+
+// Distinct parent count + total contacts (visit x parent pairs) for a
+// snapshot. Uses snap.groups; older snapshots fall back to rolling
+// snap.watchers up by parent (contacts then stays the raw snap.contacts).
+self.WH_parentTotals = function (snap) {
+  var groups = snap && snap.groups;
+  if (groups) {
+    var n = 0, c = 0;
+    for (var k in groups) { n++; c += groups[k].hits || 0; }
+    return { unique: n, contacts: c };
+  }
+  var names = [], ws = (snap && snap.watchers) || {};
+  for (var w in ws) names.push(ws[w].name || w);
+  return { unique: self.WH_uniqueParents(names).length, contacts: (snap && snap.contacts) || 0 };
+};
+
+// Merge a per-site companies list ({ name, purpose, count, viaPixels,
+// viaCookies, ... }) so sub-brands sit under their parent: counters summed,
+// purposes deduped and joined with ", " ("Unknown" dropped, kept only if it
+// is the sole purpose). Unnamed/unknown names stay their own row. Sorted by
+// summed count, descending (stable).
+self.WH_mergeCompanies = function (companies) {
+  var by = {}, order = [];
+  (companies || []).forEach(function (c) {
+    if (!c || !c.name) return;
+    var g = self.WH_watcherGroup(c.name), cur = by[g.key];
+    if (!cur) { cur = by[g.key] = { name: g.name, purposes: [] }; order.push(g.key); }
+    for (var f in c) if (typeof c[f] === 'number') cur[f] = (cur[f] || 0) + c[f];
+    if (c.purpose && cur.purposes.indexOf(c.purpose) < 0) cur.purposes.push(c.purpose);
+  });
+  return order.map(function (k, i) {
+    var cur = by[k], ps = cur.purposes.filter(function (p) { return p !== 'Unknown'; });
+    cur.purpose = (ps.length ? ps : cur.purposes).join(', ');
+    delete cur.purposes; cur._i = i;
+    return cur;
+  }).sort(function (a, b) { return (b.count || 0) - (a.count || 0) || a._i - b._i; })
+    .map(function (c) { delete c._i; return c; });
+};
+
+// Collapse stored-identifier keys that differ only by a trailing id segment
+// (digits, 6+ hex containing a digit, or a UUID): "statsig.stable_id.2734485462"
+// + "statsig.stable_id.348932488" -> one "statsig.stable_id" row, n = 2, flags
+// deduped in order. Keys with nothing left after stripping stay as they are.
+var ID_TAIL = /[._:-](\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[0-9a-f]*\d)[0-9a-f]{6,})$/i;
+self.WH_groupStoredKeys = function (flaggedKeys) {
+  var by = {}, out = [];
+  (flaggedKeys || []).forEach(function (k) {
+    var key = String((k && k.key) || ''), base = key, prev;
+    do { prev = base; base = base.replace(ID_TAIL, ''); } while (base !== prev && base);
+    if (!base) base = key;
+    var g = by[base];
+    if (!g) { g = by[base] = { key: base, n: 0, flags: [] }; out.push(g); }
+    g.n++;
+    ((k && k.flags) || []).forEach(function (f) { if (g.flags.indexOf(f) < 0) g.flags.push(f); });
+  });
+  return out;
 };
 
 })();

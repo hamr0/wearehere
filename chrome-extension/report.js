@@ -405,7 +405,7 @@ function renderLifetimeHero(snap, s) {
   const hasVisits = !!(snap && snap.visitsN);
   $('ov-sites').textContent = hasVisits ? (snap.sites || []).length.toLocaleString() : '0';
   $('ov-score').textContent = hasVisits ? snap.avgScore : '—';
-  $('ov-watchers').textContent = hasVisits ? Object.keys(snap.watchers || {}).length.toLocaleString() : '0';
+  $('ov-watchers').textContent = hasVisits ? self.WH_parentTotals(snap).unique.toLocaleString() : '0';
   $('ov-trimmed').textContent = trimmed.toLocaleString();
   $('ov-blurred').textContent = blurred.toLocaleString();
 }
@@ -590,8 +590,9 @@ function renderRecentVisits(visits) {
       <thead><tr><th>site</th><th>score</th><th>watchers</th><th>via</th><th>terms</th><th>when</th></tr></thead>
       <tbody>
         ${rows.map((v) => {
-          const topW = (v.watchers || []).slice(0, 2).map(escapeText).join(', ');
-          const more = (v.watchers || []).length > 2 ? ` <span class="dim">+${v.watchers.length - 2}</span>` : '';
+          const parents = self.WH_uniqueParents(v.watchers).map((g) => g.name);
+          const topW = parents.slice(0, 2).map(escapeText).join(', ');
+          const more = parents.length > 2 ? ` <span class="dim">+${parents.length - 2}</span>` : '';
           const tosCell = v.tosScore == null
             ? '<span class="dim">—</span>'
             : v.tosScore >= 60 ? `<span class="bad">${v.tosScore} [!]</span>`
@@ -754,10 +755,11 @@ function renderWatchersHero(snap) {
     $('w-amp').textContent = '—';
     return;
   }
-  const unique = Object.keys(snap.watchers || {}).length;
-  const amp = (snap.contacts / snap.visitsN).toFixed(1);
+  // Parent-company counts, consistent with the merged Watchers table.
+  const { unique, contacts } = self.WH_parentTotals(snap);
+  const amp = (contacts / snap.visitsN).toFixed(1);
   $('w-sites').textContent = (snap.sites || []).length.toLocaleString();
-  $('w-contacts').textContent = snap.contacts.toLocaleString();
+  $('w-contacts').textContent = contacts.toLocaleString();
   $('w-unique').textContent = unique.toLocaleString();
   $('w-amp').textContent = `${amp}×`;
 }
@@ -1004,7 +1006,8 @@ function renderWatcherDetail(report) {
     : '';
 
   // Top companies with via + purpose
-  const companyRows = companies.slice(0, 12).map((c) => {
+  const merged = self.WH_mergeCompanies(companies);
+  const companyRows = merged.slice(0, 12).map((c) => {
     const via = [];
     if (c.viaPixels) via.push(`pixels ${c.viaPixels}`);
     if (c.viaCookies) via.push(`cookies ${c.viaCookies}`);
@@ -1019,7 +1022,7 @@ function renderWatcherDetail(report) {
   }).join('');
 
   const companyBlock = companies.length
-    ? `<div class="block-sub">companies (${companies.length})</div>${companyRows}`
+    ? `<div class="block-sub">companies (${merged.length})</div>${companyRows}`
     : '';
 
   // Data brokers — call out separately, even if folded into companies
@@ -1074,13 +1077,15 @@ function renderWatcherDetail(report) {
   // 5); the dashboard's detail view is where it belongs.
   const local = report.localData || {};
   const flaggedKeys = Array.isArray(local.flaggedKeys) ? local.flaggedKeys : [];
+  const storedGroups = self.WH_groupStoredKeys(flaggedKeys);
+  const storedKinds = storedGroups.length < flaggedKeys.length ? ` · ${storedGroups.length} kinds` : '';
   const storedBlock = (local.suspicious || 0) > 0
-    ? `<div class="block-sub">stored identifiers (${local.suspicious})</div>
-       ${flaggedKeys.slice(0, 8).map((k) => `
+    ? `<div class="block-sub">stored identifiers (${local.suspicious}${storedKinds})</div>
+       ${storedGroups.slice(0, 8).map((k) => `
          <div class="event">
            <span class="event-icon">[·]</span>
-           <span class="event-kind">${escapeText(k.key || '')}</span>
-           <span class="event-text"><span class="dim">${(k.flags || []).slice(0, 3).map(escapeText).join(', ')}</span></span>
+           <span class="event-kind">${escapeText(k.key)}${k.n > 1 ? ` ×${k.n}` : ''}</span>
+           <span class="event-text"><span class="dim">${k.flags.slice(0, 3).map(escapeText).join(', ')}</span></span>
          </div>
        `).join('')}`
     : '';
@@ -1144,7 +1149,7 @@ function renderTermsBlock(report) {
 
   return `
     <div class="score-line">
-      <span class="score-num">${score} / 100</span>
+      <span class="score-num ${verdictCls}">${score} / 100</span>
       <span class="${verdictCls}">[${verdict}]</span>
     </div>
     ${sourceLine}

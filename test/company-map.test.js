@@ -40,6 +40,12 @@ test('companyParent: aliases the name rules miss', () => {
   assert.equal(ctx.WH_companyParent('Moat (Oracle)'), 'Oracle');
   assert.equal(ctx.WH_companyParent('Pardot'), 'Salesforce');
   assert.equal(ctx.WH_companyParent('Microsoft Clarity'), 'Microsoft');
+  assert.equal(ctx.WH_companyParent('TikTok'), 'ByteDance');
+  assert.equal(ctx.WH_companyParent('LinkedIn'), 'Microsoft');
+  assert.equal(ctx.WH_companyParent('Marketo'), 'Adobe');
+  assert.equal(ctx.WH_companyParent('Zemanta'), 'Outbrain');
+  assert.equal(ctx.WH_companyParent('Alipay'), 'Alibaba');
+  assert.equal(ctx.WH_companyParent('Snapchat'), 'Snap');
   assert.deepEqual(plain(ctx.WH_watcherGroup('YouTube (Google)')), { key: 'google', name: 'Google' });
   assert.deepEqual(plain(ctx.WH_watcherGroup('Hotjar')), { key: 'hotjar', name: 'Hotjar' });
 });
@@ -82,4 +88,46 @@ test('buildWatcherRows: legacy snapshot without groups rolls watchers up by pare
   } };
   const t = ctx.WH_buildWatcherRows(snap, { google: { tightened: 7 }, meta: { tightened: 1 } }, {}, 8, 0, 12);
   assert.deepEqual(plain(t.rows.map((r) => [r.name, r.hits, r.trimmed])), [['Google', 5, 7], ['Meta', 1, 1]]);
+});
+
+test('uniqueParents: dedupes by parent, keeps first-appearance order', () => {
+  const r = plain(ctx.WH_uniqueParents(['Google Ads', 'Meta Pixel', 'Google', 'a.et.nytimes.com', 'Facebook']));
+  assert.deepEqual(r.map((g) => g.name), ['Google', 'Meta', 'a.et.nytimes.com']);
+});
+
+test('parentTotals: counts parents and contacts from groups, falls back to watchers', () => {
+  const g = { groups: { google: { name: 'Google', hits: 3 }, meta: { name: 'Meta', hits: 2 } }, contacts: 99 };
+  assert.deepEqual(plain(ctx.WH_parentTotals(g)), { unique: 2, contacts: 5 });
+  const old = { contacts: 7, watchers: { 'google ads': { name: 'Google Ads' }, google: { name: 'Google' }, x: { name: 'Foo' } } };
+  assert.deepEqual(plain(ctx.WH_parentTotals(old)), { unique: 2, contacts: 7 });
+});
+
+test('mergeCompanies: sub-brands fold under parent, counters sum, purposes dedupe', () => {
+  const r = plain(ctx.WH_mergeCompanies([
+    { name: 'Google Ads', purpose: 'Advertising', count: 2, viaPixels: 2, viaCookies: 0 },
+    { name: 'a.et.nytimes.com', purpose: 'Unknown', count: 1, viaPixels: 1, viaCookies: 0 },
+    { name: 'Google', purpose: 'Analytics', count: 1, viaPixels: 0, viaCookies: 1 },
+    { name: 'Google Tag Manager', purpose: 'Advertising', count: 1, viaPixels: 1, viaCookies: 0 },
+  ]));
+  assert.equal(r.length, 2);
+  assert.deepEqual(r[0], { name: 'Google', purpose: 'Advertising, Analytics', count: 4, viaPixels: 3, viaCookies: 1 });
+  assert.equal(r[1].name, 'a.et.nytimes.com');
+  assert.equal(r[1].purpose, 'Unknown');
+});
+
+test('groupStoredKeys: strips trailing id segments, merges flags, keeps others', () => {
+  const r = plain(ctx.WH_groupStoredKeys([
+    { key: 'statsig.stable_id.2734485462', flags: ['PII exposure'] },
+    { key: 'statsig.stable_id.348932488', flags: ['Tracking'] },
+    { key: 'statsig.session_id.a1b2c3d4e5f6', flags: ['Tracking'] },
+    { key: 'statsig.session_id.0f8fad5b-d9cb-469f-a165-70867728950e', flags: [] },
+    { key: 'user_id', flags: ['PII exposure'] },
+    { key: '12345', flags: [] },
+  ]));
+  assert.deepEqual(r, [
+    { key: 'statsig.stable_id', n: 2, flags: ['PII exposure', 'Tracking'] },
+    { key: 'statsig.session_id', n: 2, flags: ['Tracking'] },
+    { key: 'user_id', n: 1, flags: ['PII exposure'] },
+    { key: '12345', n: 1, flags: [] },
+  ]);
 });

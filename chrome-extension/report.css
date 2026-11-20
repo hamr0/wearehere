@@ -588,7 +588,6 @@ input[type="text"].mono-input {
   margin: 6px 0 10px;
 }
 .score-line .score-num {
-  color: var(--warn);
   font-weight: 700;
   font-size: 14px;
 }
