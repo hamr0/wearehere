@@ -111,13 +111,13 @@ Your lifetime and recent story.
 - **Window selector**: pick a time window for the rest of the tab.
 - **Green line**: what the guard did in that window.
 - **what changed**: new or gone watchers, score changes, and similar.
-- **browsing exposure**: your sites sorted into clean, mixed and hostile.
+- **browsing exposure**: your sites sorted into clean, moderate and hostile.
 
 ### watchers
 
 Who follows you across the web.
 
-- **Top numbers**: sites visited, hidden contacts, unique watchers, average per visit.
+- **Top numbers**: sites visited, hidden contacts, unique watchers, cookies trimmed · surfaces blurred.
 - **who follows you**: companies ranked by how many of your visits they appear in, and how (cookies, pixels, clicks, device-id), with Trimmed and Blurred counts.
 - **recent visits**: per site score, watchers and terms. **[ clear history ]** erases this list.
 - **dig deeper**: pick a site from the dropdown for its watcher detail and a breakdown of its terms of service (which clauses are concerning).

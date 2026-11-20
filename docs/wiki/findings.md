@@ -105,13 +105,13 @@ Coverage parity with Brave/Firefox-RFP/JShelter is cheap, so there is no moat th
 
 - Per-company columns are mostly 0: the cookie-to-company map is learned only from on-page tracker elements (4 domains in the user's data), sub-brands (Google Ads/Analytics) never match "Google", and blur from first-party/CDN scripts is dropped.
 - The earlier explanation ("Google tracks across sites") was wrong.
-- Agreed fix, not built: seed the map from the built-in tracker list, match by registrable domain, credit sub-brands to the parent, one "everything else" row for unattributed.
+- Built 2026-11-20 (df8a037, 69b7395, 8b5c571): seed the map from the built-in tracker list, match by registrable domain, credit sub-brands to the parent, one "everything else" row for unattributed.
 
 ## Perf: report-only scanners (2026-11-19)
 
 - Measured before: detect-played up to 0.3-1 s CPU/page on ad-heavy sites, long tasks 60-920 ms.
 - Step-1 build removed >50 ms extension tasks in Chromium and cut load-window CPU (Fox News 214 to 67 ms in FF).
-- Plan: scanners run after settle (load + ~2 s quiet, max 5 s, sliced idle work, flush on hide/leave/popup open). In progress, uncommitted.
+- Plan: scanners run after settle (load + ~2 s quiet, max 5 s, sliced idle work, flush on hide/leave/popup open). Shipped 2026-11-20 (0ec8d09).
 
 ## Dev Firefox build id (2026-11-19)
 

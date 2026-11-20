@@ -25,7 +25,7 @@ Binding requirements for wearehere. Rationale and history live in [decisions.md]
 
 ### Permissions
 
-- Requested: `storage`, `alarms`, `cookies`, `<all_urls>` host permissions. (docs/archive/PRD.md:30-30)
+- Requested: `storage`, `alarms`, `cookies`, `webRequest` (observe only), `scripting` (6.0.0: registers `inject.js` dynamically so Trust ID sites can be `excludeMatches`'d), `<all_urls>` host permissions. (docs/archive/PRD.md:30-30)
 - Deliberately **not** requested: `webNavigation` (its "Read your browsing history" warning is bad optics and forces a re-grant on update), `declarativeNetRequest` (see section 1), `activeTab` (redundant with `<all_urls>`, dropped pre-AMO). (docs/archive/PRD.md:30-30)
 - `webRequest` is not used to block. The 403-triggered relax offer is removed (2026-11-19).
 - Never rewrite headers on vendor/anti-bot frames: a DNR Trust-ID frame marker (sentinel `Last-Modified` on sub_frames) broke Stytch magic-link sign-in and was reverted; `declarativeNetRequestWithHostAccess` dropped. `scripting` (registerContentScripts `excludeMatches`) needs store re-review at the next release.
@@ -50,7 +50,7 @@ Scanner / history (docs/archive/PRD.md:44-48):
 | `visitHistory` | `[{domain, visitTimestamp, score, trackers:[{company, mechanisms:[]}], sweepImpact, termsScore, blurredSurfaces}]` |
 | `windowSnapshots` | `{week, month, allTime}`, for Overview "what changed" diffs |
 | `scoreHistory` | `[{timestamp, score}]`, optional; shipped impl reuses visitHistory dots |
-| `tosCacheV1` | `{[domain]: {privacy, terms, at}}`; TTL 30d found / 1d miss, cap 500 |
+| `tosCacheV2` | `{[domain]: {privacy, terms, at}}`; TTL 30d found / 1d miss, cap 500. V1 (old scanner score scale) is deleted at SW start |
 
 Cookie scoper (docs/archive/PRD.md:50-54):
 
@@ -169,9 +169,9 @@ Promotes the existing notify-only `inject.js` wrappers from "log" to "lie," gate
 Cut from 6 to 3 (decided 2026-05-12): **Overview**, **Watchers**, **Privacy guard**. Removed: `Cookies` (into Privacy guard), `Network` (into Watchers `pixels`), `Terms` (into Watchers 4th block), `Network Map` (dropped; rarely actionable). (docs/archive/PRD.md:242-242)
 
 **Overview: the time-based story** (the only trend/"what changed" surface; every other tab is current-state). (docs/archive/PRD.md:244-244)
-- Hero strip: `sites visited · avg score (Δ vs prior window) · watchers spotted (new) · cookies trimmed` + window selector (day/week/month/all). (docs/archive/PRD.md:245-245)
+- Hero strip (lifetime): `sites visited · avg score · unique watchers · cookies trimmed · surfaces blurred`; the window selector (day/week/month/all) drives the lists and events below it. The Watchers tab hero is `sites visited · hidden contacts · unique watchers · trimmed · blurred` (windowed; replaced avg-per-visit in 6.0.0). Watchers are counted and listed by parent company (Google Ads + Google Analytics = Google). (docs/archive/PRD.md:245-245)
 - **What changed:** per-window diff event log (new/gone watcher, reach grew/shrank >=10pts, cookies grew >=+10, score improved >=5pts, sweep impact, new site), ranked by magnitude x visit-frequency; first-visit events collapse to one "N new sites" summary. (docs/archive/PRD.md:246-246)
-- **Browsing exposure:** sites bucketed clean (`<30`) / mixed (`30–60`) / hostile (`60+`) by avg score; score-trend chart is nice-to-have. (docs/archive/PRD.md:247-247)
+- **Browsing exposure:** sites bucketed clean (`<=15`) / moderate (`16–40`) / hostile (`41+`) by avg score (aligned with the popup verdict, 6.0.0); score-trend chart is nice-to-have. (docs/archive/PRD.md:247-247)
 - **Impact line:** green callout "this week: wearehere shortened N cookies and demoted M trackers to session-only so they can't recognise you tomorrow"; hidden when both counts are 0. (docs/archive/PRD.md:248-248)
 
 **Watchers: who follows you across the web** (per-site reality; the popup covers "who's on this site"). (docs/archive/PRD.md:250-250)
@@ -221,8 +221,8 @@ See section 8 for the full table; the headline gaps are Worker/OffscreenCanvas f
 | Stack-walk wrap set in `inject.js` minimal | Minor | `inject.js` | No `getImageData`/`toBlob`/`OffscreenCanvas`/WebGL2 stack-walk surfaces; tests for the locked set do not exist yet. |
 | `compactVisit` brokerCount fallback | Minor | `report.js` | Can show "5 brokers" with zero names; one-line fix. |
 | Test-coverage gaps | Minor | suite | `safeBgFetch` redirect chain, `removedTabs` LRU eviction, `snapshotAndEvict` recovery, `cookieScopeCounters.bySite`, `buildSetDetails` `__Host-` violations, message-handler cross-check; add post-FF-mirror. |
-| Report-only scanners run after page settle | in progress, uncommitted | `settle.js`, `detect-*.js` | Run after load + ~2 s quiet (max wait 5 s), idle work sliced <~16 ms, pending work flushed on tab hide/leave and popup open. Visits under ~2 s may go uncounted (accepted). Before: detect-played 0.3-1 s CPU/page on ad-heavy sites, long tasks 60-920 ms; step-1 build removed >50 ms extension tasks in Chromium, Fox News load-window CPU 214 to 67 ms (FF). |
-| Watchers per-company Trimmed/Blurred mostly 0 | fix agreed, not built | `report.js`, `background.js` | Cookie-to-company map is learned only from on-page tracker elements (4 domains in user data); sub-brands (Google Ads/Analytics) never match "Google"; blur from first-party/CDN scripts dropped. Fix: seed map from built-in tracker list, match by registrable domain, credit sub-brands to parent, one "everything else" row for unattributed. |
+| Report-only scanners run after page settle | shipped 6.0.0 (0ec8d09) | `settle.js`, `detect-*.js` | Run after load + ~2 s quiet (max wait 5 s), idle work sliced <~16 ms, pending work flushed on tab hide/leave and popup open. Visits under ~2 s may go uncounted (accepted). Before: detect-played 0.3-1 s CPU/page on ad-heavy sites, long tasks 60-920 ms; step-1 build removed >50 ms extension tasks in Chromium, Fox News load-window CPU 214 to 67 ms (FF). |
+| Watchers per-company Trimmed/Blurred mostly 0 | fixed 6.0.0 (df8a037, 69b7395, 8b5c571) | `report.js`, `background.js` | Cookie-to-company map is learned only from on-page tracker elements (4 domains in user data); sub-brands (Google Ads/Analytics) never match "Google"; blur from first-party/CDN scripts dropped. Fix: seed map from built-in tracker list, match by registrable domain, credit sub-brands to parent, one "everything else" row for unattributed. |
 | Unpartitioned `__cf_bm` with extension loaded | open, unexplained | scoper/inject | Appears on typesafe.ai even with scoper disabled; absent no-ext. Not the login cause. |
 | `data-wh-farble-seed` readable by page on untrusted sites | open, redesign pending | `detect-watched.js` | Attribute handshake exposes the seed. |
 | Add the `vm` stress harness to the repo | offered | `/tmp/wh-stress/stress.js` | 47/47 over real extracted source; uncommitted; would be a regression guard. |
