@@ -141,3 +141,24 @@ test('recomputeIfStale: serves cached snapshot inside the staleness window', asy
   assert.equal(second.computedAt, firstStamp, 'served from cache');
   assert.equal(second.today.sites[0], 'a.com',  'cached aggregate');
 });
+
+test('aggregateWindow groups watchers by parent with union reach', async () => {
+  const { readFileSync } = await import('node:fs');
+  const vm = (await import('node:vm')).default;
+  const { SRC_DIR } = await import('./_helpers.js');
+  const ctx = loadServiceWorkerModule('company-map.js');
+  vm.runInContext(readFileSync(`${SRC_DIR}/snapshots.js`, 'utf8'), ctx);
+  const now = Date.now();
+  const w = ctx.aggregateWindow([
+    visit({ at: now, watchers: ['Google Ads', 'YouTube (Google)'], watcherMech: { 'Google Ads': { pixels: 1 } } }),
+    visit({ at: now, watchers: ['Google Analytics', 'Facebook'] }),
+    visit({ at: now, watchers: ['Hotjar'] }),
+  ], now - DAY, now);
+  const g = plain(w.groups);
+  assert.equal(g.google.hits, 2);          // union: 2 visits, not 3 member mentions
+  assert.equal(g.google.mech.pixels, 1);
+  assert.equal(g.meta.name, 'Meta');
+  assert.equal(g.meta.hits, 1);
+  assert.equal(g.hotjar.hits, 1);
+  assert.equal(w.watchers['google ads'].hits, 1); // per-watcher view unchanged
+});

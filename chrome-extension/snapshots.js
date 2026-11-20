@@ -20,6 +20,7 @@
 //     contacts:        int,                           // sum of watcher hits
 //     watchers:        { [lowerName]: { name, hits, mech: {cookies, pixels, clicks, deviceId} } },
 //     reachPct:        { [lowerName]: int },          // % of visits seeing this watcher
+//     groups:          { [lowerParent]: { name, hits, mech } },  // watchers rolled up by parent company; hits = visits where ANY member was seen
 //     brokers:         { [lowerName]: { name, hits } },
 //     avgScoreBySite:  { [etld1]: int },
 //     latestBySite:    { [etld1]: { cookieCount, scoperTightened } },
@@ -53,6 +54,7 @@ function emptyWindow(start, end) {
     contacts: 0,
     watchers: {},
     reachPct: {},
+    groups: {},
     brokers: {},
     avgScoreBySite: {},
     latestBySite: {},
@@ -72,6 +74,7 @@ function aggregateWindow(visits, start, end) {
   const sites = new Set();
   let scoreSum = 0;
   const watcherHits = {};        // lowerName -> { name, hits, mech }
+  const groupHits = {};          // lowerParent -> { name, hits, mech } (union over members)
   const brokerHits = {};         // lowerName -> { name, hits }
   const scoreSumsBySite = {};    // etld1 -> sum
   const scoreCountsBySite = {};  // etld1 -> count
@@ -101,8 +104,22 @@ function aggregateWindow(visits, start, end) {
     const wm = {};
     for (const k of Object.keys(v.watcherMech || {})) wm[k.toLowerCase()] = v.watcherMech[k];
     const seenInVisit = new Set();
+    const seenGroup = new Set();
     for (const name of (v.watchers || [])) {
       const k = name.toLowerCase();
+      // Parent roll-up (Google Ads -> Google): reach is a union, so a visit
+      // counts once per group however many members it saw.
+      const g = (typeof self !== 'undefined' && self.WH_watcherGroup) ? self.WH_watcherGroup(name) : { key: k, name };
+      if (!groupHits[g.key]) groupHits[g.key] = { name: g.name, hits: 0, mech: { cookies: 0, pixels: 0, clicks: 0, deviceId: 0 } };
+      if (!seenGroup.has(g.key)) { groupHits[g.key].hits++; seenGroup.add(g.key); }
+      const gm = wm[k];
+      if (gm) {
+        groupHits[g.key].mech.cookies  += gm.cookies  || 0;
+        groupHits[g.key].mech.pixels   += gm.pixels   || 0;
+        groupHits[g.key].mech.clicks   += gm.clicks   || 0;
+        groupHits[g.key].mech.deviceId += gm.deviceId || 0;
+      }
+
       if (!watcherHits[k]) {
         watcherHits[k] = { name, hits: 0, mech: { cookies: 0, pixels: 0, clicks: 0, deviceId: 0 } };
       }
@@ -134,6 +151,7 @@ function aggregateWindow(visits, start, end) {
   w.sites = Array.from(sites);
   w.avgScore = Math.round(scoreSum / visits.length);
   w.watchers = watcherHits;
+  w.groups = groupHits;
   w.brokers = brokerHits;
   w.typing = { fields: typingFields, visits: typingVisits };
 

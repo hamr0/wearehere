@@ -190,7 +190,8 @@ body {
 .frame-title {
   color: var(--fg-mute);
   text-transform: uppercase;
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 700;
   letter-spacing: 0.12em;
   margin: 18px 0 8px;
 }
@@ -266,6 +267,7 @@ body {
 .wt-reach { color: var(--fg); }
 .wt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 .wt-num.pos { color: var(--warn); }
+.wt-quiet { font-size: 11px; margin-top: 8px; overflow-wrap: anywhere; }
 
 .saved-flash {
   color: var(--ok);
@@ -280,7 +282,8 @@ body {
 
 .dig-deeper {
   color: var(--fg-faint);
-  font-size: 10px;
+  font-size: 12px;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
   margin: 32px 0 4px;
@@ -689,6 +692,8 @@ input[type="text"].mono-input {
   #overview-hero { grid-template-columns: 1fr; }
   .hero .cell { border-bottom: 1px dashed var(--line); padding-bottom: 10px; }
   .hero .cell:last-child { border-bottom: 0; padding-bottom: 0; }
+  .watcher-header,
+  .watcher-row { grid-template-columns: minmax(0, 1fr) 76px 54px 54px; gap: 8px; }
 }
 
 /* Onboarding — first-run overlay. Shown once per install via the

@@ -191,12 +191,7 @@ async function sweep(trigger) {
       demotions++;
       perSite[etld1].demotions++;
     }
-    const company = domainCompany[etld1];
-    if (company) {
-      const k = company.toLowerCase();
-      if (!perCompany[k]) perCompany[k] = { name: company, tightened: 0 };
-      perCompany[k].tightened++;
-    }
+    creditCompany(perCompany, domainCompany[etld1]);
   }
 
   await mergeCounters(rewrote, demotions, perSite, perCompany);
@@ -206,6 +201,19 @@ async function sweep(trigger) {
   const stats = { scanned, rewrote, demotions, failed, rewrites: rewrote };
   console.log(`[scoper] sweep (${trigger}): scanned ${scanned}, rewrote ${rewrote}, demoted ${demotions}`);
   return stats;
+}
+
+// Credit a company, and its parent when it is a sub-brand ("Google Ads" also
+// counts toward "Google"). Parent rows therefore include their sub-brands;
+// the Watchers table avoids double-counting when it sums them.
+function creditCompany(bucket, company) {
+  if (!company) return;
+  const parent = self.WH_companyParent && self.WH_companyParent(company);
+  for (const name of parent ? [company, parent] : [company]) {
+    const k = name.toLowerCase();
+    if (!bucket[k]) bucket[k] = { name, tightened: 0 };
+    bucket[k].tightened++;
+  }
 }
 
 async function mergeCounters(deltaTightened, deltaDemotions, perSite, perCompany) {
@@ -260,27 +268,33 @@ async function mergeCountersUnsafe(deltaTightened, deltaDemotions, perSite, perC
   });
 }
 
-// Cached cookie-domain → company map. Populated by background.js's
-// harvest from detect-cooked items (keyed by eTLD+1). We read it once
-// per sweep and cache it for the realtime onChanged path; storage
-// listener below refreshes the cache when background writes a new
-// version. Cookies whose domain hasn't been observed via cooked stay
-// unattributed in byCompany — the lifetime total in `tightened` is
-// still complete.
+// Cached cookie-domain → company map, keyed by registrable domain. Seeded
+// from the built-in tracker list (company-map.js), then topped up with what
+// background.js's harvest learned from detect-cooked items (learned entries
+// only fill domains the list doesn't know). Read once per sweep and cached
+// for the realtime onChanged path; the storage listener below refreshes it.
+// Cookies on domains nobody can name stay unattributed in byCompany — the
+// lifetime total in `tightened` is still complete (the Watchers table shows
+// the remainder as "everything else").
 let domainCompanyCache = null;
+let domainCompanySeed = null;
+function mergeDomainCompany(learned) {
+  if (!domainCompanySeed) domainCompanySeed = self.WH_seedDomainCompany ? self.WH_seedDomainCompany(etld1Of) : {};
+  const out = Object.assign({}, learned && typeof learned === 'object' ? learned : {}, domainCompanySeed);
+  return out;
+}
 async function loadDomainCompanyMapForScoper() {
   if (domainCompanyCache) return domainCompanyCache;
   try {
     const { cookieDomainCompanyMap } = await chrome.storage.local.get('cookieDomainCompanyMap');
-    domainCompanyCache = (cookieDomainCompanyMap && typeof cookieDomainCompanyMap === 'object')
-      ? cookieDomainCompanyMap : {};
-  } catch { domainCompanyCache = {}; }
+    domainCompanyCache = mergeDomainCompany(cookieDomainCompanyMap);
+  } catch { domainCompanyCache = mergeDomainCompany(null); }
   return domainCompanyCache;
 }
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.cookieDomainCompanyMap) {
-    domainCompanyCache = changes.cookieDomainCompanyMap.newValue || {};
+    domainCompanyCache = mergeDomainCompany(changes.cookieDomainCompanyMap.newValue);
   }
 });
 // Warm the cache at load so the realtime onChanged path can attribute
@@ -393,12 +407,7 @@ function queueRetrim(etld1, isDemote) {
   // few real-time retrims after a fresh install may not resolve a
   // company yet, which is fine — they accrue to bySite, just not to
   // byCompany. Cache is refreshed via the storage listener above.
-  const company = domainCompanyCache && domainCompanyCache[etld1];
-  if (company) {
-    const k = company.toLowerCase();
-    if (!pendingRetrim.byCompany[k]) pendingRetrim.byCompany[k] = { name: company, tightened: 0 };
-    pendingRetrim.byCompany[k].tightened++;
-  }
+  creditCompany(pendingRetrim.byCompany, domainCompanyCache && domainCompanyCache[etld1]);
   if (pendingFlushTimer) return;
   pendingFlushTimer = setTimeout(flushPendingRetrim, RETRIM_FLUSH_MS);
 }

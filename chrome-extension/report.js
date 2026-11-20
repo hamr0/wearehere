@@ -171,7 +171,7 @@ function watchVisitsStorage() {
     // Trimmed/Blurred from these keys. They change on sweeps + visit
     // appends independently of the snapshot recompute, so refresh the
     // table when they move (it re-reads both keys from storage itself).
-    if (changes.cookieScopeCounters || changes.farblerBlurredByCompany) {
+    if (changes.cookieScopeCounters || changes.farblerBlurredByCompany || changes.farblerCounters) {
       loadWatchersAggregates();
     }
   });
@@ -613,8 +613,10 @@ function renderRecentVisits(visits) {
 
 // Browsing exposure — sites this window bucketed by risk tier. Buckets by
 // SITE (average score across its visits) not by visit, so a heavily-
-// revisited site doesn't dominate the shape. Tiers match the dashboard's
-// scoring vocabulary (30 fair/mixed, 60 mixed/hostile).
+// revisited site doesn't dominate the shape. Tiers use the popup's verdict
+// cutoffs (computeVerdict in background.js: low <=15, moderate <=40,
+// high <=70, critical >70) collapsed to 3: clean <=15, moderate 16-40,
+// hostile 41+.
 function renderBrowsingExposure(visits) {
   const el = $('ov-trend');
   if (!visits.length) {
@@ -628,21 +630,21 @@ function renderBrowsingExposure(visits) {
     e.sum += v.score || 0;
     e.n++;
   }
-  let clean = 0, mixed = 0, hostile = 0;
+  let clean = 0, moderate = 0, hostile = 0;
   for (const k in bySite) {
-    const avg = bySite[k].sum / bySite[k].n;
-    if (avg >= 60) hostile++;
-    else if (avg >= 30) mixed++;
+    const avg = Math.round(bySite[k].sum / bySite[k].n);
+    if (avg > 40) hostile++;
+    else if (avg > 15) moderate++;
     else clean++;
   }
-  const total = clean + mixed + hostile;
-  const max = Math.max(1, clean, mixed, hostile);
+  const total = clean + moderate + hostile;
+  const max = Math.max(1, clean, moderate, hostile);
   const bar = (n, cls) => `<span class="bar ${cls}" style="width:${Math.round((n / max) * 60)}%"></span>`;
   safeSetHTML(el, `
     <div class="trend-caption dim">${total} site${total === 1 ? '' : 's'} this window · by risk tier · lower is better</div>
-    <div class="bar-row"><span class="nval">${clean}</span> ${bar(clean, 'ok')} <span class="nlbl">clean <span class="dim">(&lt; 30)</span></span></div>
-    <div class="bar-row"><span class="nval">${mixed}</span> ${bar(mixed, 'warn')} <span class="nlbl">mixed <span class="dim">(30–60)</span></span></div>
-    <div class="bar-row"><span class="nval">${hostile}</span> ${bar(hostile, 'bad')} <span class="nlbl">hostile <span class="dim">(60+)</span></span></div>
+    <div class="bar-row"><span class="nval">${clean}</span> ${bar(clean, 'ok')} <span class="nlbl">clean <span class="dim">(≤ 15)</span></span></div>
+    <div class="bar-row"><span class="nval">${moderate}</span> ${bar(moderate, 'warn')} <span class="nlbl">moderate <span class="dim">(16–40)</span></span></div>
+    <div class="bar-row"><span class="nval">${hostile}</span> ${bar(hostile, 'bad')} <span class="nlbl">hostile <span class="dim">(41+)</span></span></div>
   `);
 }
 
@@ -686,15 +688,14 @@ function renderWatchers(report) {
     <div class="dig-deeper">// dig deeper · per site</div>
 
     <div class="frame-title with-sel">
-      <span>watchers ·</span>
-      <select class="site-sel" id="watcher-site-sel">${siteOpt}</select>
+      <span>site ·</span>
+      <select class="site-sel" id="site-sel">${siteOpt}</select>
     </div>
+
+    <div class="frame-title">watchers</div>
     <div id="watcher-detail-block">${renderWatcherDetail(report)}</div>
 
-    <div class="frame-title with-sel">
-      <span>terms ·</span>
-      <select class="site-sel" id="terms-site-sel">${siteOpt}</select>
-    </div>
+    <div class="frame-title">terms</div>
     <div id="terms-block">${renderTermsBlock(report)}</div>
   `);
 
@@ -773,14 +774,7 @@ function renderWhoFollowsYou(snap) {
     return;
   }
 
-  const watchers = snap.watchers || {};
-  const reach = snap.reachPct || {};
-  const ranked = Object.entries(watchers)
-    .map(([k, w]) => ({ ...w, key: k, pct: reach[k] || 0 }))
-    .sort((a, b) => b.pct - a.pct)
-    .slice(0, 12);
-
-  if (ranked.length === 0) {
+  if (Object.keys(snap.watchers || {}).length === 0) {
     safeSetHTML(el, `<div class="placeholder"><div>no named watchers in this window.</div></div>`);
     renderWhoFollowsYouSummary(snap);
     return;
@@ -795,7 +789,7 @@ function renderWhoFollowsYou(snap) {
   // week) can land an older callback after a newer one and paint stale
   // rows. Bail if a newer render started while we were waiting on storage.
   const myToken = whoFollowsRenderToken;
-  chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany'], (s) => {
+  chrome.storage.local.get(['cookieScopeCounters', 'farblerBlurredByCompany', 'farblerCounters'], (s) => {
     if (myToken !== whoFollowsRenderToken) return;
     const byCompanyTrimmed = (s.cookieScopeCounters && s.cookieScopeCounters.byCompany) || {};
     const byCompanyBlurred = s.farblerBlurredByCompany || {};
@@ -812,18 +806,34 @@ function renderWhoFollowsYou(snap) {
       return parts.length ? 'via ' + parts.join(' · ') : '';
     };
 
-    const rowsHtml = ranked.map((c) => {
-      const trimmed = (byCompanyTrimmed[c.key] && byCompanyTrimmed[c.key].tightened) || 0;
-      const blurred = (byCompanyBlurred[c.key] && byCompanyBlurred[c.key].count) || 0;
+    // One row per PARENT company (Google Ads/Analytics/YouTube -> Google).
+    // Reach is a union over members; trimmed/blurred are the parent's stored
+    // counters (sub-brands are credited to the parent at write time). See
+    // WH_buildWatcherRows in company-map.js. Last row = lifetime total minus
+    // the shown rows, so the columns always add up.
+    const trimmedTotal = (s.cookieScopeCounters && s.cookieScopeCounters.tightened) || 0;
+    const blurredTotal = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
+    const t = WH_buildWatcherRows(snap, byCompanyTrimmed, byCompanyBlurred, trimmedTotal, blurredTotal, 12);
+    const rowsHtml = t.rows.map((c) => {
       const via = mechWords(c.mech || {});
       return `
         <div class="watcher-row">
           <span class="wt-name">${escapeText(c.name)}${via ? `<span class="wt-via">${escapeText(via)}</span>` : ''}</span>
           <span class="wt-reach">${c.hits} of ${snap.visitsN} <span class="dim">visits</span></span>
-          <span class="wt-num${trimmed > 0 ? ' pos' : ''}">${trimmed.toLocaleString()}</span>
-          <span class="wt-num${blurred > 0 ? ' pos' : ''}">${blurred.toLocaleString()}</span>
+          <span class="wt-num${c.trimmed > 0 ? ' pos' : ''}">${c.trimmed.toLocaleString()}</span>
+          <span class="wt-num${c.blurred > 0 ? ' pos' : ''}">${c.blurred.toLocaleString()}</span>
         </div>`;
     }).join('');
+    const elseHtml = `
+        <div class="watcher-row">
+          <span class="wt-name">everything else<span class="wt-via">trackers we can't name or too small to list</span></span>
+          <span class="wt-reach dim">—</span>
+          <span class="wt-num${t.elseTrimmed > 0 ? ' pos' : ''}">${t.elseTrimmed.toLocaleString()}</span>
+          <span class="wt-num${t.elseBlurred > 0 ? ' pos' : ''}">${t.elseBlurred.toLocaleString()}</span>
+        </div>`;
+    const quietHtml = t.quiet.length
+      ? `<div class="wt-quiet dim">also seen, nothing to trim or blur: ${escapeText(t.quiet.join(' · '))}</div>`
+      : '';
 
     safeSetHTML(el, `
       <div class="watcher-table">
@@ -833,8 +843,8 @@ function renderWhoFollowsYou(snap) {
           <span class="wt-num">trimmed</span>
           <span class="wt-num">blurred</span>
         </div>
-        ${rowsHtml}
-      </div>`);
+        ${rowsHtml}${elseHtml}
+      </div>${quietHtml}`);
 
     renderWhoFollowsYouSummary(snap);
   });
@@ -861,20 +871,16 @@ function wireSiteSelectors() {
   // path would re-call this and leak duplicate chrome.tabs listeners.
   if (siteSelectorsWired) return;
   siteSelectorsWired = true;
-  const watcherSel = $('watcher-site-sel');
-  const termsSel = $('terms-site-sel');
+  const siteSel = $('site-sel');
   const noData = (label) => `<div class="placeholder"><div>no live capture for ${escapeText(label)} yet — open or refresh that tab and try again.</div></div>`;
 
-  watcherSel.addEventListener('change', () => {
-    const opt = watcherSel.options[watcherSel.selectedIndex];
-    fetchTabReport(parseInt(watcherSel.value, 10)).then((r) => {
-      safeSetHTML($('watcher-detail-block'), r ? renderWatcherDetail(r) : noData(opt?.textContent || 'this tab'));
-    });
-  });
-  termsSel.addEventListener('change', () => {
-    const opt = termsSel.options[termsSel.selectedIndex];
-    fetchTabReport(parseInt(termsSel.value, 10)).then((r) => {
-      safeSetHTML($('terms-block'), r ? renderTermsBlock(r) : noData(opt?.textContent || 'this tab'));
+  // One dropdown drives both the watcher detail and the terms block.
+  siteSel.addEventListener('change', () => {
+    const opt = siteSel.options[siteSel.selectedIndex];
+    fetchTabReport(parseInt(siteSel.value, 10)).then((r) => {
+      const nd = noData(opt?.textContent || 'this tab');
+      safeSetHTML($('watcher-detail-block'), r ? renderWatcherDetail(r) : nd);
+      safeSetHTML($('terms-block'), r ? renderTermsBlock(r) : nd);
     });
   });
 
@@ -907,8 +913,7 @@ function wireSiteSelectors() {
 function populateSiteSelectors(opts) {
   chrome.runtime.sendMessage({ type: 'getOpenTabs' }, (tabs) => {
     if (!Array.isArray(tabs) || tabs.length === 0) return;
-    const watcherSel = $('watcher-site-sel');
-    const termsSel = $('terms-site-sel');
+    const siteSel = $('site-sel');
     const preserve = opts && opts.preserveSelection;
 
     const labelFor = (t) => {
@@ -931,29 +936,20 @@ function populateSiteSelectors(opts) {
       ? current
       : fallback;
 
-    const watcherPrev = watcherSel.value;
-    const termsPrev = termsSel.value;
-    const watcherVal = resolveVal(watcherPrev);
-    const termsVal = resolveVal(termsPrev);
+    const prev = siteSel.value;
+    const val = resolveVal(prev);
 
-    const buildOptions = (selVal) => sorted
-      .map((t) => `<option value="${t.id}"${String(t.id) === selVal ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
+    const options = sorted
+      .map((t) => `<option value="${t.id}"${String(t.id) === val ? ' selected' : ''}>${escapeText(labelFor(t))}</option>`)
       .join('');
-
-    const watcherOptions = buildOptions(watcherVal);
-    const termsOptions = buildOptions(termsVal);
 
     // Skip the innerHTML swap when the markup is unchanged. Replacing
     // options while the dropdown is open closes the menu under the
     // user's click, so their selection never fires `change`. The
     // `selected` attribute already tracks the correct value.
-    if (watcherSel.innerHTML !== watcherOptions) {
-      safeSetHTML(watcherSel, watcherOptions);
-      watcherSel.value = watcherVal;
-    }
-    if (termsSel.innerHTML !== termsOptions) {
-      safeSetHTML(termsSel, termsOptions);
-      termsSel.value = termsVal;
+    if (siteSel.innerHTML !== options) {
+      safeSetHTML(siteSel, options);
+      siteSel.value = val;
     }
 
     // If the user's selection was forcibly moved (their tab closed),
@@ -961,11 +957,8 @@ function populateSiteSelectors(opts) {
     // from the closed tab. Synthetic `change` is the existing handler
     // path — keeps fetchTabReport + cache + no-data fallback in one
     // place.
-    if (watcherPrev && watcherPrev !== watcherVal) {
-      watcherSel.dispatchEvent(new Event('change'));
-    }
-    if (termsPrev && termsPrev !== termsVal) {
-      termsSel.dispatchEvent(new Event('change'));
+    if (prev && prev !== val) {
+      siteSel.dispatchEvent(new Event('change'));
     }
   });
 }

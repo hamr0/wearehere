@@ -6,6 +6,7 @@
 
 importScripts('tos-scanner.js');
 importScripts('network-domains.js');
+importScripts('company-map.js');
 importScripts('cookie-database.js');
 importScripts('visits.js');
 // Window snapshots — rolled-up Overview aggregates. Loaded after visits.js
@@ -206,8 +207,17 @@ function creditFarblerIfActive(delta, famDelta, etld1) {
 // chrome.storage.local under farblerBlurredByCompany; the Watchers
 // tab joins by lowercased company name.
 const MAX_BLURRED_COMPANIES = 300;
-async function recordBlurredByCompany(perCompany) {
-  if (!perCompany) return;
+let _seedDomainCompany = null;
+async function recordBlurredByCompany(perCompanyIn) {
+  if (!perCompanyIn) return;
+  // Sub-brands also count toward their parent ("Google Ads" -> "Google");
+  // the Watchers table avoids double-counting when it sums rows.
+  const perCompany = {};
+  for (const [name, n] of Object.entries(perCompanyIn)) {
+    perCompany[name] = (perCompany[name] || 0) + n;
+    const parent = self.WH_companyParent && self.WH_companyParent(name);
+    if (parent) perCompany[parent] = (perCompany[parent] || 0) + n;
+  }
   try {
     const { farblerBlurredByCompany } = await chrome.storage.local.get('farblerBlurredByCompany');
     let next = (farblerBlurredByCompany && typeof farblerBlurredByCompany === 'object')
@@ -1587,8 +1597,12 @@ function buildReport(data) {
     if (!fp) continue;
     let name = hostToCompany[scriptHost];
     if (!name) {
-      const root = whIsIpHost(scriptHost) ? scriptHost : scriptHost.split('.').slice(-2).join('.');
-      name = hostToCompany[root];
+      // Registrable domain (honours WH_PUBLIC_SUFFIX), then the built-in
+      // tracker list, so a script served from a known tracker's domain is
+      // credited even when this page's cooked scan didn't list it.
+      const root = harvestEtld1(scriptHost) || scriptHost;
+      if (!_seedDomainCompany) _seedDomainCompany = self.WH_seedDomainCompany(harvestEtld1);
+      name = hostToCompany[root] || _seedDomainCompany[root];
     }
     if (!name) continue;
     if (!trackerCompanies[name]) {
