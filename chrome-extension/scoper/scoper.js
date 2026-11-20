@@ -75,19 +75,28 @@ function isPartitioned(cookie) {
   return !!(cookie.partitionKey || cookie.firstPartyDomain);
 }
 
-function isChallengeDomain(domain) {
+// A challenge pattern with a path ('*://www.google.com/recaptcha/*') only
+// exempts cookies whose own path sits under that prefix (reCAPTCHA sets
+// _GRECAPTCHA with path /recaptcha). Matching the host alone would also exempt
+// every other host-only cookie on www.google.com. Host-only patterns
+// ('*://challenges.cloudflare.com/*') stay host-wide.
+function isChallengeCookie(cookie) {
   if (typeof WH_CHALLENGE_EXCLUDES === 'undefined') return false;
-  const host = domain.replace(/^\./, '').toLowerCase();
+  const host = cookie.domain.replace(/^\./, '').toLowerCase();
+  const cpath = cookie.path || '/';
   for (const pat of WH_CHALLENGE_EXCLUDES) {
-    const m = /^\*:\/\/(\*\.)?([^/]+)\//.exec(pat);
+    const m = /^\*:\/\/(\*\.)?([^/]+)(\/[^*]*)?\*?$/.exec(pat);
     if (!m) continue;
-    if (host === m[2] || host.endsWith('.' + m[2])) return true;
+    if (!(host === m[2] || host.endsWith('.' + m[2]))) continue;
+    const prefix = (m[3] || '/').replace(/\/+$/, '');
+    if (!prefix) return true;
+    if (cpath === prefix || cpath.startsWith(prefix + '/')) return true;
   }
   return false;
 }
 
 function shouldSkipCookie(cookie) {
-  return isPartitioned(cookie) || isChallengeDomain(cookie.domain);
+  return isPartitioned(cookie) || isChallengeCookie(cookie);
 }
 
 function buildSetDetails(cookie, capDays) {
@@ -458,6 +467,7 @@ chrome.cookies.onChanged.addListener(async (info) => {
 });
 
 self.scoperSweep = sweep;
+self.scoperShouldSkipCookie = shouldSkipCookie;
 self.scoperEnsureAlarm = ensureAlarm;
 self.scoperEtld1Of = etld1Of;
 self.SCOPER_PERIOD_CHOICES_MIN = PERIOD_CHOICES_MIN;
