@@ -1,0 +1,21 @@
+# Push / PR gate: test only. No typecheck/build/lint in this repo; tests are
+# hermetic (node built-ins only) and token-free.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      # No `npm ci`: the root package has no dependencies (tests use node built-ins only).
+      - run: npm test              # node --test test/*.test.js, hermetic, token-free
