@@ -131,3 +131,18 @@ test('groupStoredKeys: strips trailing id segments, merges flags, keeps others',
     { key: '12345', n: 1, flags: [] },
   ]);
 });
+
+test('pickTrimTab: first-party tab wins, else tab that contacted the host, else null', () => {
+  const tabs = {
+    1: { domain: 'www.cnn.com', networkData: { thirdPartyDomains: { 'securepubads.g.doubleclick.net': {} } } },
+    2: { domain: 'bbc.co.uk', networkData: { thirdPartyDomains: {} } },
+    3: { domain: '', networkData: null },
+  };
+  const e1 = (h) => (h.endsWith('bbc.co.uk') ? 'bbc.co.uk' : h.split('.').slice(-2).join('.'));
+  assert.equal(ctx.WH_pickTrimTab(tabs, '.cnn.com', 'cnn.com', e1), tabs[1]);
+  assert.equal(ctx.WH_pickTrimTab(tabs, 'www.bbc.co.uk', 'bbc.co.uk', e1), tabs[2]);
+  assert.equal(ctx.WH_pickTrimTab(tabs, '.doubleclick.net', 'doubleclick.net', e1), tabs[1]);
+  assert.equal(ctx.WH_pickTrimTab(tabs, '.ick.net', 'ick.net', e1), null); // suffix must be a label boundary
+  assert.equal(ctx.WH_pickTrimTab(tabs, '.unseen.org', 'unseen.org', e1), null);
+  assert.equal(ctx.WH_pickTrimTab(tabs, '', '', e1), null);
+});

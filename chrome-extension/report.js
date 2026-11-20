@@ -418,9 +418,22 @@ function renderHeroLists(snap, s) {
   if (!el) return;
   const watchers = (snap && snap.watchers) || {};
   const reach = (snap && snap.reachPct) || {};
-  const watched = Object.entries(watchers)
-    .map(([k, w]) => ({ name: (w && w.name) || k, pct: reach[k] || 0 }))
-    .sort((a, b) => b.pct - a.pct).slice(0, 3).map((w) => w.name);
+  // By parent company (Google Ads + Google = one entry), same grouping as the
+  // Watchers table. Falls back to rolling raw watchers up when the snapshot
+  // predates `groups`.
+  let ranked;
+  if (snap && snap.groups) {
+    ranked = Object.keys(snap.groups).map((k) => ({ name: snap.groups[k].name || k, pct: snap.groups[k].hits || 0 }));
+  } else {
+    const roll = {};
+    for (const [k, w] of Object.entries(watchers)) {
+      const g = self.WH_watcherGroup((w && w.name) || k);
+      const pct = reach[k] || 0;
+      if (!roll[g.key] || pct > roll[g.key].pct) roll[g.key] = { name: g.name, pct };
+    }
+    ranked = Object.values(roll);
+  }
+  const watched = ranked.sort((a, b) => b.pct - a.pct).slice(0, 3).map((w) => w.name);
   const bySiteTrim = (s.cookieScopeCounters && s.cookieScopeCounters.bySite) || {};
   const cookies = Object.entries(bySiteTrim)
     .map(([d, v]) => [d, (v && v.tightened) || 0]).filter(([, n]) => n > 0)
@@ -585,9 +598,17 @@ function renderRecentVisits(visits) {
       : `<span class="dim">none</span>`;
   };
 
+  // Visits stored before per-visit trimming existed have no `trimmed` field:
+  // show "—" rather than a misleading 0 · n.
+  const trimBlurCell = (v) => {
+    if (typeof v.trimmed !== 'number') return '<span class="dim">—</span>';
+    const b = v.blurredSurfaces || 0;
+    return (v.trimmed || b) ? `${v.trimmed} · ${b}` : '<span class="dim">—</span>';
+  };
+
   safeSetHTML(el, `
     <table class="table">
-      <thead><tr><th>site</th><th>score</th><th>watchers</th><th>via</th><th>terms</th><th>when</th></tr></thead>
+      <thead><tr><th>site</th><th>score</th><th>watchers</th><th>via</th><th title="cookies trimmed · fingerprint surfaces blurred on that visit">trim·blur</th><th>terms</th><th>when</th></tr></thead>
       <tbody>
         ${rows.map((v) => {
           const parents = self.WH_uniqueParents(v.watchers).map((g) => g.name);
@@ -603,6 +624,7 @@ function renderRecentVisits(visits) {
             <td class="num">${v.score}</td>
             <td>${topW || '<span class="dim">none</span>'}${more}</td>
             <td>${mechCell(v.mechanisms)}</td>
+            <td class="num">${trimBlurCell(v)}</td>
             <td>${tosCell}</td>
             <td><span class="dim">${escapeText(relativeTimeShort(v.at))}</span></td>
           </tr>`;
@@ -662,8 +684,13 @@ const tabReportCache = new Map();
 function renderWatchers(report) {
   const panel = $('panel-watchers');
   tabReportCache.set(tabId, report);
-  const currentSite = report.site || '';
-  const siteOpt = `<option value="${tabId}">${escapeText(currentSite)}</option>`;
+  // Only a real web page belongs in the site dropdown. Opened directly (no
+  // source tab) the report is for the dashboard's own tab, whose "site" is the
+  // extension id; show a placeholder instead.
+  const isWeb = /^https?:/i.test(report.url || '');
+  const siteOpt = isWeb
+    ? `<option value="${tabId}">${escapeText(report.site || '')}</option>`
+    : `<option value="">(no open site)</option>`;
 
   safeSetHTML(panel, `
     <div class="frame-title">watchers — who follows you across the web</div>
@@ -671,7 +698,7 @@ function renderWatchers(report) {
       <div class="cell"><div class="num" id="w-sites">—</div><div class="lbl">sites visited</div></div>
       <div class="cell"><div class="num" id="w-contacts">—</div><div class="lbl">hidden contacts</div></div>
       <div class="cell"><div class="num" id="w-unique">—</div><div class="lbl">unique watchers</div></div>
-      <div class="cell"><div class="num" id="w-amp">—</div><div class="lbl">avg per visit</div></div>
+      <div class="cell"><div class="num" id="w-amp">—</div><div class="lbl">trimmed · blurred</div></div>
     </div>
 
     <div class="window-sel" id="w-window" style="margin-top:14px"></div>
@@ -752,16 +779,42 @@ function renderWatchersHero(snap) {
     $('w-sites').textContent = '0';
     $('w-contacts').textContent = '0';
     $('w-unique').textContent = '0';
-    $('w-amp').textContent = '—';
+  } else {
+    // Parent-company counts, consistent with the merged Watchers table.
+    const { unique, contacts } = self.WH_parentTotals(snap);
+    $('w-sites').textContent = (snap.sites || []).length.toLocaleString();
+    $('w-contacts').textContent = contacts.toLocaleString();
+    $('w-unique').textContent = unique.toLocaleString();
+  }
+  renderWatchersProtection();
+}
+
+// 4th hero box: cookies trimmed · fingerprint surfaces blurred for the
+// selected window. "all" reads the lifetime counters (same as the Overview
+// hero). Bounded windows read the hourly impact log for trimmed (accurate for
+// every visit, old or new) and sum visit.blurredSurfaces for blurred (same
+// source the Overview protection line uses). Token guards stale async paints.
+let watchersProtToken = 0;
+function renderWatchersProtection() {
+  const myToken = ++watchersProtToken;
+  const win = watchersWindow;
+  const paint = (t, b) => {
+    if (myToken !== watchersProtToken) return;
+    $('w-amp').textContent = `${t.toLocaleString()} · ${b.toLocaleString()}`;
+  };
+  if (win === 'all') {
+    chrome.storage.local.get(['cookieScopeCounters', 'farblerCounters'], (s) => {
+      paint((s.cookieScopeCounters && s.cookieScopeCounters.tightened) || 0,
+            (s.farblerCounters && s.farblerCounters.totalCalls) || 0);
+    });
     return;
   }
-  // Parent-company counts, consistent with the merged Watchers table.
-  const { unique, contacts } = self.WH_parentTotals(snap);
-  const amp = (contacts / snap.visitsN).toFixed(1);
-  $('w-sites').textContent = (snap.sites || []).length.toLocaleString();
-  $('w-contacts').textContent = contacts.toLocaleString();
-  $('w-unique').textContent = unique.toLocaleString();
-  $('w-amp').textContent = `${amp}×`;
+  chrome.runtime.sendMessage({ type: 'impact:get-window', window: win }, (impact) => {
+    chrome.runtime.sendMessage({ type: 'visits:get', window: win }, (visits) => {
+      const arr = Array.isArray(visits) ? visits : [];
+      paint((impact && impact.tightened) || 0, arr.reduce((n, v) => n + (v.blurredSurfaces || 0), 0));
+    });
+  });
 }
 
 let whoFollowsRenderToken = 0;
@@ -828,7 +881,7 @@ function renderWhoFollowsYou(snap) {
     }).join('');
     const elseHtml = `
         <div class="watcher-row">
-          <span class="wt-name">everything else<span class="wt-via">trackers we can't name or too small to list</span></span>
+          <span class="wt-name">everything else<span class="wt-via">the sites' own cookies, plus trackers we can't name</span></span>
           <span class="wt-reach dim">—</span>
           <span class="wt-num${t.elseTrimmed > 0 ? ' pos' : ''}">${t.elseTrimmed.toLocaleString()}</span>
           <span class="wt-num${t.elseBlurred > 0 ? ' pos' : ''}">${t.elseBlurred.toLocaleString()}</span>
@@ -838,12 +891,13 @@ function renderWhoFollowsYou(snap) {
       : '';
 
     safeSetHTML(el, `
+      <div class="wt-quiet dim wt-caption">trimmed · blurred columns are all-time totals, not the window above</div>
       <div class="watcher-table">
         <div class="watcher-header">
           <span class="wt-name">company</span>
           <span class="wt-reach">reach</span>
-          <span class="wt-num">trimmed</span>
-          <span class="wt-num">blurred</span>
+          <span class="wt-num" title="all time">trimmed</span>
+          <span class="wt-num" title="all time">blurred</span>
         </div>
         ${rowsHtml}${elseHtml}
       </div>${quietHtml}`);

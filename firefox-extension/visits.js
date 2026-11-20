@@ -17,6 +17,7 @@
 //       watchers:    [name, ...] (top 10 company names)
 //       mechanisms:  { cookies, pixels, deviceId, typing, clicks } counts
 //       storedIds:   int (localData.suspicious)
+//       trimmed:     int (cookies shortened during this visit; absent on older records)
 //       blurredSurfaces: int (fingerprint surfaces blurred this visit; 0 if off)
 //     }, ...
 //   ]
@@ -104,6 +105,10 @@ function compactVisit(report) {
     // Raw third-party cookie count — used by the "cookies grew" event
     // (per-site delta between adjacent visits).
     cookieCount: cookies.thirdParty || 0,
+    // Cookies the realtime scoper shortened during this visit (attributed in
+    // background.js creditTrimToTab). Absent on records stored before this
+    // field existed — callers must treat undefined as "unknown", not 0.
+    trimmed: report.trimmed || 0,
     storedIds: local.suspicious || 0,
   };
 }

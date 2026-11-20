@@ -420,4 +420,25 @@ self.WH_groupStoredKeys = function (flaggedKeys) {
   return out;
 };
 
+// Which open tab a freshly trimmed cookie belongs to (cookies.onChanged has no
+// tab id). Returns ONE tab so per-visit sums never exceed the lifetime counter:
+// the first tab whose registrable domain equals the cookie's, else the first
+// tab whose network log shows it contacted the cookie's host (third-party
+// tracker). null = unattributed. tabs: { id: { domain, networkData } }.
+self.WH_pickTrimTab = function (tabs, cookieDomain, cookieEtld1, etld1Of) {
+  var host = String(cookieDomain || '').replace(/^\./, '').toLowerCase();
+  if (!host) return null;
+  var third = null, id, t, d, td;
+  for (id in tabs) {
+    t = tabs[id];
+    if (!t || !t.domain) continue;
+    if (cookieEtld1 && etld1Of(t.domain) === cookieEtld1) return t;
+    if (!third) {
+      td = t.networkData && t.networkData.thirdPartyDomains;
+      if (td) for (d in td) { if (d === host || d.slice(-host.length - 1) === '.' + host) { third = t; break; } }
+    }
+  }
+  return third;
+};
+
 })();

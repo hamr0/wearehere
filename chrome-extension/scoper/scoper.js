@@ -454,6 +454,7 @@ chrome.cookies.onChanged.addListener(async (info) => {
   if (!r.ok) return;
 
   queueRetrim(etld1, decision.reason === 'tracker-demote');
+  if (self.whCreditTrimToTab) self.whCreditTrimToTab(c.domain, etld1);
 });
 
 self.scoperSweep = sweep;

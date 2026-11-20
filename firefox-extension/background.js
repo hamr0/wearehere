@@ -513,6 +513,9 @@ function ensureTab(tabId) {
       networkData: null,
       cookies: null,
     };
+    // Fresh tabData for a tab id: after a SW restart the live page is still
+    // there, so pick its per-visit trim count back up from session storage.
+    restoreTrim(tabId, tabData[tabId]);
   }
   return tabData[tabId];
 }
@@ -1401,6 +1404,52 @@ function etld1ForCookie(host) {
   return labels.length < 2 ? cleaned.toLowerCase() : labels.slice(-2).join('.');
 }
 
+// Per-visit trim attribution. The scoper's realtime retrim (cookies.onChanged)
+// calls this once per cookie it actually shortened; WH_pickTrimTab (company-map.js)
+// chooses the single tab to credit. Sweeps do not call this: they trim old
+// cookies retroactively, not "during this visit". No match = unattributed
+// (stays in the lifetime total only).
+function creditTrimToTab(cookieDomain, cookieEtld1) {
+  const t = self.WH_pickTrimTab(tabData, cookieDomain, cookieEtld1, self.scoperEtld1Of || etld1ForCookie);
+  if (!t) return;
+  t.trimmed = (t.trimmed || 0) + 1;
+  for (const id in tabData) if (tabData[id] === t) { trimDirty.add(id); break; }
+  if (!trimFlushTimer) trimFlushTimer = setTimeout(flushTrimCounts, TRIM_FLUSH_MS);
+}
+
+// Per-tab trim counts live in memory, which an MV3 SW restart wipes
+// mid-visit (the pendingVisit record only refreshes on detection writes, so
+// it predates later trims). Mirror the count to its own session key,
+// batched: one storage write per burst, never per cookie. Stored with the
+// domain so a reused tab id on another site never inherits it.
+const TRIM_KEY = (tabId) => 'pendingTrim:' + tabId;
+const TRIM_FLUSH_MS = 1500;
+const trimDirty = new Set();
+let trimFlushTimer = null;
+function flushTrimCounts() {
+  trimFlushTimer = null;
+  const batch = {};
+  for (const id of trimDirty) {
+    const t = tabData[id];
+    if (t && t.domain && t.trimmed) batch[TRIM_KEY(id)] = { d: t.domain, n: t.trimmed };
+  }
+  trimDirty.clear();
+  if (Object.keys(batch).length) chrome.storage.session.set(batch).catch(() => {});
+}
+function restoreTrim(tabId, tab) {
+  const key = TRIM_KEY(tabId);
+  chrome.storage.session.get(key, (s) => {
+    const p = s && s[key];
+    // Additive: memory counts only post-restart credits, the key everything before.
+    if (p && p.n && tab.domain && p.d === tab.domain) {
+      tab.trimmed = (tab.trimmed || 0) + p.n;
+      trimDirty.add(String(tabId));
+      if (!trimFlushTimer) trimFlushTimer = setTimeout(flushTrimCounts, TRIM_FLUSH_MS);
+    }
+  });
+}
+self.whCreditTrimToTab = creditTrimToTab;
+
 async function fetchCookies(tabId, url, domain) {
   try {
     const cookies = await chrome.cookies.getAll({ url });
@@ -1636,6 +1685,7 @@ function buildReport(data) {
   const report = {
     site: data.domain,
     url: data.url,
+    trimmed: data.trimmed || 0,
     cookies: {
       total: cookies.total, firstParty: cookies.firstParty, thirdParty: cookies.thirdParty,
       thirdPartyDomains: cookies.thirdPartyDomains, longestDays: cookies.longestDays,
@@ -1856,17 +1906,20 @@ function snapshotAndEvict(tabId) {
     try { finalize(buildReport(data), 'memory'); }
     catch (e) { console.warn('[visits] snapshot failed for tab', tabId, e); }
     delete tabData[tabId];
-    chrome.storage.session.remove(PENDING_VISIT_KEY(tabId));
+    chrome.storage.session.remove([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)]);
+    trimDirty.delete(String(tabId));
     return;
   }
 
   // Memory empty (SW restarted while tab was open) — read the most recent
   // snapshot from session storage and finalize that instead.
-  chrome.storage.session.get(PENDING_VISIT_KEY(tabId), (s) => {
+  chrome.storage.session.get([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)], (s) => {
     const pending = s && s[PENDING_VISIT_KEY(tabId)];
     if (pending) {
+      const tr = s[TRIM_KEY(tabId)];
+      if (tr && tr.n > (pending.trimmed || 0)) pending.trimmed = tr.n;
       finalize(pending, 'session');
-      chrome.storage.session.remove(PENDING_VISIT_KEY(tabId));
+      chrome.storage.session.remove([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)]);
     } else {
       console.log('[visits] skip — no memory + no session record for tab', tabId);
     }

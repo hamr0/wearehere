@@ -268,6 +268,7 @@ body {
 .wt-num { text-align: right; font-variant-numeric: tabular-nums; color: var(--fg); }
 .wt-num.pos { color: var(--warn); }
 .wt-quiet { font-size: 11px; margin-top: 8px; overflow-wrap: anywhere; }
+.wt-caption { margin: 0 0 6px; }
 
 .saved-flash {
   color: var(--ok);
@@ -693,6 +694,9 @@ input[type="text"].mono-input {
   .hero .cell:last-child { border-bottom: 0; padding-bottom: 0; }
   .watcher-header,
   .watcher-row { grid-template-columns: minmax(0, 1fr) 76px 54px 54px; gap: 8px; }
+  /* Recent visits gained the trim·blur column; tighter cell padding keeps the
+     table no wider than it was before that column. */
+  #w-recent .table th, #w-recent .table td { padding-left: 4px; padding-right: 4px; }
 }
 
 /* Onboarding — first-run overlay. Shown once per install via the
