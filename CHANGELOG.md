@@ -2,7 +2,7 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
-## [6.0.0] — Unreleased
+## [6.0.0] — 2026-11-20
 
 Watchers by parent company, and a round of fixes from real-site use. The dashboard and popup now count and list who follows you by the company that owns the tracker (not by every sub-brand), Trust ID really leaves a trusted site alone, Firefox blurring works, and counting trackers no longer slows page loads.
 
@@ -30,6 +30,7 @@ Watchers by parent company, and a round of fixes from real-site use. The dashboa
 ### Fixed
 
 - **Login failed on Cloudflare-protected sites even under Trust ID.** Rewriting a partitioned cookie created an unpartitioned duplicate, which broke Cloudflare's `cf_clearance` (typesafe.ai: "couldn't verify your browser"). Partitioned cookies and cookies on challenge hosts are now left alone; long-lived first-party cookies are still trimmed to 7 days.
+- **reCAPTCHA exemption was too wide.** The challenge-host exemption matched on host only, so the `www.google.com/recaptcha` pattern left every host-only `www.google.com` cookie untrimmed. Only reCAPTCHA's own cookies (path under `/recaptcha`) are now exempt; long-lived `www.google.com` cookies are trimmed again. Host-wide exemptions (Cloudflare, hCaptcha) are unchanged. Verified in Chromium: `_GRECAPTCHA` untouched, a 300-day path-`/` cookie trimmed to 7 days.
 - **Blur never ran in Firefox.** Seed derivation threw in Firefox content scripts; it is now read in a way Firefox accepts.
 - **Page-load slowness on infinite-scroll pages** (vinted: detect task 530 ms → under 3 ms in Chromium). Cheap string checks run before layout reads, and fingerprint notifications are batched every 250 ms with sampled stack walks.
 - **IP-address hosts were mangled.** `127.0.0.1` was treated as `0.1`; IP hosts are now kept whole, and Trust ID on an IPv4 site works.
@@ -45,7 +46,7 @@ Watchers by parent company, and a round of fixes from real-site use. The dashboa
 - Firefox extension mirrors Chrome except `background.js` (`importScripts` guard) and `manifest.json` (dialect).
 - A header-rewrite approach to unwrapping third-party frames under Trust ID was tried and reverted: it broke Stytch/Turnstile sign-in.
 
-## [5.0.0] — Unreleased
+## [5.0.0] — released
 
 Phase 2: **fingerprint farbling.** Up to now wearehere *observed* fingerprinting — it counted which APIs a tracker read and surfaced that as "device-id" exposure. v5 adds the active arm: a per-origin deterministic noise layer that corrupts the fingerprint surfaces themselves, so the same browser reads as a different device on every distinct site while staying internally consistent within a site (a fingerprinter that re-reads to detect tampering sees stable values). The popup's cookie card grows a merged **Privacy guard** that reports blurring alongside cookie trimming, and the Watchers dashboard ties protection counts to each company.
 
