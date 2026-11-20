@@ -523,6 +523,9 @@ function ensureTab(tabId) {
 // =============================================================================
 // Network monitoring (from wearebaked v0.5.1)
 // =============================================================================
+// tabId -> { rid, departed } for the latest main_frame navigation (redirect
+// hops reuse its requestId); departed = the previous visit is already closed.
+const mainNav = new Map();
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
     if (details.tabId < 0) return;
@@ -531,13 +534,33 @@ chrome.webRequest.onBeforeRequest.addListener(
       // A fresh navigation in this tab id — clear any prior removed-tab mark
       // (Chrome reuses ids after a tab is closed).
       removedTabs.delete(details.tabId);
+      let mainHost = '';
+      try { mainHost = new URL(details.url).hostname; } catch {}
+      // This fires BEFORE tabs.onUpdated carries the new url (captured in
+      // Chrome and Firefox), and the lines below overwrite tab.domain in
+      // place, so onUpdated can no longer see the old domain. The visit we
+      // are leaving must be snapshotted here, before tabData is reused.
+      // Redirect hops share the navigation's requestId. Once one hop has
+      // closed the old visit, tabData holds only an empty shell for the
+      // in-flight navigation, so later hops just retarget it. Until then
+      // (same-host hop, e.g. a /redir path) every hop still checks.
+      let nav = mainNav.get(details.tabId);
+      if (!nav || nav.rid !== details.requestId) {
+        nav = { rid: details.requestId, departed: false };
+        mainNav.set(details.tabId, nav);
+      }
+      if (!nav.departed) {
+        const held = tabData[details.tabId];
+        snapshotAndEvict(details.tabId, mainHost);
+        nav.departed = !held || self.navLeavesVisit(held.domain, mainHost);
+      }
       const tab = ensureTab(details.tabId);
       if (!tab) return;
-      try {
-        const mainUrl = new URL(details.url);
-        tab.domain = mainUrl.hostname;
+      tab.revived = false;  // a new page load reports in full again
+      if (mainHost) {
+        tab.domain = mainHost;
         tab.url = details.url;
-      } catch {}
+      }
       tab.networkData = {
         requestCount: 0,
         thirdPartyDomains: {},
@@ -819,8 +842,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // --- Per-module detection messages from content scripts ---
   if (msg.type === 'detection' && sender.tab) {
     const tabId = sender.tab.id;
+    // No tabData yet = this wake-up is the first thing we hear from a page
+    // that was loaded before the SW restarted (normally webRequest has
+    // created it). Memory then holds only this one module; the session
+    // pendingVisit still holds the whole visit, so it must not be
+    // overwritten and snapshotAndEvict must prefer it.
+    const revived = !tabData[tabId];
     const tab = ensureTab(tabId);
     if (!tab) return;
+    if (revived) tab.revived = true;
     const mod = msg.module;
     const data = msg.data;
 
@@ -1856,7 +1886,7 @@ const PENDING_VISIT_KEY = (tabId) => 'pendingVisit:' + tabId;
 // SW dormancy. The session-storage record is what snapshotAndEvict reads
 // from when in-memory tabData has been cleared.
 function persistPendingVisit(tabId, tab) {
-  if (!tab || !tab.domain) return;
+  if (!tab || !tab.domain || tab.revived) return;
   try {
     const report = buildReport(tab);
     if (!report) return;
@@ -1882,9 +1912,16 @@ function snapshotsRecomputeDebounced() {
   }, SNAPSHOT_DEBOUNCE_MS);
 }
 
-function snapshotAndEvict(tabId) {
-  console.log('[visits] onRemoved tab', tabId);
+// `newHost` (optional) = hostname the tab is navigating to. When given and
+// it matches the visit we hold, this is not a departure (same-site nav,
+// reload, redirect hop, or the second of the two events that report one
+// departure) and nothing is snapshotted: that is what makes the webRequest
+// and tabs.onUpdated call sites safe to both call it, exactly one wins.
+// Omitted (tab close) always snapshots.
+function snapshotAndEvict(tabId, newHost) {
   const data = tabData[tabId];
+  if (data && data.domain && !self.navLeavesVisit(data.domain, newHost)) return;
+  console.log('[visits] leave tab', tabId, newHost === undefined ? '(closed)' : '-> ' + newHost);
   const finalize = (report, source) => {
     if (!report) {
       console.log('[visits] skip — no report for tab', tabId);
@@ -1902,7 +1939,7 @@ function snapshotAndEvict(tabId) {
       .catch((e) => console.warn('[visits] persist failed', e));
   };
 
-  if (data && data.domain) {
+  if (data && data.domain && !data.revived) {
     try { finalize(buildReport(data), 'memory'); }
     catch (e) { console.warn('[visits] snapshot failed for tab', tabId, e); }
     delete tabData[tabId];
@@ -1915,11 +1952,16 @@ function snapshotAndEvict(tabId) {
   // snapshot from session storage and finalize that instead.
   chrome.storage.session.get([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)], (s) => {
     const pending = s && s[PENDING_VISIT_KEY(tabId)];
+    // Same-site nav/reload after an SW restart: that visit is still live.
+    if (pending && !self.navLeavesVisit(pending.site, newHost)) return;
     if (pending) {
       const tr = s[TRIM_KEY(tabId)];
       if (tr && tr.n > (pending.trimmed || 0)) pending.trimmed = tr.n;
       finalize(pending, 'session');
       chrome.storage.session.remove([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)]);
+    } else if (data && data.domain) {
+      // Revived tab with no session record (page predates the extension).
+      try { finalize(buildReport(data), 'memory'); } catch (e) { console.warn('[visits] snapshot failed for tab', tabId, e); }
     } else {
       console.log('[visits] skip — no memory + no session record for tab', tabId);
     }
@@ -1954,21 +1996,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   // resurrect tabData via ensureTab, then a follow-up badge write
   // rejects with "No tab with id: …".
   markTabRemoved(tabId);
+  mainNav.delete(tabId);
   snapshotAndEvict(tabId);
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (changeInfo.status === 'loading' && changeInfo.url) {
-    // Navigation (carries a new URL): snapshot on domain change.
-    const oldDomain = tabData[tabId]?.domain;
-    try {
-      const newDomain = new URL(changeInfo.url).hostname;
-      if (oldDomain && oldDomain !== newDomain) {
-        snapshotAndEvict(tabId);
-      }
-    } catch {
-      snapshotAndEvict(tabId);
-    }
+    // Navigation (carries a new URL). Normally webRequest already closed the
+    // old visit and this is a no-op; it still covers navigations webRequest
+    // never sees (about:, chrome:, moz-extension:) and an event order where
+    // this one wins. Unparseable URL -> '' -> counts as leaving.
+    let newHost = '';
+    try { newHost = new URL(changeInfo.url).hostname; } catch {}
+    snapshotAndEvict(tabId, newHost);
   }
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {

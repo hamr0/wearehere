@@ -215,6 +215,15 @@ async function clearVisits() {
   await chrome.storage.local.set({ [VISIT_HISTORY_KEY]: [] });
 }
 
+// Did a navigation end the visit we hold? oldDomain = hostname of the held
+// visit, newHost = hostname being navigated to (undefined = tab closed).
+// Same host (reload, same-site nav, redirect hop, duplicate event) = no.
+// Unknown old domain = nothing to compare, so yes. Pure; unit-tested.
+function navLeavesVisit(oldDomain, newHost) {
+  return newHost === undefined || !oldDomain || oldDomain !== newHost;
+}
+
+self.navLeavesVisit = navLeavesVisit;
 self.visitsAppend = appendVisit;
 self.visitsGet = getVisits;
 self.visitsClear = clearVisits;
