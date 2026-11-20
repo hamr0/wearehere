@@ -531,41 +531,16 @@ chrome.webRequest.onBeforeRequest.addListener(
       // A fresh navigation in this tab id — clear any prior removed-tab mark
       // (Chrome reuses ids after a tab is closed).
       removedTabs.delete(details.tabId);
-      let mainHost = '';
-      try { mainHost = new URL(details.url).hostname; } catch {}
-      // This fires BEFORE tabs.onUpdated carries the new url (captured in
-      // Chrome and Firefox), and the lines below overwrite tab.domain in
-      // place, so onUpdated can no longer see the old domain. The visit we
-      // are leaving must be snapshotted here, before tabData is reused.
-      // Redirect hops share the navigation's requestId. Once one hop has
-      // closed the old visit, tabData holds only an empty shell for the
-      // in-flight navigation, so later hops just retarget it. Until then
-      // (same-host hop, e.g. a /redir path) every hop still checks.
+      // Only note the navigation here. It may never commit (download link,
+      // 204): whether to close the old visit and reset the tab is decided
+      // at the response (onHeadersReceived below), so a failed navigation
+      // leaves the page on screen and its tabData untouched. Redirect hops
+      // share the navigation's requestId.
       let nav = mainNav.get(details.tabId);
       if (!nav || nav.rid !== details.requestId) {
-        nav = { rid: details.requestId, departed: false };
+        nav = { rid: details.requestId, departed: false, sent: 0 };
         mainNav.set(details.tabId, nav);
       }
-      if (!nav.departed) {
-        const held = tabData[details.tabId];
-        snapshotAndEvict(details.tabId, mainHost);
-        nav.departed = !held || self.navLeavesVisit(held.domain, mainHost);
-      }
-      const tab = ensureTab(details.tabId);
-      if (!tab) return;
-      tab.revived = false;  // a new page load reports in full again
-      if (mainHost) {
-        tab.domain = mainHost;
-        tab.url = details.url;
-      }
-      tab.networkData = {
-        requestCount: 0,
-        thirdPartyDomains: {},
-        categories: {},
-        brokers: {},
-        bytesReceived: 0,
-        bytesSent: 0,
-      };
     }
 
     networkTraffic.timing[details.requestId] = Date.now();
@@ -581,13 +556,73 @@ chrome.webRequest.onBeforeRequest.addListener(
           }
         }
         networkTraffic.domains[domain].bytesSent += size;
-        const tabNet = tabData[details.tabId]?.networkData;
-        if (tabNet) tabNet.bytesSent += size;
+        if (details.type === 'main_frame') {
+          const nv = mainNav.get(details.tabId);
+          if (nv && nv.rid === details.requestId) nv.sent += size;  // credited on commit
+        } else {
+          const tabNet = tabData[details.tabId]?.networkData;
+          if (tabNet) tabNet.bytesSent += size;
+        }
       }
     }
   },
   { urls: ['<all_urls>'] },
   ['requestBody']
+);
+
+// A main_frame response that will commit a new page. NOT every response does:
+//   - 3xx with Location: a redirect hop; the final hop decides.
+//   - 204/205: the browser stays on the current page.
+//   - Content-Disposition: attachment: a download; the page stays.
+// Known leak (accepted): a download the browser decides from Content-Type
+// alone (octet-stream, zip, ... without Content-Disposition) looks like a
+// commit here and still closes the old visit early. Telling those apart
+// needs the commit event itself (webNavigation, deliberately not requested).
+// onHeadersReceived carries statusCode + responseHeaders in both Chrome and
+// Firefox (responseHeaders must be requested via extraInfoSpec).
+chrome.webRequest.onHeadersReceived.addListener(
+  (details) => {
+    if (details.tabId < 0 || details.type !== 'main_frame') return;
+    const st = details.statusCode, hs = details.responseHeaders || [];
+    const hdr = (n) => { const h = hs.find((x) => x.name && x.name.toLowerCase() === n); return h ? String(h.value || '') : ''; };
+    if (st >= 300 && st < 400 && hdr('location')) return;
+    if (st === 204 || st === 205) return;
+    if (/^\s*attachment/i.test(hdr('content-disposition'))) return;
+    let mainHost = '';
+    try { mainHost = new URL(details.url).hostname; } catch {}
+    // This runs BEFORE tabs.onUpdated carries the new url (captured in Chrome
+    // and Firefox), and the lines below
+    // overwrite tab.domain in place, so the visit we are leaving must be
+    // snapshotted here, before tabData is reused. After an SW restart there
+    // is no mainNav entry; one is created here (nothing else is needed).
+    let nav = mainNav.get(details.tabId);
+    if (!nav || nav.rid !== details.requestId) {
+      nav = { rid: details.requestId, departed: false, sent: 0 };
+      mainNav.set(details.tabId, nav);
+    }
+    if (!nav.departed) {
+      const held = tabData[details.tabId];
+      snapshotAndEvict(details.tabId, mainHost);
+      nav.departed = !held || self.navLeavesVisit(held.domain, mainHost);
+    }
+    const tab = ensureTab(details.tabId);
+    if (!tab) return;
+    tab.revived = false;  // a new page load reports in full again
+    if (mainHost) {
+      tab.domain = mainHost;
+      tab.url = details.url;
+    }
+    tab.networkData = {
+      requestCount: 0,
+      thirdPartyDomains: {},
+      categories: {},
+      brokers: {},
+      bytesReceived: 0,
+      bytesSent: nav.sent || 0,
+    };
+  },
+  { urls: ['<all_urls>'], types: ['main_frame'] },
+  ['responseHeaders']
 );
 
 chrome.webRequest.onBeforeRedirect.addListener(
@@ -1915,6 +1950,7 @@ function snapshotsRecomputeDebounced() {
 // departure) and nothing is snapshotted: that is what makes the webRequest
 // and tabs.onUpdated call sites safe to both call it, exactly one wins.
 // Omitted (tab close) always snapshots.
+const leavingFromSession = new Set();
 function snapshotAndEvict(tabId, newHost) {
   const data = tabData[tabId];
   if (data && data.domain && !self.navLeavesVisit(data.domain, newHost)) return;
@@ -1946,8 +1982,14 @@ function snapshotAndEvict(tabId, newHost) {
   }
 
   // Memory empty (SW restarted while tab was open) — read the most recent
-  // snapshot from session storage and finalize that instead.
+  // snapshot from session storage and finalize that instead. The read is
+  // async: a second departure event (tabs.onUpdated after the response hook)
+  // arriving before it returns would read the same record and log it twice,
+  // so one read per tab at a time.
+  if (leavingFromSession.has(tabId)) return;
+  leavingFromSession.add(tabId);
   chrome.storage.session.get([PENDING_VISIT_KEY(tabId), TRIM_KEY(tabId)], (s) => {
+    leavingFromSession.delete(tabId);
     const pending = s && s[PENDING_VISIT_KEY(tabId)];
     // Same-site nav/reload after an SW restart: that visit is still live.
     if (pending && !self.navLeavesVisit(pending.site, newHost)) return;
