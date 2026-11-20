@@ -117,6 +117,13 @@ function compactVisit(report) {
 // near-simultaneous tab closes both `get → unshift → set` from the
 // same starting array, and the second `set` clobbers the first — one
 // visit is silently lost. Chaining keeps read-modify-write atomic.
+// Effective blur mode for a site: per-site override beats the default.
+async function resolveBlurMode(etld1) {
+  const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
+  const ov = farblerSettings && farblerSettings[etld1];
+  return (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'rotation');
+}
+
 let appendChain = Promise.resolve();
 async function appendVisit(report) {
   const record = compactVisit(report);
@@ -135,8 +142,10 @@ async function appendVisit(report) {
     // of distinct fingerprint APIs the company's scripts touched on this
     // visit. Summing it into the lifetime counter at visit boundaries
     // matches the Watchers tab's "lifetime regardless of window" rule.
+    // Skipped when blur is off for this site, like farblerCounters.totalCalls,
+    // so the Watchers blurred column stays in step with the hero total.
     try {
-      if (self.recordBlurredByCompany) {
+      if (self.recordBlurredByCompany && (await resolveBlurMode(record.etld1)) !== 'off') {
         const perCompany = {};
         for (const [name, m] of Object.entries(record.watcherMech || {})) {
           if (m && m.deviceId > 0) perCompany[name] = m.deviceId;
@@ -155,9 +164,7 @@ async function appendVisit(report) {
         .find((m) => m.technique === 'fingerprint');
       const apis = (fpMethod && fpMethod.apis) || [];
       if (apis.length) {
-        const { farblerSettings, defaultBlurMode } = await chrome.storage.local.get(['farblerSettings', 'defaultBlurMode']);
-        const ov = farblerSettings && farblerSettings[record.etld1];
-        const mode = (ov && (ov.mode === 'off' || ov.mode === 'stable')) ? ov.mode : (defaultBlurMode || 'rotation');
+        const mode = await resolveBlurMode(record.etld1);
         // Stash the windowed-blur input on the visit record (0 when blur was
         // off here) so Overview can sum surfaces blurred per time window from
         // visitHistory — more accurate than the 50-capped farblerHistory.

@@ -15,6 +15,9 @@ function safeSetHTML(el, html) {
   el.replaceChildren.apply(el, Array.from(doc.body.childNodes));
 }
 
+// Compact count helper shared with the dashboard (company-map.js).
+const fmtCount = self.WH_fmtCount;
+
 // Ask the page's content scripts to finish pending report work now (they defer it
 // until the page settles). Waits at most 2 s; never blocks on a page that cannot answer.
 function whFlushTab(tabId, cb) {
@@ -423,19 +426,6 @@ function renderGuardBlurLine(report, blurOverridden, globalOn, overrideMode) {
     el.textContent = `✓ Tracking blurred · ${surfaces} surface${surfaces === 1 ? '' : 's'}`;
     el.classList.add('ok');
   }
-}
-
-// Duplicate of WH_fmtCount in company-map.js (popup.html does not load it).
-// Truncates, never rounds up: 999, 1.1k, 25k, 1.2M.
-function fmtCount(n) {
-  n = Math.floor(Number(n) || 0);
-  if (n < 0) n = 0;
-  if (n < 1000) return String(n);
-  let v;
-  if (n < 10000) { v = Math.floor(n / 100) / 10; return (v % 1 ? v.toFixed(1) : String(v)) + 'k'; }
-  if (n < 1000000) return Math.floor(n / 1000) + 'k';
-  v = Math.floor(n / 100000) / 10;
-  return (v % 1 ? v.toFixed(1) : String(v)) + 'M';
 }
 
 function renderGuardCounters(stats, farblerCounters) {

@@ -210,13 +210,15 @@ const MAX_BLURRED_COMPANIES = 300;
 let _seedDomainCompany = null;
 async function recordBlurredByCompany(perCompanyIn) {
   if (!perCompanyIn) return;
-  // Sub-brands also count toward their parent ("Google Ads" -> "Google");
-  // the Watchers table avoids double-counting when it sums rows.
-  const perCompany = {};
+  // Sub-brands also count toward their parent ("Google Ads" -> "Google"), as
+  // a per-visit MAX over the parent's own count and its sub-brands' counts,
+  // not a sum: sub-brands often touch the same APIs, so the parent is never
+  // credited above what the visit blurred. Different parents can still
+  // overlap each other (the Watchers else-row clamps at 0).
+  const perCompany = Object.assign({}, perCompanyIn);
   for (const [name, n] of Object.entries(perCompanyIn)) {
-    perCompany[name] = (perCompany[name] || 0) + n;
     const parent = self.WH_companyParent && self.WH_companyParent(name);
-    if (parent) perCompany[parent] = (perCompany[parent] || 0) + n;
+    if (parent) perCompany[parent] = Math.max(perCompany[parent] || 0, n);
   }
   try {
     const { farblerBlurredByCompany } = await chrome.storage.local.get('farblerBlurredByCompany');
