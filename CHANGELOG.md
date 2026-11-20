@@ -2,6 +2,13 @@
 
 All notable changes to wearehere are recorded here. Versions follow the `chrome-extension/manifest.json` line; root + `firefox-extension/` track the same number.
 
+## [Unreleased]
+
+### Added
+
+- **CI and npm publish workflows.** `.github/workflows/ci.yml` runs the test suite on every push and pull request. `.github/workflows/publish.yml` publishes the `npm-pkg/` package to npm on manual dispatch, through trusted publishing (no stored token); it re-runs the tests first, skips a version that is already published and checks that the version actually landed.
+- **6.0.0 store release notes.** `store-assets/RELEASE-NOTES-6.0.0.md` holds the Chrome Web Store justification for the new `scripting` permission and the Firefox AMO release notes.
+
 ## [6.0.0] — 2026-11-20
 
 Watchers by parent company, and a round of fixes from real-site use. The dashboard and popup now count and list who follows you by the company that owns the tracker (not by every sub-brand), Trust ID really leaves a trusted site alone, Firefox blurring works, and counting trackers no longer slows page loads.
