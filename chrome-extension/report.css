@@ -697,6 +697,9 @@ input[type="text"].mono-input {
   /* Recent visits gained the trim·blur column; tighter cell padding keeps the
      table no wider than it was before that column. */
   #w-recent .table th, #w-recent .table td { padding-left: 4px; padding-right: 4px; }
+  /* The table can still be wider than the viewport (long sites + mechanism
+     words): scroll inside its own box so the page never scrolls sideways. */
+  #w-recent { overflow-x: auto; }
 }
 
 /* Onboarding — first-run overlay. Shown once per install via the

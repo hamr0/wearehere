@@ -132,6 +132,30 @@ test('groupStoredKeys: strips trailing id segments, merges flags, keeps others',
   ]);
 });
 
+test('Object.prototype-named keys do not collide (groupStoredKeys, uniqueParents, mergeCompanies)', () => {
+  const g = plain(ctx.WH_groupStoredKeys([
+    { key: 'constructor', flags: ['Tracking'] },
+    { key: '__proto__', flags: [] },
+    { key: 'toString', flags: [] },
+    { key: 'constructor', flags: ['PII exposure'] },
+  ]));
+  assert.deepEqual(g, [
+    { key: 'constructor', n: 2, flags: ['Tracking', 'PII exposure'] },
+    { key: '__proto__', n: 1, flags: [] },
+    { key: 'toString', n: 1, flags: [] },
+  ]);
+  const u = ctx.WH_uniqueParents(['constructor', '__proto__', 'constructor', 'hasOwnProperty']).map((x) => x.name);
+  assert.deepEqual(plain(u), ['constructor', '__proto__', 'hasOwnProperty']);
+  const m = plain(ctx.WH_mergeCompanies([
+    { name: 'constructor', purpose: 'Analytics', count: 1 },
+    { name: '__proto__', purpose: 'Analytics', count: 2 },
+    { name: 'constructor', purpose: 'Analytics', count: 3 },
+  ]));
+  assert.equal(m.length, 2);
+  assert.equal(m[0].name, 'constructor');
+  assert.equal(m[0].count, 4);
+});
+
 test('pickTrimTab: first-party tab wins, else tab that contacted the host, else null', () => {
   const tabs = {
     1: { domain: 'www.cnn.com', networkData: { thirdPartyDomains: { 'securepubads.g.doubleclick.net': {} } } },

@@ -250,7 +250,7 @@ self.WH_COMPANY_MAP = COMPANY_MAP;
 var _names = null;
 function names() {
   if (_names) return _names;
-  _names = {};
+  _names = Object.create(null);
   for (var k in COMPANY_MAP) _names[COMPANY_MAP[k].name.toLowerCase()] = COMPANY_MAP[k].name;
   return _names;
 }
@@ -324,7 +324,7 @@ self.WH_seedDomainCompany = function (etld1Fn) {
 self.WH_buildWatcherRows = function (snap, byTrimmed, byBlurred, trimmedTotal, blurredTotal, limit) {
   var groups = snap && snap.groups, k;
   if (!groups) {
-    groups = {};
+    groups = Object.create(null);
     var ws = (snap && snap.watchers) || {};
     for (k in ws) {
       var g = self.WH_watcherGroup(ws[k].name || k), cur = groups[g.key];
@@ -353,7 +353,7 @@ self.WH_buildWatcherRows = function (snap, byTrimmed, byBlurred, trimmedTotal, b
 // Distinct parent companies among a list of watcher names, in order of first
 // appearance. [{ key, name }] — "Google Ads", "Google" -> one Google entry.
 self.WH_uniqueParents = function (names) {
-  var seen = {}, out = [];
+  var seen = Object.create(null), out = [];
   (names || []).forEach(function (n) {
     if (!n) return;
     var g = self.WH_watcherGroup(n);
@@ -384,7 +384,7 @@ self.WH_parentTotals = function (snap) {
 // is the sole purpose). Unnamed/unknown names stay their own row. Sorted by
 // summed count, descending (stable).
 self.WH_mergeCompanies = function (companies) {
-  var by = {}, order = [];
+  var by = Object.create(null), order = [];
   (companies || []).forEach(function (c) {
     if (!c || !c.name) return;
     var g = self.WH_watcherGroup(c.name), cur = by[g.key];
@@ -407,7 +407,7 @@ self.WH_mergeCompanies = function (companies) {
 // deduped in order. Keys with nothing left after stripping stay as they are.
 var ID_TAIL = /[._:-](\d+|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|(?=[0-9a-f]*\d)[0-9a-f]{6,})$/i;
 self.WH_groupStoredKeys = function (flaggedKeys) {
-  var by = {}, out = [];
+  var by = Object.create(null), out = [];
   (flaggedKeys || []).forEach(function (k) {
     var key = String((k && k.key) || ''), base = key, prev;
     do { prev = base; base = base.replace(ID_TAIL, ''); } while (base !== prev && base);

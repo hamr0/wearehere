@@ -178,7 +178,9 @@ function extractCompanies(report) {
     if (v && v.name) add(v.name);
   });
 
-  return out;
+  // Roll sub-brands up under their parent ("Google Ads", "Google" -> Google),
+  // same grouping as the dashboard, so "+N more" counts distinct parents.
+  return self.WH_uniqueParents(out).map((g) => g.name);
 }
 
 // Mechanism chips in the popup. Each entry is { name, n } where `n` is
