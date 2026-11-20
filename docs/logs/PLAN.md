@@ -214,7 +214,7 @@ Every phase must respect:
 ## Status (2026-11-19, branch fix/ff-trustid-perf)
 
 - Done: scoper skips partitioned/challenge-host cookies (9d47c5a); relax offer removed (42a57ff); Trust ID frame marker tried and reverted (bc28b8f, b089771); findings recorded.
-- Done (2026-11-20): post-settle scheduling for report-only scanners (`settle.js`, 0ec8d09); Watchers attribution by parent company with an everything-else row (df8a037, 69b7395, 8b5c571); broader ToS scanner + `looksLikePolicy` (37cdcdf, 32ab33a); visit snapshot on the main_frame response (76c26ab, 0f95b26).
+- Done (2026-11-20): post-settle scheduling for report-only scanners (`settle.js`, 0ec8d09); Watchers attribution by parent company with an everything-else row (df8a037, 69b7395, 8b5c571); broader ToS scanner + `looksLikePolicy` (37cdcdf, 32ab33a); visit snapshot on the main_frame response (76c26ab, 0f95b26); scoper challenge exemption path-scoped for reCAPTCHA (ae37e91).
 - Next: redesign `data-wh-farble-seed` exposure; align eTLD+1 helpers; unexplained `__cf_bm`.
 - Release: 6.0.0, bump only at release; store v5.0.0 carries the cookie bug until then; `scripting` permission needs store re-review.
 - Dev Firefox builds use gecko id `wearehere-dev@extension`.
