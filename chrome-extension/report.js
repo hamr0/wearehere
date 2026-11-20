@@ -19,6 +19,20 @@ function safeSetHTML(el, html) {
 
 const $ = (id) => document.getElementById(id);
 
+// Compact big counts (1.1k, 250k, 1.2M; truncated, see WH_fmtCount in
+// company-map.js). Exact value goes in a title tooltip whenever compacted.
+const fmtN = (n) => self.WH_fmtCount(n);
+const numHtml = (n) => {
+  n = Math.floor(Number(n) || 0);
+  const c = fmtN(n);
+  return c === String(n) ? c : `<span title="${n.toLocaleString()}">${c}</span>`;
+};
+const setNum = (el, n) => {
+  n = Math.floor(Number(n) || 0);
+  el.textContent = fmtN(n);
+  if (n >= 1000) el.title = n.toLocaleString(); else el.removeAttribute('title');
+};
+
 const tabIdFromHash = parseInt(location.hash.replace('#', ''), 10);
 const tabId = Number.isFinite(tabIdFromHash) ? tabIdFromHash : null;
 
@@ -378,14 +392,14 @@ function renderProtectionLine() {
             : overviewWindow === 'all' ? 'all time'
             : `this ${overviewWindow}`;
   const parts = [];
-  if (trimmed) parts.push(`shortened ${trimmed.toLocaleString()} cookie${trimmed === 1 ? '' : 's'}`);
-  if (demoted) parts.push(`demoted ${demoted.toLocaleString()} tracker${demoted === 1 ? '' : 's'} to session-only`);
-  if (blurred) parts.push(`blurred ${blurred.toLocaleString()} fingerprint surface${blurred === 1 ? '' : 's'}`);
+  if (trimmed) parts.push(`shortened ${numHtml(trimmed)} cookie${trimmed === 1 ? '' : 's'}`);
+  if (demoted) parts.push(`demoted ${numHtml(demoted)} tracker${demoted === 1 ? '' : 's'} to session-only`);
+  if (blurred) parts.push(`blurred ${numHtml(blurred)} fingerprint surface${blurred === 1 ? '' : 's'}`);
   const phrase = parts.length > 1
     ? parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1]
     : parts[0];
   el.hidden = false;
-  safeSetHTML(el, `✓ ${escapeText(win)} wearehere ${escapeText(phrase)} — so trackers can't recognise you tomorrow.`);
+  safeSetHTML(el, `✓ ${escapeText(win)} wearehere ${phrase} — so trackers can't recognise you tomorrow.`);
 }
 
 function loadOverviewRawVisits() {
@@ -406,8 +420,8 @@ function renderLifetimeHero(snap, s) {
   $('ov-sites').textContent = hasVisits ? (snap.sites || []).length.toLocaleString() : '0';
   $('ov-score').textContent = hasVisits ? snap.avgScore : '—';
   $('ov-watchers').textContent = hasVisits ? self.WH_parentTotals(snap).unique.toLocaleString() : '0';
-  $('ov-trimmed').textContent = trimmed.toLocaleString();
-  $('ov-blurred').textContent = blurred.toLocaleString();
+  setNum($('ov-trimmed'), trimmed);
+  setNum($('ov-blurred'), blurred);
 }
 
 // The three lifetime top-3 lists under the hero. Mixed entities by design:
@@ -535,7 +549,7 @@ function diffAggregates(cur, prev) {
     const a = (latestPrev[s] && latestPrev[s].scoperTightened) || 0;
     const b = latestCur[s].scoperTightened || 0;
     if (b - a >= 5) {
-      events.push({ cls: 'ok', icon: '✂', kind: 'sweep impact', text: `<strong>${escapeText(s)}</strong> +${b - a} cookies tightened by scoper` });
+      events.push({ cls: 'ok', icon: '✂', kind: 'sweep impact', text: `<strong>${escapeText(s)}</strong> +${numHtml(b - a)} cookies tightened by scoper` });
     }
   }
 
@@ -603,7 +617,7 @@ function renderRecentVisits(visits) {
   const trimBlurCell = (v) => {
     if (typeof v.trimmed !== 'number') return '<span class="dim">—</span>';
     const b = v.blurredSurfaces || 0;
-    return (v.trimmed || b) ? `${v.trimmed} · ${b}` : '<span class="dim">—</span>';
+    return (v.trimmed || b) ? `${numHtml(v.trimmed)} · ${numHtml(b)}` : '<span class="dim">—</span>';
   };
 
   safeSetHTML(el, `
@@ -800,7 +814,7 @@ function renderWatchersProtection() {
   const win = watchersWindow;
   const paint = (t, b) => {
     if (myToken !== watchersProtToken) return;
-    $('w-amp').textContent = `${t.toLocaleString()} · ${b.toLocaleString()}`;
+    safeSetHTML($('w-amp'), `${numHtml(t)} · ${numHtml(b)}`);
   };
   if (win === 'all') {
     chrome.storage.local.get(['cookieScopeCounters', 'farblerCounters'], (s) => {
@@ -875,16 +889,16 @@ function renderWhoFollowsYou(snap) {
         <div class="watcher-row">
           <span class="wt-name">${escapeText(c.name)}${via ? `<span class="wt-via">${escapeText(via)}</span>` : ''}</span>
           <span class="wt-reach">${c.hits} of ${snap.visitsN} <span class="dim">visits</span></span>
-          <span class="wt-num${c.trimmed > 0 ? ' pos' : ''}">${c.trimmed.toLocaleString()}</span>
-          <span class="wt-num${c.blurred > 0 ? ' pos' : ''}">${c.blurred.toLocaleString()}</span>
+          <span class="wt-num${c.trimmed > 0 ? ' pos' : ''}">${numHtml(c.trimmed)}</span>
+          <span class="wt-num${c.blurred > 0 ? ' pos' : ''}">${numHtml(c.blurred)}</span>
         </div>`;
     }).join('');
     const elseHtml = `
         <div class="watcher-row">
           <span class="wt-name">everything else<span class="wt-via">the sites' own cookies, plus trackers we can't name</span></span>
           <span class="wt-reach dim">—</span>
-          <span class="wt-num${t.elseTrimmed > 0 ? ' pos' : ''}">${t.elseTrimmed.toLocaleString()}</span>
-          <span class="wt-num${t.elseBlurred > 0 ? ' pos' : ''}">${t.elseBlurred.toLocaleString()}</span>
+          <span class="wt-num${t.elseTrimmed > 0 ? ' pos' : ''}">${numHtml(t.elseTrimmed)}</span>
+          <span class="wt-num${t.elseBlurred > 0 ? ' pos' : ''}">${numHtml(t.elseBlurred)}</span>
         </div>`;
     const quietHtml = t.quiet.length
       ? `<div class="wt-quiet dim">also seen, nothing to trim or blur: ${escapeText(t.quiet.join(' · '))}</div>`
@@ -1098,7 +1112,7 @@ function renderWatcherDetail(report) {
     <div class="event">
       <span class="event-icon">[·]</span>
       <span class="event-kind">${escapeText(m.technique || '')}</span>
-      <span class="event-text"><span class="dim">${(m.apis || []).slice(0, 4).map(escapeText).join(', ')}${m.apis && m.apis.length > 4 ? ', …' : ''} · ${m.calls || 0} calls</span></span>
+      <span class="event-text"><span class="dim">${(m.apis || []).slice(0, 4).map(escapeText).join(', ')}${m.apis && m.apis.length > 4 ? ', …' : ''} · ${numHtml(m.calls || 0)} calls</span></span>
     </div>
   `).join('');
 
@@ -1368,7 +1382,7 @@ function renderSurfacesBlurred() {
     const bar = (n, max) => `<span class="bar" style="width:${Math.round((n / max) * 60)}%"></span>`;
 
     const famRows = famEntries.map(([fam, n]) =>
-      `<div class="bar-row"><span class="nval">${n.toLocaleString()}</span> ${bar(n, maxFam)} <span class="nlbl">${escapeText(FAMILY_LABELS[fam] || fam)}</span></div>`
+      `<div class="bar-row"><span class="nval">${numHtml(n)}</span> ${bar(n, maxFam)} <span class="nlbl">${escapeText(FAMILY_LABELS[fam] || fam)}</span></div>`
     ).join('');
 
     const topSites = siteEntries.slice(0, 5);
@@ -1382,7 +1396,7 @@ function renderSurfacesBlurred() {
       <div class="bar-row"><span class="nval">${stableCount}</span> ${bar(stableCount, maxMode)} <span class="nlbl">stable (per-site)</span></div>
       <div class="bar-row"><span class="nval">${offCount}</span> ${bar(offCount, maxMode)} <span class="nlbl">off (allowlisted)</span></div>
 
-      <div class="callout" style="margin-top:10px">top sites: ${topSites.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${n.toLocaleString()})`).join(' · ') || '—'}</div>
+      <div class="callout" style="margin-top:10px">top sites: ${topSites.map(([h, n]) => `<strong>${escapeText(h)}</strong> (${numHtml(n)})`).join(' · ') || '—'}</div>
     `);
   });
 }
@@ -1581,7 +1595,7 @@ function loadScoperState() {
 
 function renderScoperHero(state) {
   const stats = state.cookieScopeCounters || {};
-  $('scoper-tightened').textContent = (stats.tightened || 0).toLocaleString();
+  setNum($('scoper-tightened'), stats.tightened || 0);
   $('scoper-sweeps').textContent = (stats.sweeps || 0).toLocaleString();
   // "last active" = most-recent guard event. Blur has no persisted timestamp
   // yet (lands with blur telemetry in 3b-2), so the cookie sweep — the
@@ -1593,7 +1607,7 @@ function renderScoperHero(state) {
   chrome.storage.local.get('farblerCounters', (s) => {
     const blurred = (s.farblerCounters && s.farblerCounters.totalCalls) || 0;
     const el = $('scoper-blurred');
-    if (el) el.textContent = blurred.toLocaleString();
+    if (el) setNum(el, blurred);
   });
 }
 
@@ -1636,7 +1650,7 @@ function renderCoverage() {
       const maxCov = Math.max(1, cov.capped, cov.trusted, cov.killOnClose);
       el.classList.remove('placeholder');
       safeSetHTML(el, `
-        <div class="callout"><strong>${total.toLocaleString()}</strong> cookies in your browser right now</div>
+        <div class="callout"><strong>${numHtml(total)}</strong> cookies in your browser right now</div>
 
         <div class="block-sub">coverage · what the scoper will do</div>
         <div class="bar-row"><span class="nval">${cov.capped}</span> ${bar(cov.capped, maxCov)} <span class="nlbl">capped (1p · 7d)</span></div>

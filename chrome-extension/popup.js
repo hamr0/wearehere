@@ -366,6 +366,7 @@ function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
     const demotions = bySite ? bySite.demotions : 0;
 
     el.classList.remove('ok', 'warn');
+    el.removeAttribute('title');
     if (isTrusted && rewrites === 0) {
       el.textContent = `• Cookies passing through · trusted ${capDays}d cap`;
     } else if (!isTrusted && rewrites === 0 && maxDays <= capDays) {
@@ -376,8 +377,9 @@ function renderGuardCookiesLine(etld1, capDays, isTrusted, stats) {
       el.classList.add('ok');
     } else {
       el.textContent =
-        `✓ Cookies expire in ${capDays} days · ${rewrites} trimmed` +
-        (demotions > 0 ? `, ${demotions} killed` : '');
+        `✓ Cookies expire in ${capDays} days · ${fmtCount(rewrites)} trimmed` +
+        (demotions > 0 ? `, ${fmtCount(demotions)} killed` : '');
+      if (rewrites >= 1000 || demotions >= 1000) el.title = `${rewrites.toLocaleString()} trimmed, ${demotions.toLocaleString()} killed`;
       el.classList.add('ok');
     }
   });
@@ -423,16 +425,34 @@ function renderGuardBlurLine(report, blurOverridden, globalOn, overrideMode) {
   }
 }
 
+// Duplicate of WH_fmtCount in company-map.js (popup.html does not load it).
+// Truncates, never rounds up: 999, 1.1k, 25k, 1.2M.
+function fmtCount(n) {
+  n = Math.floor(Number(n) || 0);
+  if (n < 0) n = 0;
+  if (n < 1000) return String(n);
+  let v;
+  if (n < 10000) { v = Math.floor(n / 100) / 10; return (v % 1 ? v.toFixed(1) : String(v)) + 'k'; }
+  if (n < 1000000) return Math.floor(n / 1000) + 'k';
+  v = Math.floor(n / 100000) / 10;
+  return (v % 1 ? v.toFixed(1) : String(v)) + 'M';
+}
+
 function renderGuardCounters(stats, farblerCounters) {
   const trimmed = (stats && stats.tightened) || 0;
   const blurred = (farblerCounters && farblerCounters.totalCalls) || 0;
   const last = stats && stats.lastSweep ? relativeTime(stats.lastSweep) : null;
   const parts = [
-    `${trimmed.toLocaleString()} cookies trimmed`,
-    `${blurred.toLocaleString()} surfaces blurred`,
+    `${fmtCount(trimmed)} cookies trimmed`,
+    `${fmtCount(blurred)} surfaces blurred`,
   ];
   if (last) parts.push(last);
-  $('guard-counters').textContent = parts.join(' · ');
+  const gc = $('guard-counters');
+  gc.textContent = parts.join(' · ');
+  const exact = [];
+  if (trimmed >= 1000) exact.push(`${trimmed.toLocaleString()} cookies trimmed`);
+  if (blurred >= 1000) exact.push(`${blurred.toLocaleString()} surfaces blurred`);
+  if (exact.length) gc.title = exact.join(' · '); else gc.removeAttribute('title');
 }
 
 function wireGuardButtons() {

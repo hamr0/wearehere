@@ -441,4 +441,18 @@ self.WH_pickTrimTab = function (tabs, cookieDomain, cookieEtld1, etld1Of) {
   return third;
 };
 
+// Compact count for big lifetime totals. Truncates (never rounds up) so a
+// number is never overstated: <1000 exact; 1000-9999 one decimal k (1.1k);
+// 10k-999,999 whole k (250k); >=1M one decimal M (1.2M). ".0" is dropped.
+self.WH_fmtCount = function (n) {
+  n = Math.floor(Number(n) || 0);
+  if (n < 0) n = 0;
+  if (n < 1000) return String(n);
+  var v;
+  if (n < 10000) { v = Math.floor(n / 100) / 10; return (v % 1 ? v.toFixed(1) : String(v)) + 'k'; }
+  if (n < 1000000) return Math.floor(n / 1000) + 'k';
+  v = Math.floor(n / 100000) / 10;
+  return (v % 1 ? v.toFixed(1) : String(v)) + 'M';
+};
+
 })();

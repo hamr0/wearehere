@@ -146,3 +146,12 @@ test('pickTrimTab: first-party tab wins, else tab that contacted the host, else 
   assert.equal(ctx.WH_pickTrimTab(tabs, '.unseen.org', 'unseen.org', e1), null);
   assert.equal(ctx.WH_pickTrimTab(tabs, '', '', e1), null);
 });
+
+test('fmtCount: compact, truncating, never overstates', () => {
+  const f = ctx.WH_fmtCount;
+  const cases = [[0, '0'], [999, '999'], [1000, '1k'], [1049, '1k'], [1099, '1k'], [1100, '1.1k'],
+    [9960, '9.9k'], [9999, '9.9k'], [10000, '10k'], [250000, '250k'], [999999, '999k'],
+    [1000000, '1M'], [1250000, '1.2M']];
+  for (const [n, out] of cases) assert.equal(f(n), out, String(n));
+  assert.equal(f(undefined), '0');
+});
