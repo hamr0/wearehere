@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "wearehere",
-  "version": "5.0.0",
+  "version": "6.0.0",
   "description": "Privacy that acts back: full scan + cookie scoper. Cookies, trackers, fingerprinting, dark patterns, terms — all in one popup.",
   "permissions": ["cookies", "webRequest", "alarms", "storage", "scripting"],
   "host_permissions": ["<all_urls>"],
